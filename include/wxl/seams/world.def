@@ -14,7 +14,13 @@
 //   conv    the function's calling convention on x86: `cdecl` for a free or static function,
 //           `thiscall` for a non-static member (the x86 detour is then a __fastcall shim that
 //           takes `this` in ECX and a dummy EDX), `stdcall` for a callback. Named after the
-//           convention, so a wrong column is a wrong detour and a visibly wrong row
+//           convention, so a wrong column is a wrong detour and a visibly wrong row.
+//           Which functions can carry a convention of the compiler's own making is decided by
+//           linkage, not by the word `static`: a file-level static is private to its object
+//           file, so MSVC may pass its arguments wherever it likes and the row must say
+//           `regparm`; a class static, a non-static member and a free function all have
+//           external linkage, so they carry the convention they are declared with and no
+//           disassembly is needed to be sure of it
 //   params  the parameter list, in parentheses, as the C boundary sees the function's
 //           arguments: a reference is a pointer, a class is its SDK struct or a `void*`, `this`
 //           is the first parameter of a thiscall row. Before takes exactly these; After takes
