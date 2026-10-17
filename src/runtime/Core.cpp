@@ -16,6 +16,8 @@
 
 #include "runtime/Core.hpp"
 
+#include "runtime/Stages.hpp"
+
 #include "common/Log.hpp"
 #include "runtime/Attachment.hpp"
 #include "services/ScriptService.hpp"
@@ -161,7 +163,8 @@ namespace wxl::core
             attachment::Install();
 
             g_host->LoadAll();
-            g_host->Stage(WXL_STAGE_EARLY);
+            stages::Restart();
+            stages::Reach(WXL_STAGE_EARLY);
 
             for (const wxl::host::LoadedMod& mod : g_host->Loaded())
             {

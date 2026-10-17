@@ -16,6 +16,7 @@
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/ScriptService.hpp"
 
@@ -464,6 +465,32 @@ namespace
 
 namespace
 {
+    /// How far the client has booted: announced once each, in order, gaps left as gaps.
+    void CheckStages()
+    {
+        namespace stages = wxl::core::stages;
+        stages::Restart();
+
+        stages::Reach(WXL_STAGE_EARLY);
+        Check(stages::Reached() == WXL_STAGE_EARLY, "the first stage is announced");
+
+        stages::Reach(WXL_STAGE_STORAGE);
+        Check(stages::Reached() == WXL_STAGE_STORAGE, "and the next one after it");
+
+        stages::Reach(WXL_STAGE_STORAGE);
+        stages::Reach(WXL_STAGE_EARLY);
+        Check(stages::Reached() == WXL_STAGE_STORAGE,
+              "a stage already announced, and one behind it, are both ignored");
+
+        stages::Reach(WXL_STAGE_SCRIPT);
+        Check(stages::Reached() == WXL_STAGE_SCRIPT,
+              "a stage this runtime cannot recognise is skipped, not invented: graphics never "
+              "arrives and script follows storage");
+
+        stages::Restart();
+        Check(stages::Reached() == WXL_STAGE_EARLY, "a runtime that starts over starts over");
+    }
+
     /// Every event the seam table says some body raises is one the host will let a mod subscribe
     /// to. A seam that raises an event the attachment never published is a silent dead event.
     void CheckEveryRaisedEventIsSubscribable()
@@ -1348,6 +1375,7 @@ int main()
            wxl::core::seams::Table().size(), wxl::core::seams::RaisedEvents().size(),
            wxl::core::binding::Unbound().size());
 
+    CheckStages();
     CheckEveryRaisedEventIsSubscribable();
     CheckEveryRowDeclaresItsAbi();
     CheckEventDispatchUpdate();

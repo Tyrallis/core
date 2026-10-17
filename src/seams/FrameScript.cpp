@@ -19,6 +19,7 @@
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Stages.hpp"
 #include "services/ScriptService.hpp"
 
 #include "wxl/events.h"
@@ -60,6 +61,10 @@ namespace wxl::seam::FrameScript::Initialize
         g_live      = true;
         wxl::core::services::script::OnContextReady(g_context, state);
         WLOG_DEBUG(wxl::core::kTag, "script context up: %s", ContextName(g_context));
+
+        // There is a script VM and an API can be registered on it, which is the stage exactly.
+        // The client builds more than one in a session; only the first is news.
+        wxl::core::stages::Reach(WXL_STAGE_SCRIPT);
 
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host) return;

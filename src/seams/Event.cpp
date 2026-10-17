@@ -17,6 +17,7 @@
 #include "wxl/seams/seams.h"
 
 #include "runtime/Core.hpp"
+#include "runtime/Stages.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -27,6 +28,10 @@ namespace wxl::seam::Event::DispatchUpdate
 {
     void WXL_CALL Before(void*, uint32_t, float elapsed_sec)
     {
+        // The scheduler is dispatching, so the client is running its own loop: the first
+        // tick is the last moment that still counts as before the first frame.
+        wxl::core::stages::Reach(WXL_STAGE_READY);
+
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host) return;
 

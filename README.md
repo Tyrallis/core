@@ -143,7 +143,7 @@ What a mod can reach **today**, by build:
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
 | `wxl.storage`, `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
-| lifecycle stages | `EARLY` | `EARLY` |
+| lifecycle stages | `EARLY`, `STORAGE`, `SCRIPT`, `READY` | the same |
 
 ### `wxl.script` and the two script contexts
 

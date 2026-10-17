@@ -18,6 +18,7 @@
 
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Stages.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -47,6 +48,10 @@ namespace wxl::seam::Storage::OpenFile
         (void)archive;
         (void)flags;
         (void)file;
+
+        // The client is opening a file, so its archives are mounted: whatever else this
+        // seam is for, the first call through it is what storage being up looks like.
+        wxl::core::stages::Reach(WXL_STAGE_STORAGE);
 
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host || !name || !*name) return false;
