@@ -28,3 +28,9 @@ __pycache__/
 .vscode/
 *.swp
 Thumbs.db
+
+# Generated reports: reproducible by re-running the tools, so not kept in history.
+reports/
+offsets/summary.txt
+offsets/unparsed.txt
+offsets/layouts-*.txt
