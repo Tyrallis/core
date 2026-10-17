@@ -1,4 +1,4 @@
-// DLL entry: open the log on the loader thread, then stand the mod host up on a thread of its own.
+// DLL entry: the two exports the patched client imports, and DllMain, which only opens the log.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -25,14 +25,25 @@
  */
 extern "C" __declspec(dllexport) void __cdecl WarcraftXL(void) {}
 
+/**
+ * @brief The entry-point trampoline's call: runs on the client's main thread, after the loader
+ *        has initialised every static import and before the client's own entry point.
+ *
+ * The loader lock is not held here, so loading mods is safe, and nothing of the client has run
+ * yet, so a mod that patches what the client reads at start-up gets there first.
+ */
+extern "C" __declspec(dllexport) void __cdecl WarcraftXLEntry(void)
+{
+    WLOG_INFO(wxl::core::kTag, "entry trampoline on thread %lu, before the client's entry point",
+              GetCurrentThreadId());
+    wxl::core::Start();
+}
+
 namespace
 {
     /**
-     * @brief The core's thread: loads the mods once the process is past its loader lock.
-     *
-     * A thread created from DllMain cannot start before the loader lock is released, which is
-     * after every static import, this DLL included, has been initialised. Loading a mod is a
-     * LoadLibrary, which would deadlock under that lock, so it happens here and nowhere earlier.
+     * @brief The core's thread, for a client without the entry trampoline: loads the mods once
+     *        the process is past its loader lock, while the client boots in parallel.
      * @return thread exit code (0).
      */
     DWORD WINAPI CoreThread(LPVOID)
@@ -44,10 +55,11 @@ namespace
 }
 
 /**
- * @brief DLL entry point; on process attach opens the log and spawns the core thread.
+ * @brief DLL entry point; on process attach opens the log and, when the executable carries no
+ *        entry trampoline, spawns the core thread.
  *
  * Nothing here takes a lock the loader could hold, loads a library, or runs code of another DLL:
- * kernel32 calls only, then the thread handle is dropped and the loader thread is handed back.
+ * kernel32 calls only, then the loader thread is handed back.
  * @param module  DLL module handle.
  * @param reason  reason code for the call.
  * @return TRUE to keep the DLL loaded.
@@ -63,6 +75,16 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
         WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (build %s %s), loader thread %lu",
                   __DATE__, __TIME__, GetCurrentThreadId());
 
+        if (wxl::core::HasEntryTrampoline())
+        {
+            WLOG_INFO(wxl::core::kTag, "entry trampoline present; mods load at the entry point");
+            break;
+        }
+
+        WLOG_WARN(wxl::core::kTag, "the executable was patched by an older patcher (import only, "
+                                   "no entry trampoline): mods load on a core thread while the "
+                                   "client boots, and WXL_STAGE_EARLY runs late. Run "
+                                   "wxl-core-patcher on the executable to add the trampoline.");
         HANDLE thread = CreateThread(nullptr, 0, &CoreThread, nullptr, 0, nullptr);
         if (thread) CloseHandle(thread);
         else WLOG_ERROR(wxl::core::kTag, "cannot create the core thread (win32=%lu); no mods loaded",

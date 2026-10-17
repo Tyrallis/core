@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../sdk/schema/mod.json",
+  "id": "wxl.glue-unlock",
+  "name": "Glue unlock",
+  "version": "1.0.0",
+  "abi": "0.1",
+  "description": "Bypasses the client's Lua/XML signature check so custom interface code loads.",
+  "binaries": {
+    "win-x86": "bin/x86/glue-unlock.dll"
+  },
+  "requires": [
+    { "service": "wxl.patch", "version": 1 }
+  ]
+}

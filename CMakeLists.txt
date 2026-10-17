@@ -1,10 +1,11 @@
 # wxl-core: the WarcraftXL runtime for the stock Wow.exe 3.3.5a. Two binaries, both 32-bit:
 # WarcraftXL.dll, pulled into the client by an import the patcher adds, and wxl-core-patcher.exe,
-# which adds it. The mod host comes from the SDK checkout next door and is built here once.
+# which adds it. The mod host comes from the SDK checkout next door and is built here once, as
+# are the two mods under mods/ that carry the client's static byte patches.
 # Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
 
 cmake_minimum_required(VERSION 3.21)
-project(wxl-core VERSION 0.1.0 LANGUAGES CXX)
+project(wxl-core VERSION 0.2.0 LANGUAGES C CXX)
 
 # The client is a 32-bit process; a 64-bit configure builds nothing useful.
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -34,6 +35,17 @@ endif()
 set(WXL_SDK_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
 
+# --- MinHook (BSD-2-Clause, deps/minhook, its own license file) ------------------------------------
+# Declared here rather than through its own CMakeLists, which predates the CMake in use. Third-party
+# code: built at the toolset's default warning level, not ours.
+add_library(minhook STATIC
+    deps/minhook/src/buffer.c
+    deps/minhook/src/hook.c
+    deps/minhook/src/trampoline.c
+    deps/minhook/src/hde/hde32.c)
+target_include_directories(minhook PUBLIC deps/minhook/include)
+target_include_directories(minhook PRIVATE deps/minhook/src deps/minhook/src/hde)
+
 # A single integer a mod can read out of wxl_runtime_info.version: major*10000 + minor*100 + patch.
 math(EXPR WXL_CORE_VERSION
     "${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}")
@@ -44,10 +56,16 @@ set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 add_library(wxl-core SHARED
     src/runtime/Main.cpp
     src/runtime/Core.cpp
+    src/runtime/Image.cpp
+    src/runtime/WorldSeam.cpp
+    src/hook/Engine.cpp
+    src/hook/Points.cpp
+    src/services/HookService.cpp
+    src/services/PatchService.cpp
     src/common/Log.cpp)
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 target_include_directories(wxl-core PRIVATE src include)
-target_link_libraries(wxl-core PRIVATE wxl::host)
+target_link_libraries(wxl-core PRIVATE wxl::host minhook)
 target_compile_definitions(wxl-core PRIVATE ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION})
 
 # --- wxl-core-patcher.exe --------------------------------------------------------------------------
@@ -63,3 +81,9 @@ target_compile_definitions(wxl-core-patcher PRIVATE ${WXL_CORE_DEFS})
 foreach(target wxl-core wxl-core-patcher)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
 endforeach()
+
+# --- The mods this runtime ships -------------------------------------------------------------------
+option(WXL_CORE_MODS "Build the mods under mods/ into build/<Config>/Mods/" ON)
+if(WXL_CORE_MODS)
+    add_subdirectory(mods)
+endif()

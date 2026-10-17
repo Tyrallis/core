@@ -133,15 +133,39 @@ namespace wxl::patcher
     }
 
     /**
-     * @brief Appends an import of dll!func through a new section tagged tagSection.
-     * @param dll         imported module name.
-     * @param func        imported function name.
-     * @param tagSection  name of the section that carries the new import.
-     * @return True on success; a no-op returning true if tagSection already exists.
+     * @brief Returns the virtual address of the entry point.
+     * @return ImageBase + AddressOfEntryPoint.
      */
-    bool PeImage::AddImport(const char* dll, const char* func, const char* tagSection)
+    uint32_t PeImage::EntryPointVa() const
     {
-        if (HasSection(tagSection)) return true; // already present
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(bytes_.data());
+        auto* nt  = reinterpret_cast<const IMAGE_NT_HEADERS32*>(bytes_.data() + dos->e_lfanew);
+        return nt->OptionalHeader.ImageBase + nt->OptionalHeader.AddressOfEntryPoint;
+    }
+
+    /**
+     * @brief Repoints the entry point.
+     * @param va  virtual address the loader hands control to.
+     */
+    void PeImage::SetEntryPointVa(uint32_t va)
+    {
+        IMAGE_NT_HEADERS32* nt = Nt(bytes_);
+        nt->OptionalHeader.AddressOfEntryPoint = va - nt->OptionalHeader.ImageBase;
+    }
+
+    /**
+     * @brief Appends imports of dll!funcs[0..count) through a new section tagged tagSection.
+     * @param dll         imported module name.
+     * @param funcs       imported function names.
+     * @param count       number of names in funcs.
+     * @param tagSection  name of the section that carries the new import.
+     * @param iatVas      receives the virtual address of each function's IAT slot; may be null.
+     * @return True on success; false, writing nothing, when tagSection already exists.
+     */
+    bool PeImage::AddImport(const char* dll, const char* const* funcs, uint32_t count,
+                            const char* tagSection, uint32_t* iatVas)
+    {
+        if (count == 0 || HasSection(tagSection)) return false;
 
         IMAGE_NT_HEADERS32* nt = Nt(bytes_);
         IMAGE_FILE_HEADER&      fh = nt->FileHeader;
@@ -159,14 +183,17 @@ namespace wxl::patcher
                && (imp[origCount].Name != 0 || imp[origCount].FirstThunk != 0))
             ++origCount;
 
-        // --- lay out the new section blob: descriptors + INT + IAT + import-by-name + dll name ---
-        const uint32_t descBytes = (origCount + 2) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+        // --- lay out the new section blob: descriptors + INT + IAT + import-by-names + dll name ---
+        const uint32_t thunkBytes = (count + 1) * sizeof(uint32_t); // NUL-terminated thunk arrays
+        const uint32_t descBytes  = (origCount + 2) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
         const uint32_t offDesc = 0;
         const uint32_t offInt  = offDesc + descBytes;
-        const uint32_t offIat  = offInt + 2 * sizeof(uint32_t);
-        const uint32_t offIbn  = offIat + 2 * sizeof(uint32_t);
-        const uint32_t ibnLen  = AlignUp(2 + static_cast<uint32_t>(strlen(func)) + 1, 2);
-        const uint32_t offDll  = offIbn + ibnLen;
+        const uint32_t offIat  = offInt + thunkBytes;
+        const uint32_t offIbn  = offIat + thunkBytes;
+        uint32_t ibnBytes = 0;
+        for (uint32_t i = 0; i < count; ++i)
+            ibnBytes += AlignUp(2 + static_cast<uint32_t>(strlen(funcs[i])) + 1, 2);
+        const uint32_t offDll   = offIbn + ibnBytes;
         const uint32_t blobSize = offDll + static_cast<uint32_t>(strlen(dll)) + 1;
 
         std::vector<uint8_t> blob(blobSize, 0);
@@ -183,9 +210,15 @@ namespace wxl::patcher
         newDesc[origCount].Name               = secRva + offDll;
         newDesc[origCount].FirstThunk         = secRva + offIat;
 
-        *reinterpret_cast<uint32_t*>(blob.data() + offInt) = secRva + offIbn;
-        *reinterpret_cast<uint32_t*>(blob.data() + offIat) = secRva + offIbn;
-        strcpy_s(reinterpret_cast<char*>(blob.data() + offIbn + 2), blobSize - (offIbn + 2), func);
+        uint32_t ibn = offIbn;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            *reinterpret_cast<uint32_t*>(blob.data() + offInt + i * sizeof(uint32_t)) = secRva + ibn;
+            *reinterpret_cast<uint32_t*>(blob.data() + offIat + i * sizeof(uint32_t)) = secRva + ibn;
+            strcpy_s(reinterpret_cast<char*>(blob.data() + ibn + 2), blobSize - (ibn + 2), funcs[i]);
+            if (iatVas) iatVas[i] = oh.ImageBase + secRva + offIat + i * sizeof(uint32_t);
+            ibn += AlignUp(2 + static_cast<uint32_t>(strlen(funcs[i])) + 1, 2);
+        }
         strcpy_s(reinterpret_cast<char*>(blob.data() + offDll), blobSize - offDll, dll);
 
         // New section header (must fit in the existing header padding).

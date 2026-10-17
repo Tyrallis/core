@@ -1,4 +1,4 @@
-// The core runtime: paths, the log sink, and the mod host.
+// The core runtime: paths, the log sink, the services, and the mod host.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,10 +17,18 @@
 #include "runtime/Core.hpp"
 
 #include "common/Log.hpp"
+#include "hook/Engine.hpp"
+#include "runtime/Image.hpp"
+#include "runtime/WorldSeam.hpp"
+#include "services/HookService.hpp"
+#include "services/PatchService.hpp"
 
 #include "wxl/host/mod_host.hpp"
+#include "wxl/services/hook.h"
+#include "wxl/services/patch.h"
 
 #include <windows.h>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -30,6 +38,7 @@ namespace
 {
     constexpr wchar_t kLogRelative[]  = L"Logs\\WarcraftXL.log";
     constexpr wchar_t kModsRelative[] = L"Mods";
+    constexpr char    kEntrySection[] = ".wxle";
 
     /**
      * @brief Writes the folder of the process executable into buf, with a trailing backslash.
@@ -92,6 +101,8 @@ namespace
     // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam
     // exists yet from which the mods could be told to let go before the process ends.
     wxl::host::ModHost* g_host = nullptr;
+
+    LONG g_started = 0;
 }
 
 namespace wxl::core
@@ -105,8 +116,36 @@ namespace wxl::core
         return wxl::log::Open(path);
     }
 
+    bool HasEntryTrampoline()
+    {
+        const auto* base = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+        if (!base) return false;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+        const DWORD entry = nt->OptionalHeader.AddressOfEntryPoint;
+        const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+        {
+            if (memcmp(sec[i].Name, kEntrySection, sizeof kEntrySection) != 0) continue;
+            return entry >= sec[i].VirtualAddress
+                && entry < sec[i].VirtualAddress + sec[i].Misc.VirtualSize;
+        }
+        return false;
+    }
+
+    wxl::host::ModHost* Host() { return g_host; }
+
     void Start()
     {
+        if (InterlockedCompareExchange(&g_started, 1, 0) != 0)
+        {
+            WLOG_WARN(kTag, "Start called twice; the second call is ignored");
+            return;
+        }
+
         try
         {
             wchar_t dir[1024];
@@ -116,6 +155,9 @@ namespace wxl::core
                 return;
             }
 
+            if (!wxl::hook::Init())
+                WLOG_ERROR(kTag, "hook engine unavailable; detours will be refused");
+
             wxl::host::HostConfig cfg;
             cfg.mods_directory  = std::filesystem::path(dir) / kModsRelative;
             cfg.runtime_id      = kRuntimeId;
@@ -123,16 +165,31 @@ namespace wxl::core
             cfg.runtime_version = WXL_CORE_VERSION;
             cfg.log_sink        = &g_sink;
             cfg.log_minimum     = ToHostLevel(wxl::log::MinLevel());
-            // No events are raised and no services are published in this slice: a mod that
-            // requires a service is refused by the host with the service's name.
+            cfg.events          = { WXL_EV_WorldEnter };
+            cfg.services        = {
+                { WXL_HOOK_SERVICE, WXL_HOOK_SERVICE_VERSION, &services::HookApi() },
+                { WXL_HOOK_RAW_SERVICE, WXL_HOOK_RAW_SERVICE_VERSION, &services::HookRawApi() },
+                { WXL_PATCH_SERVICE, WXL_PATCH_SERVICE_VERSION, &services::PatchApi() },
+            };
 
             WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u, target %s, mods in %ls",
                       kRuntimeId, kRuntimeName, static_cast<unsigned>(WXL_CORE_VERSION),
                       static_cast<unsigned>(WXL_ABI_VERSION_MAJOR),
                       static_cast<unsigned>(WXL_ABI_VERSION_MINOR), cfg.target.c_str(),
                       cfg.mods_directory.c_str());
+            for (const wxl::host::PublishedService& service : cfg.services)
+                WLOG_INFO(kTag, "service %s version %u", service.name.c_str(), service.version);
 
             g_host = new wxl::host::ModHost(std::move(cfg));
+
+            // The core's own detours go in before any mod can attach behind them, and only in
+            // the image whose addresses they are.
+            if (!image::IsClient())
+                WLOG_WARN(kTag, "the executable is not Wow.exe build %u: named hook points and "
+                                "WorldEnter are unavailable", static_cast<unsigned>(image::kBuild));
+            else if (!world::Install())
+                WLOG_ERROR(kTag, "world seam not installed; WorldEnter will not be raised");
+
             g_host->LoadAll();
             g_host->Stage(WXL_STAGE_EARLY);
 

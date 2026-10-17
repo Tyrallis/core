@@ -70,14 +70,31 @@ namespace wxl::patcher
          */
         bool SetLargeAddressAware();
 
+        /** @brief Returns the virtual address of the entry point. */
+        uint32_t EntryPointVa() const;
+
         /**
-         * @brief Appends an import of dll!func through a new section tagged tagSection.
-         * @param dll         imported module name.
-         * @param func        imported function name.
-         * @param tagSection  name of the section that carries the new import.
-         * @return True on success; a no-op returning true if tagSection already exists.
+         * @brief Repoints the entry point.
+         * @param va  virtual address the loader hands control to.
          */
-        bool AddImport(const char* dll, const char* func, const char* tagSection);
+        void SetEntryPointVa(uint32_t va);
+
+        /**
+         * @brief Appends imports of dll!funcs[0..count) through a new section tagged tagSection.
+         *
+         * The existing import descriptors are copied into the new section and one descriptor is
+         * added after them, so this also works on an image whose import directory already lives
+         * in a section an earlier call appended.
+         * @param dll         imported module name.
+         * @param funcs       imported function names.
+         * @param count       number of names in funcs.
+         * @param tagSection  name of the section that carries the new import.
+         * @param iatVas      receives the virtual address of each function's IAT slot, count
+         *                    entries; may be null.
+         * @return True on success; false, writing nothing, when tagSection already exists.
+         */
+        bool AddImport(const char* dll, const char* const* funcs, uint32_t count,
+                       const char* tagSection, uint32_t* iatVas);
 
         /**
          * @brief Appends raw machine code as a new executable section (a code cave).

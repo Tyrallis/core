@@ -115,3 +115,59 @@ namespace wxl::offsets::site_detail
                       "WXL_SITE_AT: delta " #delta " reaches past the end of " name); \
         return static_cast<std::uintptr_t>(m.address) + static_cast<std::uintptr_t>(delta); \
     }())
+
+// --- Statics ------------------------------------------------------------------------------
+//
+// The same resolution for a static or global out of statics.def: WXL_STATIC(name) is its
+// address. A static has no extent, so there is no delta; a name carried by several addresses
+// fails the build like a function does.
+
+namespace wxl::offsets::site_detail
+{
+    struct StaticRow
+    {
+        const char*   name;
+        std::uint32_t address;
+    };
+
+    inline constexpr StaticRow kStaticRows[] = {
+#define WXL_OFFSET_STATIC(name, address, file, line) { name, address },
+#include "generated/statics.def"
+#undef WXL_OFFSET_STATIC
+    };
+
+    constexpr Match FindStatic(const char* name, std::uint32_t address, bool byAddress)
+    {
+        Match m;
+        std::uint32_t last = 0;
+        for (const StaticRow& r : kStaticRows) {
+            if (!Equal(r.name, name)) continue;
+            if (byAddress && r.address != address) continue;
+            if (m.found && r.address == last) continue;
+            last = r.address;
+            ++m.found;
+            m.address = r.address;
+        }
+        return m;
+    }
+}
+
+// WXL_STATIC(name): the address of the one static called `name`.
+// WXL_STATIC_AT(name, address): the same for a name carried by several addresses, typically a
+// file-scope static declared in more than one translation unit.
+#define WXL_STATIC(name) \
+    ([]() consteval -> std::uintptr_t { \
+        constexpr ::wxl::offsets::site_detail::Match m = \
+            ::wxl::offsets::site_detail::FindStatic(name, 0, false); \
+        static_assert(m.found != 0, "WXL_STATIC: no static named " name " in statics.def"); \
+        static_assert(m.found < 2, "WXL_STATIC: " name " has several addresses; use WXL_STATIC_AT"); \
+        return static_cast<std::uintptr_t>(m.address); \
+    }())
+
+#define WXL_STATIC_AT(name, addr) \
+    ([]() consteval -> std::uintptr_t { \
+        constexpr ::wxl::offsets::site_detail::Match m = \
+            ::wxl::offsets::site_detail::FindStatic(name, (addr), true); \
+        static_assert(m.found != 0, "WXL_STATIC_AT: no static named " name " at " #addr); \
+        return static_cast<std::uintptr_t>(m.address); \
+    }())
