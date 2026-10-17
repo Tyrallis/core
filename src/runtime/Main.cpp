@@ -1,4 +1,4 @@
-// DLL entry: the two exports the patched client imports, and DllMain, which only opens the log.
+// DLL entry on x86: the two exports the patched client imports, and DllMain, which only opens the log.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,6 +17,7 @@
 #include "runtime/Core.hpp"
 
 #include "common/Log.hpp"
+#include "runtime/Image.hpp"
 
 #include <windows.h>
 
@@ -75,7 +76,7 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
         WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (build %s %s), loader thread %lu",
                   __DATE__, __TIME__, GetCurrentThreadId());
 
-        if (wxl::core::HasEntryTrampoline())
+        if (wxl::core::image::HasEntryTrampoline())
         {
             WLOG_INFO(wxl::core::kTag, "entry trampoline present; mods load at the entry point");
             break;

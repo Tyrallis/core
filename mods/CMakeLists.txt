@@ -1,6 +1,7 @@
 # The mods core ships: each one a folder with its own CMakeLists.txt, mod.json and src/, written
 # against the SDK like any other mod and buildable on its own. Built from here they land ready to
-# copy in build/<Config>/Mods/<id>/{mod.json,bin/x86/<name>.dll}.
+# copy in build/<Config>/Mods/<id>/{mod.json,bin/x86/<name>.dll}, and `cmake --install` of the
+# `core` component (what the superbuild runs) collects the same folder into <prefix>/Mods/<id>/.
 # Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
 
 # This tree is the one architecture the client has; wxl_add_mod then declares a real library
@@ -22,6 +23,8 @@ function(wxl_core_mod target id)
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/mod.json" "${mod_dir}/mod.json"
         COMMENT "${id}: mod.json -> Mods/${id}")
+    install(TARGETS ${target} LIBRARY DESTINATION "Mods/${id}/bin/x86" COMPONENT core)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/mod.json" DESTINATION "Mods/${id}" COMPONENT core)
 endfunction()
 
 add_subdirectory(wxl.glue-unlock)

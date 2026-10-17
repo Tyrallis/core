@@ -76,13 +76,10 @@ namespace
                     ++present;
                     continue;
                 }
-                const wxl_patch patch =
-                    g_patch->apply(edit.name, edit.address, edit.stock, edit.patched, edit.size);
+                const wxl_patch patch = g_patch->apply(edit.name, edit.address, edit.stock, edit.patched, edit.size);
                 if (patch == WXL_PATCH_NONE)
                 {
-                    std::snprintf(line, sizeof line,
-                                  "%s @0x%08X refused; undoing %u edit(s) and standing down",
-                                  edit.name, static_cast<unsigned>(edit.address), count);
+                    std::snprintf(line, sizeof line, "%s @0x%08X refused; undoing %u edit(s) and standing down", edit.name, static_cast<unsigned>(edit.address), count);
                     wxl::Log(WXL_LOG_ERROR, kTag, line);
                     while (count) g_patch->restore(applied[--count]);
                     return WXL_E_FAILED;
@@ -90,8 +87,7 @@ namespace
                 applied[count++] = patch;
             }
 
-            std::snprintf(line, sizeof line, "signature check bypassed: %u edit(s) applied, %u already present",
-                          count, present);
+            std::snprintf(line, sizeof line, "signature check bypassed: %u edit(s) applied, %u already present", count, present);
             wxl::Log(WXL_LOG_INFO, kTag, line);
             return WXL_OK;
         }

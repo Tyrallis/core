@@ -41,26 +41,19 @@ namespace wxl::core
     bool OpenLog();
 
     /**
-     * @brief Whether the client executable carries the patcher's entry-point trampoline, which
-     *        calls WarcraftXLEntry before the client's own entry point.
-     *
-     * Reads the executable's headers in memory: safe under the loader lock.
-     */
-    bool HasEntryTrampoline();
-
-    /**
-     * @brief Stands up the runtime: the hook engine, the services, the core's own detours, then
+     * @brief Stands up the runtime: the attachment to the client (see Attachment.hpp), then
      *        the mod host, which discovers, admits and loads every mod under Mods\ next to the
      *        client executable and reports WXL_STAGE_EARLY.
      *
-     * Runs once, on whichever thread calls it first: the client's main thread from the entry
-     * trampoline, or the core's own thread when the executable has none. Must not run under
-     * the loader lock, since loading a mod is a LoadLibrary. The host lives for the rest of
-     * the process: no seam exists yet from which a shutdown stage could run before the client
-     * tears its DLLs down, so nothing is unloaded. Never throws; a failure is logged and the
-     * client goes on without mods.
+     * Runs once, on whichever thread calls it first: on x86 the client's main thread from the
+     * entry trampoline, or the core's own thread when the executable has none; on x64 the
+     * client's call to WarcraftXLInit. Must not run under the loader lock, since loading a mod
+     * is a LoadLibrary. The host lives for the rest of the process: no seam exists yet from
+     * which a shutdown stage could run before the client tears its DLLs down, so nothing is
+     * unloaded. Never throws; a failure is logged and the client goes on without mods.
+     * @return true when the host is up and its mods are loaded. A second call reports the first.
      */
-    void Start();
+    bool Start();
 
     /// The live mod host, or null before Start or after a failed one.
     wxl::host::ModHost* Host();

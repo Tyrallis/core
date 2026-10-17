@@ -709,10 +709,19 @@ skip game/Dbc:kSlotDtor,game/Dbc:kSlotLoad,game/Dbc:kSlotUnused,game/Dbc:kSlotLo
 # game/GameObject.hpp)
 # =============================================================================================
 
+# The inbound message reader the object seams pre-read: the guid of SMSG_DESTROY_OBJECT and the
+# out-of-range block of SMSG_UPDATE_OBJECT are read at m_data + m_read before the client parses them.
+type CDataStore Engine/Source/Base/CDataStore.h CDataStore
+  sizeof                                  -
+  m_data                                  -
+  m_size                                  -
+  m_read                                  -
+
 type CGObject_C WoW/Source/Object/ObjectClient/Object_C.h CGObject_C
   sizeof                                  -
   m_obj                                   game/Unit:kObjectHeaderField
   m_worldModel                            game/Unit:kUnitModelField
+  m_typeId                                -                                            # OBJECT_TYPE_ID; wxl.object maps it to wxl_object_type
 
 type CGObjectData WoW/Source/Object/Object.h CGObjectData
   sizeof                                  -                                            # the bias of the unit/game-object descriptor fields below
@@ -725,6 +734,8 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   sizeof                                  -
   m_movementData.m_position               game/Unit:kUnitPositionField
   m_characterComponent                    game/Unit:kUnitCharacterComponentField
+  m_unit                                  -                                            # CGUnit base: the unit descriptor block
+  m_movement                              -                                            # CGUnit base: the movement block GetPosition reads
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData
@@ -732,6 +743,10 @@ type CGUnitData WoW/Source/Object/Unit.h CGUnitData
   m_unitFieldBoundingradius               game/Unit:kDescUnitBoundingRadius+0x18
   m_unitFieldCombatreach                  game/Unit:kDescUnitCombatReach+0x18
   m_unitFieldMountdisplayid               game/Unit:kDescUnitMountDisplayId+0x18
+  m_unitFieldTarget                       -                                            # read by wxl.object unit_target
+  m_unitFieldHealth                       -                                            # read by wxl.object unit_health
+  m_unitFieldMaxhealth                    -                                            # read by wxl.object unit_max_health
+  m_unitFieldLevel                        -                                            # read by wxl.object unit_level
 
 type CGGameObject_C WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C
   sizeof                                  -

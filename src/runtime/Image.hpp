@@ -1,4 +1,5 @@
-// The process image: whether it is the client build the offset tables describe.
+// The process image: whether it is the client build the offset tables describe, and whether the
+// patcher gave it the entry trampoline.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -34,4 +35,12 @@ namespace wxl::core::image
 
     /// kBuild when IsClient, else 0.
     uint32_t Build();
+
+    /**
+     * @brief Whether the client executable carries the patcher's entry-point trampoline, which
+     *        calls WarcraftXLEntry before the client's own entry point.
+     *
+     * Reads the executable's headers in memory: safe under the loader lock.
+     */
+    bool HasEntryTrampoline();
 }

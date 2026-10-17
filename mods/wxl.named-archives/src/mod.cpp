@@ -80,28 +80,25 @@ namespace
                 const uintptr_t at = g_patch->find(literal.stock, size, 0);
                 if (at == 0)
                 {
-                    std::snprintf(line, sizeof line, "\"%s\" not found in the image; undoing %u edit(s)",
-                                  literal.name, count);
+                    std::snprintf(line, sizeof line, "\"%s\" not found in the image; undoing %u edit(s)", literal.name, count);
                     wxl::Log(WXL_LOG_ERROR, kTag, line);
                     while (count) g_patch->restore(applied[--count]);
                     return WXL_E_FAILED;
                 }
+
                 if (g_patch->find(literal.stock, size, at) != 0)
                 {
-                    std::snprintf(line, sizeof line, "\"%s\" found more than once; undoing %u edit(s)",
-                                  literal.name, count);
+                    std::snprintf(line, sizeof line, "\"%s\" found more than once; undoing %u edit(s)", literal.name, count);
                     wxl::Log(WXL_LOG_ERROR, kTag, line);
                     while (count) g_patch->restore(applied[--count]);
                     return WXL_E_FAILED;
                 }
 
                 const uint8_t   question = '?', star = '*';
-                const wxl_patch patch =
-                    g_patch->apply(literal.name, at + literal.wildcard, &question, &star, 1);
+                const wxl_patch patch = g_patch->apply(literal.name, at + literal.wildcard, &question, &star, 1);
                 if (patch == WXL_PATCH_NONE)
                 {
-                    std::snprintf(line, sizeof line, "\"%s\" @0x%08X refused; undoing %u edit(s)",
-                                  literal.name, static_cast<unsigned>(at), count);
+                    std::snprintf(line, sizeof line, "\"%s\" @0x%08X refused; undoing %u edit(s)", literal.name, static_cast<unsigned>(at), count);
                     wxl::Log(WXL_LOG_ERROR, kTag, line);
                     while (count) g_patch->restore(applied[--count]);
                     return WXL_E_FAILED;
@@ -109,8 +106,7 @@ namespace
                 applied[count++] = patch;
             }
 
-            std::snprintf(line, sizeof line, "patch archive scan widened: %u literal(s) edited, %u already present",
-                          count, present);
+            std::snprintf(line, sizeof line, "patch archive scan widened: %u literal(s) edited, %u already present", count, present);
             wxl::Log(WXL_LOG_INFO, kTag, line);
             return WXL_OK;
         }

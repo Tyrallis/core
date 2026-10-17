@@ -12,7 +12,7 @@
 // Rows are sorted by id, then TYPE, then FIELD by offset and member, then SIZE by member, so the
 // file diffs cleanly after an upstream pull.
 //
-// 108 types, 679 field offsets, 3 member sizes.
+// 109 types, 689 field offsets, 3 member sizes.
 WXL_LAYOUT_TYPE(C3Vector, "C3Vector", 0xC, "Engine/Source/Tempest/C3Vector.h", 11)
 WXL_LAYOUT_TYPE(C44Matrix, "C44Matrix", 0x40, "Engine/Source/Tempest/C44Matrix.h", 13)
 WXL_LAYOUT_TYPE(CACHEENTRY, "CACHEENTRY", 0xB4, "WoW/Common/TextureCache.h", 13)
@@ -50,6 +50,10 @@ WXL_LAYOUT_FIELD(CChunkLiquid, "m_tileBegin.x", 0x34, "WoW/Source/WorldClient/CC
 WXL_LAYOUT_FIELD(CChunkLiquid, "m_tileBegin.y", 0x38, "WoW/Source/WorldClient/CChunkLiquid.h", 28)
 WXL_LAYOUT_FIELD(CChunkLiquid, "m_tileEnd.x", 0x3C, "WoW/Source/WorldClient/CChunkLiquid.h", 28)
 WXL_LAYOUT_FIELD(CChunkLiquid, "m_tileEnd.y", 0x40, "WoW/Source/WorldClient/CChunkLiquid.h", 28)
+WXL_LAYOUT_TYPE(CDataStore, "CDataStore", 0x18, "Engine/Source/Base/CDataStore.h", 8)
+WXL_LAYOUT_FIELD(CDataStore, "m_data", 0x4, "Engine/Source/Base/CDataStore.h", 8)
+WXL_LAYOUT_FIELD(CDataStore, "m_size", 0x10, "Engine/Source/Base/CDataStore.h", 8)
+WXL_LAYOUT_FIELD(CDataStore, "m_read", 0x14, "Engine/Source/Base/CDataStore.h", 8)
 WXL_LAYOUT_TYPE(CGGameObjectData, "CGGameObjectData", 0x30, "WoW/Source/Object/GameObject.h", 22)
 WXL_LAYOUT_FIELD(CGGameObjectData, "m_displayID", 0x8, "WoW/Source/Object/GameObject.h", 22)
 WXL_LAYOUT_FIELD(CGGameObjectData, "m_flags", 0xC, "WoW/Source/Object/GameObject.h", 22)
@@ -68,12 +72,19 @@ WXL_LAYOUT_FIELD(CGObjectData, "m_entryID", 0xC, "WoW/Source/Object/Object.h", 2
 WXL_LAYOUT_FIELD(CGObjectData, "m_scale", 0x10, "WoW/Source/Object/Object.h", 29)
 WXL_LAYOUT_TYPE(CGObject_C, "CGObject_C", 0xD0, "WoW/Source/Object/ObjectClient/Object_C.h", 62)
 WXL_LAYOUT_FIELD(CGObject_C, "m_obj", 0x8, "WoW/Source/Object/ObjectClient/Object_C.h", 62)
+WXL_LAYOUT_FIELD(CGObject_C, "m_typeId", 0x14, "WoW/Source/Object/ObjectClient/Object_C.h", 62)
 WXL_LAYOUT_FIELD(CGObject_C, "m_worldModel", 0xB4, "WoW/Source/Object/ObjectClient/Object_C.h", 62)
 WXL_LAYOUT_TYPE(CGUnitData, "CGUnitData", 0x238, "WoW/Source/Object/Unit.h", 51)
+WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldTarget", 0x30, "WoW/Source/Object/Unit.h", 51)
+WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldHealth", 0x48, "WoW/Source/Object/Unit.h", 51)
+WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldMaxhealth", 0x68, "WoW/Source/Object/Unit.h", 51)
+WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldLevel", 0xC0, "WoW/Source/Object/Unit.h", 51)
 WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldBoundingradius", 0xEC, "WoW/Source/Object/Unit.h", 51)
 WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldCombatreach", 0xF0, "WoW/Source/Object/Unit.h", 51)
 WXL_LAYOUT_FIELD(CGUnitData, "m_unitFieldMountdisplayid", 0xFC, "WoW/Source/Object/Unit.h", 51)
 WXL_LAYOUT_TYPE(CGUnit_C, "CGUnit_C", 0x1008, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
+WXL_LAYOUT_FIELD(CGUnit_C, "m_unit", 0xD0, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
+WXL_LAYOUT_FIELD(CGUnit_C, "m_movement", 0xD8, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_FIELD(CGUnit_C, "m_movementData.m_position", 0x798, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_FIELD(CGUnit_C, "m_characterComponent", 0xB4C, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_TYPE(CGWorldFrame, "CGWorldFrame", 0x7E28, "WoW/Source/Ui/WorldFrame.h", 106)
