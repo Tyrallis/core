@@ -51,7 +51,7 @@ namespace wxl::offsets::site_detail
     inline constexpr Row kRows[] = {
 #define WXL_OFFSET_FUNCTION(name, address, bound, length, verify, targs, file, line) \
         { name, address, bound, length },
-#include "functions.def"
+#include "generated/functions.def"
 #undef WXL_OFFSET_FUNCTION
     };
 

@@ -139,4 +139,4 @@ that define sites. It is a C++20 header (`consteval`).
 ## Out of scope
 
 Struct field layouts. Those come from compiling the fork's headers 32-bit and dumping `offsetof`,
-a different mechanism.
+a different mechanism: `core/tools/layouts/`, which writes `layouts.def` next to these tables.

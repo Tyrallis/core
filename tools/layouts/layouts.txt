@@ -1,0 +1,1108 @@
+# layouts.txt: the struct layouts core depends on, measured on the client fork compiled 32-bit.
+#
+# This is the declared, human-edited record of which types and members matter. measure_layouts.py
+# turns it into core/offsets/layouts.def (sizeof / offsetof as MSVC lays the fork's headers out
+# for Win32) and compares every hand-written constant of client/warcraftxl/include/wxl/offsets
+# (the inventory in core/offsets/audit-handwritten.md) with its measurement.
+#
+# Syntax
+#   type <id> <header[,header...]> <C++ type>      a type to measure; headers are relative to the
+#                                                  checkout; the id names the rows in layouts.def
+#     sizeof                 <refs>                sizeof(type)
+#     <member designator>    <refs>                offsetof(type, designator); a.b and a[i] allowed
+#     sizeof(<designator>)   <refs>                sizeof of that member (strides, byte sizes)
+#   skip <refs> :: <reason>                        hand constants that are not a struct layout
+#
+#   <refs> is "-" or a comma-separated list of hand constants, <header stem>:<name>, e.g.
+#   engine/GxDevice:kD3dDevice (the stem is the path under include/wxl/offsets without .hpp; a
+#   name repeated inside one header carries @<line>). A ref may add a bias, +0xNN, when the hand
+#   constant is defined relative to an enclosing block: hand value = measured + bias.
+#   "#" starts a comment. The tool refuses to run unless every inventory row is referenced
+#   exactly once, so nothing is dropped silently.
+#
+# Where the hand comment and the fork's member name disagree about what a slot IS, the entry maps
+# the hand constant onto the fork member that sits at the hand offset and says so in a comment;
+# the comparison is about offsets, the naming question is left to the reader.
+
+# =============================================================================================
+# Engine/Gx: the device, its backends and objects (engine/Gx.hpp, engine/GxDevice.hpp)
+# =============================================================================================
+
+type CGxDevice Engine/Source/Gx/CGxDevice/CGxDevice.h CGxDevice
+  m_defWindowRect                         engine/GxDevice:kDefWindow
+  m_defWindowRect.maxX                    engine/Gx:kDefWindowWidth                    # hand: defWindow + 0xC = width
+  m_defWindowRect.maxY                    engine/Gx:kDefWindowHeight                   # hand: defWindow + 0x8 = height
+  m_curWindowRect                         engine/GxDevice:kCurWindow
+  m_curWindowRect.maxX                    engine/Gx:kCurWindowWidth
+  m_curWindowRect.maxY                    engine/Gx:kCurWindowHeight
+  m_api                                   engine/GxDevice:kApi
+  m_format                                engine/GxDevice:kFormat
+  m_format.m_size.x                       engine/Gx:kFormatWidth
+  m_format.m_size.y                       engine/Gx:kFormatHeight
+  m_format.m_window                       engine/GxDevice:kWindowed                    # the byte IDevIsWindowed reads
+  m_caps                                  engine/GxDevice:kCapsBase
+  m_caps.m_numTmus                        engine/GxDevice:kCapsTextureUnits
+  m_caps.m_pixelCenterOnEdge              engine/GxDevice:kCaps218
+  m_caps.m_texelCenterOnEdge              engine/GxDevice:kCaps21C
+  m_caps.m_numStreams                     engine/GxDevice:kCapsMaxStreams
+  m_caps.m_streamOffset                   engine/Gx:kGxDeviceBaseVertexMode            # hand: "base vertex mode"; fork: streamOffset
+  m_caps.m_colorFormat                    engine/GxDevice:kApiFlag228                  # hand: meaning not read; fork: colour format
+  m_caps.unk_0018                         engine/GxDevice:kApiFlag22C
+  m_caps.m_maxIndex                       engine/GxDevice:kCapsMaxVertexIndex
+  m_caps.m_generateMipMaps                engine/GxDevice:kCapsAutoGenMipmaps
+  m_caps.m_texFmt                         engine/GxDevice:kCapsTexFormats
+  m_caps.m_texTarget[0]                   engine/GxDevice:kCapsTex2D
+  m_caps.m_texTarget[1]                   engine/GxDevice:kCapsTexCube
+  m_caps.m_texTarget[2]                   engine/GxDevice:kCapsTex274
+  m_caps.m_texTarget[3]                   engine/GxDevice:kCapsTexNpot
+  m_caps.m_texNonPow2                     engine/GxDevice:kCapsTexNpotConditional
+  m_caps.m_texMaxSize[0]                  engine/GxDevice:kCapsMaxTexWidth
+  m_caps.m_texMaxSize[1]                  engine/GxDevice:kCapsMaxTexHeight
+  m_caps.m_texMaxSize[2]                  engine/GxDevice:kCapsMaxCubeSize
+  m_caps.m_texMaxSize[3]                  engine/GxDevice:kCapsMaxTexExtent
+  m_caps.m_rttFormat[2]                   engine/GxDevice:kCapsRtArgb8888              # indexed by EGxTexFormat
+  m_caps.m_rttFormat[5]                   engine/GxDevice:kCapsRtRgb565
+  m_caps.m_rttFormat[10]                  engine/GxDevice:kCapsRtRg16f
+  m_caps.m_rttFormat[11]                  engine/GxDevice:kCapsRtR32f
+  m_caps.m_rttFormat[12]                  engine/GxDevice:kCapsDepthTexD24S8
+  m_caps.m_shaderTargets                  engine/GxDevice:kCapsShaderTarget
+  m_caps.m_shaderConstants                engine/GxDevice:kCapsShaderConstants
+  m_caps.m_texFilterTrilinear             engine/GxDevice:kCapsTexFilterTrilinear
+  m_caps.m_texFilterAnisotropic           engine/GxDevice:kCapsTexFilterAniso
+  m_caps.m_maxTexAnisotropy               engine/GxDevice:kCapsMaxAnisotropy
+  m_caps.m_depthBias                      engine/GxDevice:kCapsDepthBias
+  m_caps.m_colorWrite                     engine/GxDevice:kCapsColorWrite
+  m_caps.m_maxClipPlanes                  engine/GxDevice:kCapsMaxClipPlanes
+  m_caps.m_hwCursor                       engine/GxDevice:kCapsHwCursor
+  m_caps.m_occlusionQuery                 engine/GxDevice:kCapsOcclusionQuery
+  m_caps.m_pointParameters                engine/GxDevice:kCapsPointParameters
+  m_caps.m_pointScaleMax                  engine/GxDevice:kCapsMaxPointSize
+  m_caps.m_pointSprite                    engine/GxDevice:kCapsPointSprites
+  m_caps.m_blendFactor                    engine/GxDevice:kCapsBlendFactor
+  m_caps.unused_0114[0]                   engine/GxDevice:kCaps328
+  m_caps.unused_0114[4]                   engine/GxDevice:kCaps338
+  m_caps.m_shaderAlphaRef                 engine/GxDevice:kCaps344
+  m_caps.unk_0134                         engine/GxDevice:kCaps348
+  m_caps.unk_0138                         engine/GxDevice:kCaps34C
+  m_baseMipLevel                          engine/GxDevice:kBaseMipLevel
+  m_gammaRamp                             engine/GxDevice:kGammaRamp
+  m_systemGammaRamp                       engine/GxDevice:kGammaRampDesktop
+  sizeof(m_gammaRamp)                     engine/GxDevice:kGammaRampBytes
+  m_windowProc                            engine/GxDevice:kWndProc
+  m_context                               engine/GxDevice:kContext,engine/Gx:kContextField
+  m_intF5C                                engine/GxDevice:kFramePoisoned
+  m_windowVisible                         engine/GxDevice:kSizeTracking
+  m_windowFocus                           engine/GxDevice:kHasFocus
+  m_frameCount                            engine/GxDevice:kFrameCounter
+  m_viewportDirty                         engine/Gx:kViewportDirty
+  m_viewport.m_x.m_l                      engine/GxDevice:kViewportMinX
+  m_viewport.m_x.m_h                      engine/GxDevice:kViewportMaxX
+  m_viewport.m_y.m_l                      engine/GxDevice:kViewportMinY
+  m_viewport.m_y.m_h                      engine/GxDevice:kViewportMaxY
+  m_viewport.m_z.m_l                      engine/GxDevice:kViewportMinZ
+  m_viewport.m_z.m_h                      engine/GxDevice:kViewportMaxZ
+  m_projection                            engine/Gx:kDeviceProjection
+  m_projNative                            engine/GxDevice:kApiProjection
+  m_xforms                                engine/GxDevice:kMatrixStacks
+  m_xforms[GxXform_Projection].m_dirty    engine/GxDevice:kApiProjectionDirty
+  m_xforms[GxXform_View].m_level          engine/Gx:kDeviceViewIndex
+  m_xforms[GxXform_View].m_mtx            engine/Gx:kDeviceViewBase
+  m_clipPlaneMask                         engine/GxDevice:kClipPlaneDirty
+  m_clipPlane                             engine/GxDevice:kClipPlanes
+  m_scissorRectDirty                      engine/GxDevice:kScissorDirty
+  m_scissorRect                           engine/GxDevice:kScissorRect
+  m_lights                                engine/GxDevice:kLights
+  m_shaderList                            engine/GxDevice:kShaderTables
+  m_appMasterEnables                      engine/Gx:kMasterEnableField
+  m_poolList                              engine/GxDevice:kPoolList
+  m_poolList.m_terminator.m_prevLink      engine/GxDevice:kPoolListPrev
+  m_poolList.m_terminator.m_next          engine/GxDevice:kPoolListNext
+  m_bufLocked                             engine/GxDevice:kLockedBuf
+  m_vertexPool                            engine/GxDevice:kStreamPools                 # + pool type * 4: m_indexPool follows
+  m_streamBufs                            engine/GxDevice:kStreamBufs
+  m_primVertexFormatAttrib                engine/GxDevice:kAttribSlots
+  m_primVertexFormatBuf                   engine/Gx:kGxDeviceVertexStream
+  m_primVertexMask                        engine/GxDevice:kAttribEnabled
+  m_primVertexDirty                       engine/GxDevice:kAttribChanged
+  m_primVertexFormat                      engine/GxDevice:kVertexFormat
+  m_primVertexBuf                         engine/GxDevice:kVertexBuf
+  m_primVertexSize                        engine/GxDevice:kVertexStride
+  m_primIndexBuf                          engine/GxDevice:kIndexBuf
+  m_primIndexDirty                        engine/GxDevice:kIndexBufChanged
+  m_emergencyMem                          engine/GxDevice:kEmergencyLockBlock
+  m_emergencyMem[0].m_lock                engine/GxDevice:kEmergencyLock
+  m_appRenderStates.m_count               engine/GxDevice:kRsCount
+  m_appRenderStates.m_data                engine/GxDevice:kRsTable
+  m_hwRenderStates.m_count                engine/GxDevice:kRsShadowCount
+  m_hwRenderStates.m_data                 engine/GxDevice:kRsShadow
+  m_textures                              engine/GxDevice:kTexList
+  m_textures.m_terminator.m_next          engine/GxDevice:kTexListHead
+  m_textureTarget                         engine/GxDevice:kRenderTargets
+  m_textureTarget[0].m_apiSpecific        engine/Gx:kRtOverrideField                   # hand: "RT override active" flag; fork: colour target's API surface
+  m_scrShotClick                          engine/GxDevice:kScreenshotPending
+  m_scrShotWidth                          engine/GxDevice:kScreenshotWidth
+  m_scrShotHeight                         engine/GxDevice:kScreenshotHeight
+  m_cursorVisible                         engine/GxDevice:kCursorVisible
+  m_hwCursor                              engine/GxDevice:kCursorHardware
+  m_cursorHotspotX                        engine/GxDevice:kCursorHotspotX
+  m_cursorHotspotY                        engine/GxDevice:kCursorHotspotY
+  m_cursor                                engine/GxDevice:kCursorImage
+  m_cursorTexture                         engine/GxDevice:kCursorTexture
+
+type CGxDevice_TextureTarget Engine/Source/Gx/CGxDevice/CGxDevice.h CGxDevice::TextureTarget
+  sizeof                                  engine/GxDevice:kRenderTargetStride
+  m_texture                               engine/GxDevice:kRenderTargetTex
+  m_plane                                 engine/GxDevice:kRenderTargetFace
+  m_apiSpecific                           engine/GxDevice:kRenderTargetApi
+
+type CGxDeviceD3d Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h CGxDeviceD3d
+  sizeof                                  engine/GxDevice:kD3d9ObjectSize              # CGxDevice::NewD3d allocation
+  m_hwnd                                  engine/GxDevice:kWindow,engine/Gx:kWindowField
+  m_hwndClass                             engine/GxDevice:kWindowClassAtom
+  m_ownhwnd                               engine/GxDevice:kOwnsWindow
+  m_d3dLib                                engine/GxDevice:kD3dModule
+  m_d3d                                   engine/GxDevice:kD3d9
+  m_d3dDevice                             engine/GxDevice:kD3dDevice,engine/Gx:kD3DDeviceField
+  m_d3dCaps                               engine/GxDevice:kD3dCaps,engine/GxDevice:kD3dCaps9
+  m_defDepthStencilSurface                engine/GxDevice:kD3dOffscreenDepth
+  m_defColorSurface                       engine/GxDevice:kD3dBackBuffer,engine/Gx:kBackBufferField
+  m_defDepthSurface                       engine/GxDevice:kD3dDepthStencil,engine/Gx:kDepthSurfaceField
+  m_surface3B44                           engine/GxDevice:kD3dResolveSurface
+  m_eventQuery                            engine/GxDevice:kD3dEventQuery
+  m_hwCursorDirty                         engine/GxDevice:kD3dCursorDirty
+  m_texture3B58                           engine/GxDevice:kD3dPlaceholderTex
+
+type CGxDeviceD3d9Ex Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h CGxDeviceD3d9Ex
+  sizeof                                  engine/GxDevice:kD3d9ExObjectSize            # CGxDevice::NewD3d9Ex allocation
+
+type D3DCAPS9 Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h D3DCAPS9
+  VertexShaderVersion                     engine/GxDevice:kCaps9VertexShaderVersion
+  MaxVertexShaderConst                    engine/GxDevice:kCaps9MaxVertexShaderConst
+  PixelShaderVersion                      engine/GxDevice:kCaps9PixelShaderVersion
+
+type CGxFormat Engine/Source/Gx/CGxFormat.h CGxFormat
+  sizeof                                  engine/GxDevice:kFormatSize
+  m_hwTnL                                 engine/GxDevice:kFmtHwVertexProcessing
+  m_hwCursor                              engine/GxDevice:kFmtHwCursor
+  m_fixLag                                engine/GxDevice:kFmtGpuSync
+  m_window                                engine/GxDevice:kFmtWindowed
+  m_aspect                                engine/GxDevice:kFmtKeepAspect
+  m_maximize                              engine/GxDevice:kFmtWindowStyle
+  m_depthFormat                           engine/GxDevice:kFmtDepthFormat
+  m_size.x                                engine/GxDevice:kFmtWidth
+  m_size.y                                engine/GxDevice:kFmtHeight
+  m_backBufferCount                       engine/GxDevice:kFmtBackBuffers
+  m_multisampleCount                      engine/GxDevice:kFmtSamples
+  m_multisampleQuality                    engine/GxDevice:kFmtSampleQuality
+  m_colorFormat                           engine/GxDevice:kFmtColorFormat
+  m_refreshRate                           engine/GxDevice:kFmtRefreshRate
+  m_vsync                                 engine/GxDevice:kFmtVSync
+  m_stereoEnabled                         engine/GxDevice:kFmtStereo
+  m_fixedFunction[0]                      engine/GxDevice:kFmtMaxVertexProfile         # hand: max vertex profile; fork: fixedFunction[0]
+  m_fixedFunction[4]                      engine/GxDevice:kFmtMaxPixelProfile          # hand: max pixel profile; fork: fixedFunction[4]
+  m_pos.x                                 engine/GxDevice:kFmtPositionX
+  m_pos.y                                 engine/GxDevice:kFmtPositionY
+
+type CGxCaps Engine/Source/Gx/Types.h CGxCaps
+  sizeof                                  -
+
+type CGxGammaRamp Engine/Source/Gx/CGxGammaRamp.h CGxGammaRamp
+  sizeof                                  -
+
+type CGxMatrixStack Engine/Source/Gx/CGxMatrixStack.h CGxMatrixStack
+  sizeof                                  engine/GxDevice:kMatrixStackStride
+  m_level                                 engine/GxDevice:kMatrixStackTop
+  m_dirty                                 engine/GxDevice:kMatrixStackDirty
+  m_mtx                                   engine/GxDevice:kMatrixStackBase
+  m_flags                                 engine/GxDevice:kMatrixStackFlags
+
+type C44Matrix Engine/Source/Tempest/C44Matrix.h C44Matrix
+  sizeof                                  engine/Gx:kDeviceViewStride,game/M2:kBonePaletteStride
+
+type CGxApiLight Engine/Source/Gx/CGxLight.h CGxApiLight
+  sizeof                                  engine/GxDevice:kLightStride
+  m_dir                                   engine/GxDevice:kLightPosition
+  m_ambColor                              engine/GxDevice:kLightAmbient
+  m_dirColor                              engine/GxDevice:kLightDiffuse
+  m_specColor                             engine/GxDevice:kLightSpecular
+  m_constantAttenuation                   engine/GxDevice:kLightAttenuation
+  m_enable                                engine/GxDevice:kLightEnabled
+
+type CGxShaderTable Engine/Source/Storm/H/stpl.h,Engine/Source/Gx/CGxDevice/CGxShader.h TSHashTable<CGxShader, HASHKEY_STRI>
+  sizeof                                  engine/GxDevice:kShaderTableStride
+
+type CGxVertexAttrib Engine/Source/Gx/CGxDevice/Types.h CGxVertexAttrib
+  sizeof                                  engine/GxDevice:kAttribSlotStride
+  m_attrib                                engine/GxDevice:kAttribSlotAttrib
+  m_type                                  engine/GxDevice:kAttribSlotFormat
+  m_offset                                engine/GxDevice:kAttribSlotOffset
+  m_bufSize                               engine/GxDevice:kAttribSlotStrideB
+
+type EmergencyMem Engine/Source/Gx/CGxDevice/EmergencyMem.h EmergencyMem
+  sizeof                                  engine/GxDevice:kEmergencyLockStride
+
+type CGxAppRenderState Engine/Source/Gx/CGxDevice/CGxDevice.h CGxAppRenderState
+  sizeof                                  engine/GxDevice:kRsStride
+  m_value                                 engine/GxDevice:kRsValue
+  m_stackDepth                            engine/GxDevice:kRsSavedDepth
+  m_dirty                                 engine/GxDevice:kRsDirty
+
+type CGxStateBom Engine/Source/Gx/CGxDevice/CGxDevice.h CGxStateBom
+  sizeof                                  engine/GxDevice:kRsShadowStride
+
+type ShadowConstants Engine/Source/Gx/CGxDevice/CGxDevice.h ShadowConstants
+  sizeof                                  -
+  sizeof(constants)                       engine/Shader:kConstCacheBytes               # the half of s_shadowConstants[n] before the dirty range
+  dirtyMax                                -
+  dirtyMin                                -
+
+type CGxBatch Engine/Source/Gx/Types.h CGxBatch
+  sizeof                                  engine/GxDevice:kBatchSize
+  m_primType                              engine/GxDevice:kBatchPrim,engine/Gx:kGxBatchPrimType
+  m_start                                 engine/GxDevice:kBatchStart,engine/Gx:kGxBatchStartIndex
+  m_count                                 engine/GxDevice:kBatchCount,engine/Gx:kGxBatchIndexCount
+  m_minIndex                              engine/GxDevice:kBatchMinVert,engine/Gx:kGxBatchMinIndex
+  m_maxIndex                              engine/GxDevice:kBatchMaxVert,engine/Gx:kGxBatchMaxIndex
+
+type CGxPool Engine/Source/Gx/CGxPool.h CGxPool
+  sizeof                                  -
+  m_target                                engine/GxDevice:kPoolType
+  m_usage                                 engine/GxDevice:kPoolUsage
+  m_size                                  engine/GxDevice:kPoolSize,engine/Liquid:kPoolByteSize
+  m_apiSpecific                           engine/GxDevice:kPoolApiHandle
+  m_offset                                engine/GxDevice:kPoolStreamCursor
+  m_bufList                               engine/GxDevice:kPoolBufList
+  m_name                                  engine/GxDevice:kPoolName
+
+type CGxBuf Engine/Source/Gx/CGxBuf.h CGxBuf
+  sizeof                                  -
+  m_pool                                  engine/GxDevice:kBufPool,engine/Liquid:kBufPool
+  m_itemSize                              engine/Gx:kGxBufStreamStride,engine/Liquid:kBufStride
+  m_itemCount                             engine/GxDevice:kBufItemCount,engine/Liquid:kBufCount
+  m_size                                  engine/GxDevice:kBufBytes,engine/Liquid:kBufBytes
+  m_index                                 engine/Gx:kGxBufStreamOffset,engine/Liquid:kBufOffset   # hand: byte offset of the stream; fork: m_index
+  m_hasData                               engine/GxDevice:kBufHasData,engine/Liquid:kBufValid,game/M2:kOffGxBufBuilt
+  m_valid                                 engine/GxDevice:kBufValid,engine/Liquid:kBufGpuOk,game/M2:kOffGxBufValid
+  m_dirty                                 engine/GxDevice:kBufDirty
+
+type CGxTex Engine/Source/Gx/CGxTex.h CGxTex
+  sizeof                                  -
+  m_updateRect                            engine/GxDevice:kTexUpdateRect
+  m_width                                 engine/GxDevice:kTexWidth
+  m_height                                engine/GxDevice:kTexHeight
+  m_depth                                 engine/GxDevice:kTexDepth
+  m_target                                engine/GxDevice:kTexTarget
+  m_format                                engine/GxDevice:kTexFormat
+  m_dataFormat                            engine/GxDevice:kTexDataFormat
+  m_flags                                 engine/GxDevice:kTexFlags
+  m_userArg                               engine/GxDevice:kTexUserArg
+  m_userFunc                              engine/GxDevice:kTexFillCallback
+  m_apiSpecificData                       engine/GxDevice:kTexApiObject
+  m_apiSpecificData2                      engine/GxDevice:kTexApiObject2
+  m_link.m_next                           engine/GxDevice:kTexLinkNext
+  m_needsUpdate                           engine/GxDevice:kTexUpdatePending
+  m_needsCreation                         engine/GxDevice:kTexNeedsRecreate
+  m_needsFlagUpdate                       engine/GxDevice:kTexFlagsChanged
+
+type CGxShader Engine/Source/Gx/CGxDevice/CGxShader.h CGxShader
+  sizeof                                  engine/Shader:kCgxShaderWrapBytes            # hand: "allocation size that covers all fields the flush reads"
+  m_key.m_str                             engine/GxDevice:kShaderName                  # the TSHashObject key
+  m_refCount                              engine/GxDevice:kShaderRefCount
+  m_apiSpecific                           engine/GxDevice:kShaderApiObject,engine/Shader:kCgxShaderHandle
+  m_target                                engine/GxDevice:kShaderTarget
+  m_valid                                 engine/GxDevice:kShaderValid
+  m_loaded                                engine/GxDevice:kShaderCreateTried,engine/Shader:kCgxShaderCreated
+  m_code                                  -
+  m_code.m_count                          engine/GxDevice:kShaderCodeSize,engine/Shader:kCgxShaderByteLen
+  m_code.m_data                           engine/GxDevice:kShaderCode,engine/Shader:kCgxShaderBytePtr
+
+type TSGrowableArray_u8 Engine/Source/Storm/H/stpl.h TSGrowableArray<uint8_t>
+  sizeof                                  -
+  m_count                                 engine/GxDevice:kGrowableCount
+  m_data                                  engine/GxDevice:kGrowableData
+
+type CTexture Engine/Source/Services/Texture.h CTexture
+  sizeof                                  -
+  m_gxTex                                 engine/Gx:kTexHandleGxTex
+  m_filename                              engine/Gx:kTexHandleNameField,game/ADT:kOffTextureName
+
+type CShaderEffect Engine/Source/ShaderEffect/ShaderEffect.h CShaderEffect
+  sizeof                                  -
+  m_vertexShaders                         engine/Shader:kCollectionVtxSlots
+  m_pixelShaders                          engine/Shader:kCollectionPixSlots
+
+# The M2 render context: what the hand headers call the "draw context" of a batch draw.
+type CM2SceneRender Engine/Source/Model2/CM2SceneRender.h CM2SceneRender
+  sizeof                                  -
+  m_curElement                            engine/Gx:kDrawBatchCtxElementField,game/M2:kOffRenderCtxElement
+  m_curModel                              engine/Gx:kDrawBatchCtxModelField,game/M2:kOffDrawCtxInstance,game/M2:kOffRenderCtxInstance
+  m_curSkinSection                        engine/Gx:kDrawBatchCtxSectionField
+  m_curMaterial                           game/M2:kOffDrawCtxMaterial
+
+# Hand constants of these headers that are not a struct layout.
+skip engine/Gx:kMipTableSlots :: an array length (BLPHeader mip slots), not an offset
+skip engine/GxDevice:kIndexSize :: sizeof(uint16_t), a format fact rather than a layout
+skip engine/Shader:kEffectConstFogColorAlphaRef,engine/Shader:kEffectConstFogParams :: offsets into the static CShaderEffect::s_fogColorAlphaRef (statics.def), which the fork declares as an array, not a struct
+
+# =============================================================================================
+# Engine/Model2 and Services: models, shared data, scenes, particles, ribbons (game/M2.hpp,
+# game/Doodad.hpp, engine/Mem.hpp)
+# =============================================================================================
+
+type CM2Model Engine/Source/Model2/M2Model.h CM2Model
+  sizeof                                  -
+  m_flags                                 game/M2:kOffInstOwnerFlags
+  m_fFlags                                game/M2:kOffInstInitFlags
+  m_scene                                 game/M2:kOffInstScene,game/M2:kOffSceneNodeOwner   # hand (CharModelObject): "-> owner"; fork: the scene
+  m_shared                                game/M2:kOffInstModel,game/M2:kOffInstShared,game/Doodad:kInstModel
+  m_modelCallList                         game/M2:kOffInstCmdRingHead
+  m_modelCallTail                         game/M2:kOffInstCmdRingTail
+  m_frameStamp                            game/M2:kOffInstLastAnimFrame
+  m_animateNext                           game/M2:kOffInstAnimateNext
+  m_attachParent                          game/M2:kOffInstParent,game/Unit:kModelParentField
+  m_attachments                           game/M2:kOffInstAttachEnable
+  m_attachmentIndex                       game/M2:kOffInstAttachSlot
+  m_attachList                            game/M2:kOffInstAttachedHead
+  m_attachNext                            game/M2:kOffInstAttachedNext
+  m_lastAnimTime                          game/M2:kOffInstFreezeAnchor                # hand: freeze anchor; fork: last anim time
+  m_scaleSq                               game/M2:kOffInstViewDistSq                  # hand: squared view distance; fork: scaleSq
+  m_uint90                                game/M2:kOffInstConstTrackGate
+  m_bones                                 game/M2:kOffInstBoneStates
+  m_boneMatrices                          game/M2:kOffInstBonePalette
+  m_skinSections                          game/M2:kOffInstSectionVisible
+  m_worldTransform                        game/M2:kOffInstPlacement,game/Doodad:kInstWorldMatrix
+  m_worldTransform.d0                     game/Doodad:kInstTransX
+  m_worldTransform.d1                     game/Doodad:kInstTransY
+  m_worldTransform.d2                     game/Doodad:kInstTransZ
+  m_matrixF4                              game/M2:kOffInstViewRoot
+  m_frameOfReference                      game/M2:kOffInstTexBinding                  # hand: shared texture binding; fork: frame of reference
+  m_fadeAlpha                             game/M2:kOffInstSpeedBase                   # hand: base speed; fork: fade alpha
+  m_baseAlpha                             game/M2:kOffInstAlphaBase
+  m_diffuseTintR                          game/M2:kOffInstScaleBase                   # hand: float[3] base scale; fork: diffuse tint RGB
+  m_emissiveTintR                         game/M2:kOffInstTransBase                   # hand: float[3] base translation; fork: emissive tint RGB
+  m_effectiveAlpha                        game/M2:kOffInstSpeedStage                  # hand: staged speed; fork: effective alpha
+  m_alpha                                 game/M2:kOffInstAlphaStage
+  m_diffuseColor                          game/M2:kOffInstScaleStage                  # hand: staged scale; fork: diffuse colour
+  m_emissiveColor                         game/M2:kOffInstTransStage                  # hand: staged translation; fork: emissive colour
+  m_lightingCallback                      game/M2:kOffInstLightingCallbackFn
+  m_lightingArg                           game/M2:kOffInstLightingUserData
+  m_ribbonEmitters                        game/M2:kOffInstRenderObjArray              # hand: "render objects, one per skin batch"; fork: ribbon emitters
+  m_particles                             game/M2:kOffInstEmitterCells
+  m_particleEmitters                      game/M2:kOffInstEmitterArray
+  m_optGeo                                game/M2:kOffInstSectionOverride,game/M2:kOffInstGeometryCtx
+
+type CM2Shared Engine/Source/Model2/M2Shared.h CM2Shared
+  sizeof                                  -
+  m_cache                                 game/M2:kOffSharedFileRecord                # hand: "-> the shared file record"; fork: the cache
+  m_flags                                 game/M2:kOffModelFlags
+  m_asyncObject                           game/M2:kOffModelAsyncRead
+  m_lowPrioritySequenceCapacity           game/M2:kOffModelExtSeqCount
+  m_lowPrioritySequenceBuffers            game/M2:kOffModelExtSeqArray
+  m_lowPrioritySequenceCount              game/M2:kOffModelExtSeqCursor
+  m_fileName                              game/M2:kOffModelPathStem,game/Doodad:kModelFullPath
+  m_fileNameWithoutPath                   game/Doodad:kModelFileName
+  m_data                                  game/M2:kOffModelHeader,game/Doodad:kModelHeader
+  m_fileSize                              game/M2:kOffModelFileSize
+  m_skinData                              game/M2:kOffModelSkin
+  m_indexPool                             game/M2:kOffSharedIndexPool
+  m_indexBuf                              game/M2:kOffSharedIndexBuf
+  m_vertexPool                            game/M2:kOffSharedVertexPool
+  m_vertexBuf                             game/M2:kOffSharedVertexBuf
+  m_effects                               game/M2:kOffModelSubMeshCopy                # hand: per-submesh object array; fork: shader effects
+  m_skinSections                          game/M2:kOffModelSubmeshBuf                 # hand: submesh copy buffer; fork: skin sections
+  m_instances                             game/M2:kOffSharedCoInstanceCount,game/M2:kOffSharedInstanceCopies
+  m_maxInstances                          game/M2:kOffSharedMaxInstances
+  m_billboardBoneCount                    game/M2:kOffSharedAnimGateCount
+
+type CM2Cache Engine/Source/Model2/M2Cache.h CM2Cache
+  sizeof                                  -
+  m_flags                                 game/M2:kOffM2FileFlags
+
+type CM2SequenceLoad Engine/Source/Model2/M2Shared.h CM2SequenceLoad
+  sizeof                                  -
+  m_asyncObject                           game/M2:kOffNodeRecord
+
+type CM2Scene Engine/Source/Model2/M2Scene.h CM2Scene
+  sizeof                                  -
+  m_cache                                 engine/Mem:kOffM2SceneCache
+  m_time                                  game/M2:kOffSceneClock
+  m_frameStamp                            game/M2:kOffSceneFrame
+  m_animateList                           game/M2:kOffSceneAnimateHead
+  m_view                                  game/M2:kOffSceneAnimateCtx
+
+type M2Element Engine/Source/Model2/M2Scene.h M2Element
+  sizeof                                  -
+  m_alpha                                 game/M2:kOffElementAlpha
+  m_index                                 game/M2:kOffElementBatchIndex
+  m_count                                 engine/Gx:kM2ElementRunLengthField
+  m_skinSection                           engine/Gx:kM2ElementSectionField
+
+type M2ModelOptGeo Engine/Source/Model2/M2Model.h M2ModelOptGeo
+  sizeof                                  -
+  m_skinSections                          game/M2:kOffGeoCtxGroups
+  m_skinSectionCount                      game/M2:kOffGeoCtxGroupCount
+  m_batchRanges                           game/M2:kOffGeoCtxRanges
+  m_indexBuf                              game/M2:kOffGeoCtxIndexBuf
+
+type M2ModelBone Engine/Source/Model2/M2Model.h M2ModelBone
+  sizeof                                  game/M2:kRuntimeBoneStride
+  m_translation.m_currentValue            game/M2:kOffRtBoneTransValue
+  m_rotation.m_currentValue               game/M2:kOffRtBoneQuatValue
+  m_scale.m_currentValue                  game/M2:kOffRtBoneScaleValue
+  m_sequence.m_animIndex                  game/M2:kOffRuntimeBoneAnimIdx
+  m_sequence.m_sequenceIndex              game/M2:kOffRtBoneAssignedSeq
+  m_sequence.m_startTime                  game/M2:kOffRtBoneSeqStart
+  m_sequence.m_endTime                    game/M2:kOffRtBoneSeqEnd
+  m_sequence.m_speed                      game/M2:kOffRtBoneTimeScale
+  m_sequence.m_startOffset                game/M2:kOffRtBoneTimeOffset
+  m_secondarySequence.m_sequenceIndex     game/M2:kOffRtBoneBlendSeq
+  m_proceduralTransform                   game/M2:kOffRtBoneProcMatrix
+  m_flags                                 game/M2:kOffRtBoneFlagMask
+  m_sequenceId                            game/M2:kOffRtBonePendingSeq
+  m_variationIndex                        game/M2:kOffRtBonePrevSeqId
+  m_blendFactor                           game/M2:kOffRtBoneBlendWeight
+
+type M2ModelParticle Engine/Source/Model2/M2Model.h M2ModelParticle
+  sizeof                                  game/M2:kEmitterCellStride
+  m_lifeTrack.m_currentValue              game/M2:kOffCellLifespan
+  m_emissionRateTrack.m_currentValue      game/M2:kOffCellRate
+  m_visibilityTrack.m_currentValue        game/M2:kOffCellEnabled
+
+type CParticleEmitter2 Engine/Source/Services/ParticleSystem2.h CParticleEmitter2
+  sizeof                                  -
+  m_textureCellShift                      game/M2:kOffEmitterCellShift
+  m_textureCellWidth                      game/M2:kOffEmitterCellWidth
+  m_textureCellHeight                     game/M2:kOffEmitterCellHeight
+  m_particles.m_data                      game/M2:kOffEmitterParticlePool
+  m_liveList.m_count                      game/M2:kOffEmitterLiveCount
+  m_liveList.m_data                       game/M2:kOffEmitterLiveIndices
+  m_childEmitterCount                     game/M2:kOffEmitterChildCount
+  m_childEmitters                         game/M2:kOffEmitterChildArray
+  m_params.m_emissionRate                 game/M2:kOffEmitterRate
+  m_params.m_emissionRateVariation        game/M2:kOffEmitterRateVary
+  m_params.m_life                         game/M2:kOffEmitterLifespan
+  m_params.m_lifeVariation                game/M2:kOffEmitterLifespanVary
+  m_params.m_materialBlend                game/M2:kOffEmitterBlendState
+  m_params.m_materialFlags                game/M2:kOffEmitterMaterialFlags
+  m_params.m_headCellTrack                game/M2:kOffEmitterHeadCellBlock
+  m_textureRows                           game/M2:kOffEmitterAtlasRows
+  m_textureCols                           game/M2:kOffEmitterAtlasCols
+  m_flags                                 game/M2:kOffEmitterFlags
+  m_xform                                 game/M2:kOffEmitterParentModel              # hand: "frame of reference passed to EmitNewParticles"; fork: the emitter transform
+
+type CParticle2 Engine/Source/Services/ParticleSystem2.h CParticle2
+  sizeof                                  -
+  m_age                                   game/M2:kOffParticleAge
+  m_position                              game/M2:kOffParticlePosition
+  m_velocity                              game/M2:kOffParticleVelocity
+
+type CRibbonEmitter Engine/Source/Services/RibbonEmitter.h CRibbonEmitter
+  sizeof                                  -
+  m_materials.m_count                     game/M2:kOffRibbonLayerCount
+  m_textures.m_data                       game/M2:kOffRibbonTexHandlePtr
+  m_flags                                 game/M2:kOffRenderObjFlags                  # hand: "render object" visibility flags, consistent with kOffInstRenderObjArray
+
+type CAsyncObject Engine/Source/Services/Types.h CAsyncObject
+  sizeof                                  -
+  m_file                                  game/World:kOffAsyncFile
+  m_buffer                                game/World:kOffAsyncBuffer,game/M2:kOffRecordBuffer
+  m_size                                  game/World:kOffAsyncSize,game/M2:kOffRecordSize
+  m_userArg                               game/World:kOffAsyncCtx
+  m_userPostloadCallback                  game/World:kOffAsyncCallback
+
+# The M2 file format as the fork parses it in place (the "parsed file-header fields").
+type M2Data Engine/Source/Model2/M2Data.h M2Data
+  sizeof                                  -
+  m_flags                                 game/M2:kOffHdrGlobalFlags
+  m_sequences.m_count                     game/M2:kOffHdrSeqCount
+  m_sequences.m_offset                    game/M2:kOffHdrSeqPtr
+  m_bones.m_count                         game/M2:kOffHdrBoneCount
+  m_bones.m_offset                        game/M2:kOffHdrBoneArray
+  m_boneIndicesById.m_count               game/M2:kOffHdrKeyBoneCount
+  m_boneIndicesById.m_offset              game/M2:kOffHdrKeyBoneArray
+  m_boneCombos.m_count                    game/M2:kOffHdrBoneCombosCount
+  m_boneCombos.m_offset                   game/M2:kOffHdrBoneCombosPtr
+  m_bounds.m_extent.b.x                   game/Doodad:kHdrBBoxMinX
+  m_bounds.m_extent.b.y                   game/Doodad:kHdrBBoxMinY
+  m_bounds.m_extent.b.z                   game/Doodad:kHdrBBoxMinZ
+  m_bounds.m_extent.t.x                   game/Doodad:kHdrBBoxMaxX
+  m_bounds.m_extent.t.y                   game/Doodad:kHdrBBoxMaxY
+  m_bounds.m_extent.t.z                   game/Doodad:kHdrBBoxMaxZ
+  m_attachments.m_count                   game/M2:kOffHdrAttachCount
+  m_attachments.m_offset                  game/M2:kOffHdrAttachPtr
+  m_attachmentIndicesById.m_count         game/M2:kOffHdrBoneIdxLutCount              # hand: bone-index-by-id LUT; fork: attachment indices by id
+  m_attachmentIndicesById.m_offset        game/M2:kOffHdrBoneIdxLutPtr
+
+type M2Sequence Engine/Source/Model2/M2Data.h M2Sequence
+  sizeof                                  game/M2:kSeqStride
+  m_id                                    game/M2:kOffSeqId
+  m_variationIndex                        game/M2:kOffSeqSubId
+  m_duration                              game/M2:kOffSeqLength
+  m_moveSpeed                             game/M2:kOffSeqMovingSpeed
+  m_flags                                 game/M2:kOffSeqFlags
+  m_frequency                             game/M2:kOffSeqFrequency
+  m_replay.m_l                            game/M2:kOffSeqRangeMin
+  m_replay.m_h                            game/M2:kOffSeqRangeMax
+  m_blendTime                             game/M2:kOffSeqBlendTime
+  m_bounds.m_extent.b                     game/M2:kOffSeqBBoxMin
+  m_bounds.m_extent.t                     game/M2:kOffSeqBBoxMax
+  m_bounds.m_radius                       game/M2:kOffSeqBBoxRadius
+  m_variationNext                         game/M2:kOffSeqNextAnimation
+  m_aliasNext                             game/M2:kOffSeqAliasNext
+
+type M2CompBone Engine/Source/Model2/M2Data.h M2CompBone
+  sizeof                                  game/M2:kBoneStride
+  m_boneId                                game/M2:kOffBoneKeyId
+  m_flags                                 game/M2:kOffBoneFlags
+  m_parentIndex                           game/M2:kOffBoneParent
+  m_boneNameCRC                           game/M2:kOffBoneNameCrc
+  m_translationTrack                      game/M2:kOffBoneTransTrack
+  m_rotationTrack                         game/M2:kOffBoneRotTrack
+  m_scaleTrack                            game/M2:kOffBoneScaleTrack
+  m_pivot                                 game/M2:kOffBonePivot
+
+type M2Track_C3Vector Engine/Source/Model2/M2Data.h M2Track<C3Vector>
+  sizeof                                  -
+  m_sequenceTimes.m_count                 game/M2:kOffTrackTimestampsCount
+  m_sequenceTimes.m_offset                game/M2:kOffTrackTimestampsPtr
+  m_sequenceKeys.m_count                  game/M2:kOffTrackValuesCount
+  m_sequenceKeys.m_offset                 game/M2:kOffTrackValuesPtr
+
+type M2CompQuat Engine/Source/Model2/M2Data.h M2CompQuat
+  sizeof                                  game/M2:kTrackQuatStride
+
+type C3Vector Engine/Source/Tempest/C3Vector.h C3Vector
+  sizeof                                  game/M2:kTrackVec3Stride
+
+type M2Attachment Engine/Source/Model2/M2Data.h M2Attachment
+  sizeof                                  game/M2:kAttachStride
+  m_bone                                  game/M2:kOffAttachBone
+  m_position                              game/M2:kOffAttachPos
+
+type M2Vertex Engine/Source/Model2/M2Data.h M2Vertex
+  sizeof                                  game/M2:kModelVertexStride
+  m_position                              game/M2:kOffVertexPosition
+  m_weights                               game/M2:kOffVertexWeights
+  m_indices                               game/M2:kOffVertexBoneSlots
+
+type M2Material Engine/Source/Model2/M2Data.h M2Material
+  sizeof                                  -
+  m_blendMode                             game/M2:kOffMaterialBlend
+
+type M2SkinSection Engine/Source/Model2/M2Data.h M2SkinSection
+  sizeof                                  game/M2:kGeoCtxGroupStride
+
+type M2Particle Engine/Source/Model2/M2Data.h M2Particle
+  sizeof                                  -
+  m_blendMode                             game/M2:kParticleRecBlendMode
+  m_headCellTrack                         game/M2:kParticleRecHeadCells
+
+skip game/M2:kTrackTimestampStride :: sizeof(uint32_t), a format fact rather than a layout
+skip game/M2:kShadowRunStride,game/M2:kShadowRunCountField :: dword indices into a co-instance run record the fork has no type for
+skip game/M2:kGxVtblBufLock,game/M2:kGxVtblBufUnlock :: vtable slot byte offsets (CGxDevice::BufLock / BufUnlock), not data members
+
+# =============================================================================================
+# WoW/Common: character components and the texture cache (game/M2.hpp)
+# =============================================================================================
+
+type CCharacterComponent WoW/Common/ComponentCore/CharacterComponent.h CCharacterComponent
+  sizeof                                  -
+  m_flags                                 game/M2:kOffCharComponentRebuild            # hand: "int[]: loaded texture handle per slot"; fork: flags
+  m_dirtySections                         game/M2:kOffCharComponentDirty
+  m_data.m_preferences.m_raceID           game/M2:kOffCmoRace,game/M2:kOffCharComponentRace
+  m_data.m_preferences.m_sexID            game/M2:kOffCmoGender,game/M2:kOffCharComponentSex
+  m_data.m_model                          game/M2:kOffCmoSceneNode,game/M2:kOffCharComponentInstance
+  m_data.m_geosets                        game/M2:kOffCharComponentGeosetSlots
+  m_baseSkinTexture                       game/M2:kOffCharComponentSheet
+  m_baseVariation                         game/M2:kOffCharComponentTextures
+  m_itemDisplayID                         game/M2:kOffCmoSlotItemId
+  m_request                               game/M2:kOffCharComponentComposeRequest
+
+type CompSectionInfo WoW/Common/ComponentCore/CharacterComponent.h CompSectionInfo
+  sizeof                                  game/M2:kCharRegionRectStride
+
+type CACHEENTRY WoW/Common/TextureCache.h CACHEENTRY
+  sizeof                                  -
+  m_asyncObject                           game/M2:kOffTexEntryPendingRead
+  m_info.m_width                          game/M2:kOffTexEntryWidth
+  m_data                                  game/M2:kOffTexEntryImage
+
+skip game/M2:kOffTexEntryLevelCount,game/M2:kOffTexEntryAlphaBits :: bit-fields (TCTEXTUREINFO::m_mipCount:8 / m_alphaSize:8 in the dword after m_width/m_height); offsetof is not defined for bit-fields
+skip game/M2:kOffTexEntryFlags :: bit-fields (CACHEENTRY::m_size:20 / m_loadFailed:1 in the dword after m_data); offsetof is not defined for bit-fields
+skip game/M2:kOffSourceDescMode :: byte 5 of a six-byte blit description passed by value; the fork has no type for it
+
+# =============================================================================================
+# WoW/DB: client database stores and records (game/Dbc.hpp, game/DB2.hpp)
+# =============================================================================================
+
+type SpellRec WoW/Source/DB/Rec/SpellRec.h SpellRec
+  sizeof                                  game/Dbc:kRecordSize
+  m_name                                  game/Dbc:kOffName
+  m_nameSubtext                           game/Dbc:kOffRank
+  m_description                           game/Dbc:kOffDescription
+  m_auraDescription                       game/Dbc:kOffTooltip
+
+type ItemRec WoW/Source/DB/Rec/ItemRec.h ItemRec
+  sizeof                                  game/DB2:kRecordSize@33
+
+type ItemDisplayInfoRec WoW/Source/DB/Rec/ItemDisplayInfoRec.h ItemDisplayInfoRec
+  sizeof                                  game/DB2:kRecordSize@146                   # hand: "byte stride between records in the storage array"
+  m_modelName[0]                          game/DB2:kOffModel1
+  m_modelName[1]                          game/DB2:kOffModel2
+  m_modelTexture[0]                       game/DB2:kOffTex1
+  m_modelTexture[1]                       game/DB2:kOffTex2
+  m_inventoryIcon[1]                      game/DB2:kOffIcon2
+  m_particleColorID                       game/DB2:kOffParticleId
+
+type CreatureModelDataRec WoW/Source/DB/Rec/CreatureModelDataRec.h CreatureModelDataRec
+  sizeof                                  -
+  m_modelName                             game/DB2:kOffModelName
+
+type CreatureDisplayInfoRec WoW/Source/DB/Rec/CreatureDisplayInfoRec.h CreatureDisplayInfoRec
+  sizeof                                  -
+  m_modelID                               game/DB2:kOffModelId
+
+type ChrRacesRec WoW/Source/DB/Rec/ChrRacesRec.h ChrRacesRec
+  sizeof                                  -
+  m_clientPrefix                          game/DB2:kOffRecordPrefix
+
+type CharSectionsRec WoW/Source/DB/Rec/CharSectionsRec.h CharSectionsRec
+  sizeof                                  -
+  m_textureName                           game/M2:kOffSectionTexturePaths
+  m_flags                                 game/M2:kOffSectionFlags
+
+type LiquidTypeRec WoW/Source/DB/Rec/LiquidTypeRec.h LiquidTypeRec
+  sizeof                                  -
+  m_maxDarkenDepth                        engine/Liquid:kRowMaxDarkenDepth
+  m_fogDarkenIntensity                    engine/Liquid:kRowFogDarkenIntensity
+  m_ambDarkenIntensity                    engine/Liquid:kRowAmbDarkenIntensity
+  m_dirDarkenIntensity                    engine/Liquid:kRowDirDarkenIntensity
+  m_materialID                            engine/Liquid:kRowMaterialId,game/ADT:kLiquidTypeMaterialId
+
+type GameObjectDisplayInfoRec WoW/Source/DB/Rec/GameObjectDisplayInfoRec.h GameObjectDisplayInfoRec
+  sizeof                                  -
+  m_modelName                             game/GameObject:kDisplayInfoModel
+
+# The standard store, instantiated on SpellRec; the layout does not depend on T.
+type WowClientDB_SpellRec WoW/Source/DB/WowClientDB.h,WoW/Source/DB/Rec/SpellRec.h WowClientDB<SpellRec>
+  sizeof                                  game/Dbc:kSize
+  m_loaded                                game/Dbc:kOffLoaded
+  m_numRecords                            game/Dbc:kOffRecordCount
+  m_maxID                                 game/Dbc:kOffMaxId
+  m_minID                                 game/Dbc:kOffMinId
+  m_strings                               game/Dbc:kOffStringTable
+  m_records                               game/Dbc:kOffRecords
+  m_recordsById                           game/Dbc:kOffRecordsById
+
+# The compressible (RLE) store, instantiated on SpellRec.
+type WowClientDB_RLE_SpellRec WoW/Source/DB/WowClientDB.h,WoW/Source/DB/Rec/SpellRec.h WowClientDB_RLE<SpellRec>
+  sizeof                                  -
+  m_data                                  game/Dbc:kOffRecordBlock
+  m_records                               game/Dbc:kOffRowPtrs
+
+skip game/Dbc:kOffVtable :: the vtable pointer of WowClientDB_Base; not a data member
+skip game/Dbc:kOffVtableById :: the vtable pointer of the IDatabase<T> base (the "by id" interface); not a data member
+skip game/Dbc:kSlotDtor,game/Dbc:kSlotLoad,game/Dbc:kSlotUnused,game/Dbc:kSlotLoadRecords,game/Dbc:kSlotGetRecordByIndex,game/Dbc:kSlotFreeStorage,game/Dbc:kSlotReset,game/Dbc:kSlotRecordsById :: vtable slot indices, not data members
+
+# =============================================================================================
+# WoW/Object: objects, units, game objects and their descriptor blocks (game/Unit.hpp,
+# game/GameObject.hpp)
+# =============================================================================================
+
+type CGObject_C WoW/Source/Object/ObjectClient/Object_C.h CGObject_C
+  sizeof                                  -
+  m_obj                                   game/Unit:kObjectHeaderField
+  m_worldModel                            game/Unit:kUnitModelField
+
+type CGObjectData WoW/Source/Object/Object.h CGObjectData
+  sizeof                                  -                                            # the bias of the unit/game-object descriptor fields below
+  m_guid                                  game/Unit:kHeaderGuidField
+  m_type                                  game/Unit:kHeaderTypeField
+  m_entryID                               game/GameObject:kDescEntry
+  m_scale                                 game/GameObject:kDescScale
+
+type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
+  sizeof                                  -
+  m_movementData.m_position               game/Unit:kUnitPositionField
+  m_characterComponent                    game/Unit:kUnitCharacterComponentField
+
+# The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
+type CGUnitData WoW/Source/Object/Unit.h CGUnitData
+  sizeof                                  -
+  m_unitFieldBoundingradius               game/Unit:kDescUnitBoundingRadius+0x18
+  m_unitFieldCombatreach                  game/Unit:kDescUnitCombatReach+0x18
+  m_unitFieldMountdisplayid               game/Unit:kDescUnitMountDisplayId+0x18
+
+type CGGameObject_C WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C
+  sizeof                                  -
+  m_typeData                              game/GameObject:kTypeHelper
+
+type CGGameObject_C_TypeBase WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C_TypeBase
+  sizeof                                  -
+  m_owner                                 game/GameObject:kHelperOwner
+
+type CGGameObject_C_Type_WorldObj WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C_Type_WorldObj
+  sizeof                                  -
+  m_worldObject                           game/GameObject:kHelperWorldDef
+
+# The game-object descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
+type CGGameObjectData WoW/Source/Object/GameObject.h CGGameObjectData
+  sizeof                                  -
+  m_displayID                             game/GameObject:kDescDisplayId+0x18
+  m_flags                                 game/GameObject:kDescFlags+0x18
+  m_parentRotation                        game/GameObject:kDescParentRotation+0x18
+  m_state                                 game/GameObject:kDescBytes1+0x18
+
+skip game/Unit:kVtNamePosition,game/Unit:kVtPosition,game/Unit:kVtRawPosition,game/Unit:kVtFacing :: vtable slot indices of CGObject_C, not data members
+
+# =============================================================================================
+# WoW/WorldClient: terrain, WMOs, doodads, the world (game/ADT.hpp, game/WMO.hpp,
+# game/Doodad.hpp, game/World.hpp, game/WorldScene.hpp, engine/Draw.hpp, engine/Liquid.hpp)
+# =============================================================================================
+
+type CMapArea WoW/Source/WorldClient/MapArea.h CMapArea
+  sizeof                                  -
+  m_index.x                               game/ADT:kOffTileIdxFirst,game/World:kOffTileIdxFirst
+  m_index.y                               game/ADT:kOffTileIdxSecond,game/World:kOffTileIdxSecond
+  m_textures.m_data                       game/ADT:kOffTexOwnerHandleArray
+  m_file                                  game/ADT:kOffTileFileHandle,game/World:kOffTileFileHandle
+  m_asyncObject                           game/ADT:kOffTileAsyncRead,game/World:kOffTileAsyncRead
+  m_fileBuffer                            game/ADT:kOffTileFileBuffer,game/World:kOffTileFileBuffer
+  m_fileSize                              game/ADT:kOffTileFileSize,game/World:kOffTileFileId   # World.hpp calls it "file id"
+  m_mapChunks                             game/ADT:kOffTileChunkSlots
+  sizeof(m_mapChunks[0])                  game/ADT:kTileSlotStride
+
+type CMapAreaTexture WoW/Source/WorldClient/Types.h CMapAreaTexture
+  sizeof                                  game/ADT:kTexOwnerHandleStride
+
+type CMapAreaLow WoW/Source/WorldClient/MapLowDetail.h CMapAreaLow
+  sizeof                                  -
+  m_bbox.b.x                              game/ADT:kOffAreaLowMinX
+  m_bbox.b.y                              game/ADT:kOffAreaLowMinY
+  m_bbox.b.z                              game/ADT:kOffAreaLowMinZ
+  m_bbox.t.x                              game/ADT:kOffAreaLowMaxX
+  m_bbox.t.y                              game/ADT:kOffAreaLowMaxY
+  m_bbox.t.z                              game/ADT:kOffAreaLowMaxZ
+  m_sphere.c.x                            game/ADT:kOffAreaLowCenterX
+  m_sphere.c.y                            game/ADT:kOffAreaLowCenterY
+  m_sphere.c.z                            game/ADT:kOffAreaLowCenterZ
+  m_sphere.r                              game/ADT:kOffAreaLowRadius
+  m_topLeft.x                             game/ADT:kOffAreaLowOriginX
+  m_topLeft.y                             game/ADT:kOffAreaLowOriginY
+  m_index.x                               game/ADT:kOffAreaLowCol
+  m_index.y                               game/ADT:kOffAreaLowRow
+  m_indexCount                            game/ADT:kOffAreaLowRenderBudget
+  m_heights                               game/ADT:kOffAreaLowMareData
+  m_holes                                 game/ADT:kOffAreaLowMahoData
+
+type CMapChunk WoW/Source/WorldClient/MapChunk.h CMapChunk
+  sizeof                                  -
+  m_parentLinkList.m_terminator.m_next    game/ADT:kOffChunkTexOwnerSrc               # hand: "(*(chunk+0x20) & ~1) + 8" reaches the tile
+  m_aIndex.x                              game/ADT:kOffMapChunkIndexX
+  m_aIndex.y                              game/ADT:kOffMapChunkIndexY
+  m_cOffset.x                             game/ADT:kOffMapChunkGlobalX
+  m_cOffset.y                             game/ADT:kOffMapChunkGlobalY
+  m_bbox                                  game/ADT:kOffChunkBboxPrimary
+  m_bbox2                                 game/ADT:kOffChunkBboxSecondary
+  m_doodadDefLinkList                     game/Doodad:kChunkDoodadLinkOff
+  m_doodadDefLinkList.m_terminator.m_next game/Doodad:kChunkDoodadHead
+  m_chunkInfoBeginPtr                     game/ADT:kOffChunkRawMcnk
+  m_header                                game/ADT:kOffChunkMcnkHeader
+  m_lowQualityTexMap                      game/ADT:kOffChunkEffectLayerMap
+  m_predTexture                           game/ADT:kOffChunkNoEffectMap
+  m_height                                game/ADT:kOffChunkMcvt
+  m_vertexShading                         game/ADT:kOffChunkMccv
+  m_normals                               game/ADT:kOffChunkMcnr
+  m_shadowMap                             game/ADT:kOffChunkMcsh
+  m_layers                                game/ADT:kOffChunkMcly
+  m_additionalShadowmap                   game/ADT:kOffChunkMcal                      # hand: MCAL base; fork: additional shadow map
+  m_mcrfPtr                               game/ADT:kOffChunkMcrf
+  m_liquid                                game/ADT:kOffChunkMclq
+  m_soundEmitters                         game/ADT:kOffChunkMcse
+
+type SMChunk WoW/Source/WorldClient/MapChunk.h SMChunk
+  sizeof                                  -
+  m_nLayers                               game/ADT:kOffMcnkNLayers
+
+type CMapRenderChunk WoW/Source/WorldClient/MapRenderChunk.h CMapRenderChunk
+  sizeof                                  -
+  m_layersCount                           engine/Draw:kOffNodeLayerCount,game/ADT:kOffChunkNodeLayerCount
+  m_renderFlags                           game/ADT:kOffChunkNodeFlags
+  m_mapChunks[0]                          game/ADT:kOffChunkNodeChunk
+  m_layers                                game/ADT:kOffChunkLayerRecords
+  m_terrainBlendTexture                   game/ADT:kOffChunkNodeAlphaRT
+  m_batch                                 game/ADT:kOffChunkDrawBatch
+
+type CMapRenderChunkLayer WoW/Source/WorldClient/MapRenderChunk.h CMapRenderChunkLayer
+  sizeof                                  game/ADT:kChunkLayerRecordStride
+  m_flags                                 game/ADT:kOffLayerSlotFlags
+  m_layerIndex                            game/ADT:kOffLayerSlotIndex
+  m_texture                               game/ADT:kOffLayerSlotTexture
+  m_textureId                             game/ADT:kOffLayerSlotTexId
+  m_layerTexture                          game/ADT:kOffLayerSlotAlpha
+  m_owner                                 game/ADT:kOffLayerSlotNode
+
+skip game/ADT:kGxDeviceDrawVtbl :: vtable slot byte offset of CGxDevice::Draw, not a data member
+
+type CMapBaseObjLink WoW/Source/WorldClient/CMapBaseObjLink.h CMapBaseObjLink
+  sizeof                                  -
+  m_owner                                 game/Doodad:kNodeDoodad
+  m_ref                                   game/WorldScene:kOffLinkDefInst
+
+type SMDoodadDef WoW/Source/WorldClient/Map.h SMDoodadDef
+  sizeof                                  -
+  m_position.x                            game/Doodad:kMddfPosX
+  m_position.y                            game/Doodad:kMddfPosY
+  m_position.z                            game/Doodad:kMddfPosZ
+  m_scale                                 game/Doodad:kMddfScale
+
+type SMMapObjDef WoW/Source/WorldClient/Map.h SMMapObjDef
+  sizeof                                  -
+  m_scale                                 game/WMO:kOffModfScale
+
+type CMapDoodadDef WoW/Source/WorldClient/MapDoodadDef.h CMapDoodadDef
+  sizeof                                  -
+  m_refCount                              game/Doodad:kRefCount
+  m_flags                                 game/Doodad:kFlags
+  m_model                                 game/Doodad:kInstance
+  m_sphere.c.x                            game/Doodad:kBBoxMinX                       # hand: bbox min; fork: the sphere centre
+  m_sphere.c.y                            game/Doodad:kBBoxMinY
+  m_sphere.c.z                            game/Doodad:kBBoxMinZ
+  m_bbox.b.x                              game/Doodad:kCenterX                        # hand: sphere centre; fork: bbox min
+  m_bbox.b.y                              game/Doodad:kCenterY
+  m_bbox.b.z                              game/Doodad:kCenterZ
+  m_bbox.t.x                              game/Doodad:kBBoxMaxX
+  m_bbox.t.y                              game/Doodad:kBBoxMaxY
+  m_bbox.t.z                              game/Doodad:kBBoxMaxZ
+  m_position.x                            game/Doodad:kPosX
+  m_position.y                            game/Doodad:kPosY
+  m_position.z                            game/Doodad:kPosZ
+  m_scale                                 game/Doodad:kScale
+  m_hashval                               game/Doodad:kHashKey
+  m_key.m_key                             game/Doodad:kHashKey2
+  m_mat                                   game/Doodad:kWorldMatrix
+  m_mat.d0                                game/Doodad:kWorldMatrixTransX
+  m_mat.d1                                game/Doodad:kWorldMatrixTransY
+  m_mat.d2                                game/Doodad:kWorldMatrixTransZ
+
+type CMapDoodadDefHash Engine/Source/Storm/H/stpl.h,WoW/Source/WorldClient/MapDoodadDef.h TSHashTable<CMapDoodadDef, HASHKEY_DWORD>
+  sizeof                                  -
+  m_fulllist.m_linkoffset                 game/Doodad:kHashListLinkOffset
+  m_fulllist.m_terminator.m_next          game/Doodad:kHashListFirst
+
+type CMapObj WoW/Source/WorldClient/MapObj.h CMapObj
+  sizeof                                  -
+  m_wmoName                               game/WMO:kOffNameInline
+  m_header                                game/WMO:kOffMohd
+  m_skybox                                game/WMO:kOffMosb
+  m_groupInfo                             game/WMO:kOffMogiTable
+  m_portalList                            game/WMO:kOffMopt
+  m_doodadSetList                         game/WMO:kOffRootMods
+  m_doodadNameList                        game/WMO:kOffModn
+  m_doodadDefList                         game/WMO:kOffRootModd
+  m_materialList                          game/WMO:kOffMaterialBase
+  m_groupInfoCount                        game/WMO:kOffMogiCount
+  m_portalsCount                          game/WMO:kOffMoptCount
+  m_doodadSetCount                        game/WMO:kOffRootDoodadSets
+  m_doodadDefCount                        game/WMO:kOffRootDoodadDefs
+  m_materialsCount                        game/WMO:kOffMaterialCount
+  m_pWmoData                              game/WMO:kOffRootBuffer
+  m_wmoFileSize                           game/WMO:kOffRootSize
+  m_asyncObject                           game/WMO:kOffRootAsyncHandle
+  m_isGroupLoaded                         game/WMO:kOffRootLoaded
+  m_mapObjGroupCount                      game/WMO:kOffGroupCount
+  m_mapObjGroupArray                      game/WMO:kOffGroupArray
+
+type CMapObjGroup WoW/Source/WorldClient/MapObjGroup.h CMapObjGroup
+  sizeof                                  -
+  m_flags                                 game/WMO:kOffGroupFlags
+  m_bbox                                  game/WMO:kOffGroupBbox
+  m_bbox.b.z                              game/WMO:kOffGroupBboxMinZ
+  m_transparencyBatchesCount              game/WMO:kOffGroupTransBatchCount
+  m_intBatchCount                         game/WMO:kOffGroupIntBatchCount
+  m_extBatchCount                         game/WMO:kOffGroupExtBatchCount
+  m_cAaBspNodePtr1                        game/WMO:kOffGroupBsp
+  m_indices                               game/WMO:kOffGroupMovi
+  m_vertexList                            game/WMO:kOffGroupMovt
+  m_normalList                            game/WMO:kOffGroupMonr
+  m_textureVertexList                     game/WMO:kOffGroupMotv
+  m_stripBatches                          game/WMO:kOffGroupMorb
+  m_liquidType                            game/WMO:kOffGroupLiquidType
+  m_polyListSize                          game/WMO:kOffGroupFaceCount
+  m_indicesCount                          game/WMO:kOffGroupMoviCount
+  m_vertexListCount                       game/WMO:kOffGroupVertexCount
+  m_filePtr                               game/WMO:kOffGroupBuffer
+  m_fileSize                              game/WMO:kOffGroupSize
+  m_parent                                game/WMO:kOffGroupRoot
+  m_asyncObjPtr                           game/WMO:kOffGroupAsyncHandle
+  m_unkLoadedFlag                         game/WMO:kOffGroupFormatFlags
+
+# The MOGP header as the group parse reads it from the file buffer. The three kGroupBuf*
+# constants are offsets from the chunk tag: 0x14 (outer chunk header) + the field.
+type SMOGroupHeader WoW/Source/WorldClient/MapObjGroup.h SMOGroupHeader
+  sizeof                                  -
+  m_flags                                 game/WMO:kGroupBufFlags+0x14
+  m_boundingBox                           game/WMO:kGroupBufBbox+0x14
+  m_transBatchCount                       game/WMO:kGroupBufTransBatches+0x14
+
+type SMOHeader WoW/Source/WorldClient/MapObj.h SMOHeader
+  sizeof                                  -
+  m_flags                                 game/WMO:kOffMohdFlags
+
+type SMOMaterial WoW/Source/WorldClient/MapObj.h SMOMaterial
+  sizeof                                  game/WMO:kMomtStride
+  m_flags                                 game/WMO:kOffMomtFlags
+  m_shader                                game/WMO:kOffMomtShader
+  m_blendMode                             game/WMO:kOffMomtBlend
+  m_texture1                              game/WMO:kOffMomtTexture1
+  m_texture2                              game/WMO:kOffMomtTexture2
+  m_diffColor                             game/WMO:kOffMomtDiffColor
+  m_flags2                                game/WMO:kOffMomtLayerEnv
+  m_runTimeData[2]                        game/WMO:kOffMomtHandle1
+  m_runTimeData[3]                        game/WMO:kOffMomtHandle2
+
+type SMOBatch WoW/Source/WorldClient/MapObj.h SMOBatch
+  sizeof                                  game/WMO:kMobaStride
+  m_bx                                    game/WMO:kOffMobaBbox
+  m_tz                                    game/WMO:kOffMobaMaterialModern             # the modern format reuses this bbox slot for a u16 material
+  m_indexStart                            game/WMO:kOffMobaStartIndex
+  m_indexCount                            game/WMO:kOffMobaCount
+  m_vertexStart                           game/WMO:kOffMobaMinIndex
+  m_vertexEnd                             game/WMO:kOffMobaMaxIndex
+  m_flags                                 game/WMO:kOffMobaFlags
+  m_texture                               game/WMO:kOffMobaMaterial
+
+type SMOGroupInfo WoW/Source/WorldClient/MapObj.h SMOGroupInfo
+  sizeof                                  game/WMO:kMogiStride
+  m_boundingBox                           game/WMO:kOffMogiBbox
+
+type SMODoodadSet WoW/Source/WorldClient/MapObj.h SMODoodadSet
+  sizeof                                  game/WMO:kModsStride
+  m_startIdx                              game/WMO:kOffModsStart
+  m_count                                 game/WMO:kOffModsCount
+
+type CAaBsp WoW/Common/AaBsp.h CAaBsp
+  sizeof                                  -
+  m_rootNode                              game/WMO:kOffBspNodes
+  m_nodeFaceIndices                       game/WMO:kOffBspMobr
+  m_nNodeFaceIndices                      game/WMO:kOffBspMobrCount
+  m_aaBox.t                               game/WMO:kOffBspBboxMax
+
+type CMapObjDef WoW/Source/WorldClient/MapObjDef.h CMapObjDef
+  sizeof                                  -
+  m_hashval                               game/WMO:kOffInstanceHashKey
+  m_bbox                                  game/WMO:kOffInstanceBbox
+  m_mat                                   game/WMO:kOffInstanceRenderMatrix
+  m_invMat                                game/WMO:kOffInstanceCollisionMatrix
+  m_owner                                 game/WMO:kOffInstanceRoot
+  m_doodadSet                             game/WMO:kOffInstanceDoodadSet
+  m_doodadSetOverrides                    game/WMO:kOffInstanceExtraSets
+
+type CMapObjDefGroup WoW/Source/WorldClient/MapObjDef.h CMapObjDefGroup
+  sizeof                                  -
+  m_parentLinkList.m_terminator.m_next    game/WorldScene:kOffGroupLinkPtr
+  m_groupNum                              game/WorldScene:kOffGroupIndex
+
+type CAaBox Engine/Source/Tempest/CAaBox.h CAaBox
+  sizeof                                  -
+  b                                       game/WorldScene:kOffGroupBboxMin
+  t                                       game/WorldScene:kOffGroupBboxMax
+
+type CMapObjOccluder WoW/Source/WorldClient/MapObjGroup.h CMapObjOccluder
+  sizeof                                  -
+  m_start                                 game/WMO:kOffOccluderVertices
+
+skip game/WMO:kGroupWalkCursorOffset :: a composite file offset (0x14 outer chunk header + the 0x44 MOGP body); the two parts are measured as SMOGroupHeader above
+skip game/WMO:kClipBufferSlots :: a slot count of the occlusion clip buffer, not an offset
+
+type CChunkLiquid WoW/Source/WorldClient/CChunkLiquid.h CChunkLiquid
+  sizeof                                  -
+  m_vertexFormat                          engine/Liquid:kChunkLvf
+  m_tileBegin.x                           engine/Liquid:kChunkRow0
+  m_tileBegin.y                           engine/Liquid:kChunkCol0
+  m_tileEnd.x                             engine/Liquid:kChunkRow1
+  m_tileEnd.y                             engine/Liquid:kChunkCol1
+
+type Liquid_CChunkGeomFactory WoW/Source/WorldClient/LiquidGeomFactories.h Liquid::CChunkGeomFactory
+  sizeof                                  -
+  m_dirty                                 engine/Liquid:kGeomDirty
+  m_buf                                   engine/Liquid:kGeomChunkBuf
+  m_batch                                 engine/Liquid:kGeomBatchCache
+
+type CMapChunkLiquidBuf WoW/Source/WorldClient/MapChunkLiquid.h CMapChunkLiquidBuf
+  sizeof                                  -
+  m_vertexBuf                             engine/Liquid:kChunkBufVertex
+  m_indexBuf                              engine/Liquid:kChunkBufIndex
+
+type Liquid_CMaterialSettings WoW/Source/LiquidSystem/Liquid.h Liquid::CMaterialSettings
+  sizeof                                  -
+  m_colors[0]                             engine/Liquid:kSettingsColor0
+  m_colors[1]                             engine/Liquid:kSettingsColor1
+  m_ints                                  engine/Liquid:kSettingsInts
+  m_floats                                engine/Liquid:kSettingsFloats
+
+type DayNight_DNInfo WoW/Source/WorldClient/DayNight__DNInfo.h DayNight::DNInfo
+  sizeof                                  -
+  m_bands.m_waterColors[0]                engine/Liquid:kDnOceanCloseColor
+  m_bands.m_waterColors[1]                engine/Liquid:kDnOceanFarColor
+  m_bands.m_waterColors[2]                engine/Liquid:kDnRiverCloseColor
+  m_bands.m_waterColors[3]                engine/Liquid:kDnRiverFarColor
+  m_bands.m_waterShallowAlpha             engine/Liquid:kDnOceanAlphaShallow          # hand: ocean shallow; fork: water shallow
+  m_bands.m_waterDeepAlpha                engine/Liquid:kDnRiverAlphaShallow          # hand: river shallow; fork: water deep
+  m_bands.m_oceanShallowAlpha             engine/Liquid:kDnOceanAlphaDeep             # hand: ocean deep; fork: ocean shallow
+  m_bands.m_oceanDeepAlpha                engine/Liquid:kDnRiverAlphaDeep             # hand: river deep; fork: ocean deep
+
+type Weather WoW/Source/WorldClient/MapWeather.h Weather
+  sizeof                                  -
+  m_intensity                             game/Weather:kIntensity
+  m_rain                                  game/Weather:kRainCount                     # hand: live precipitation count; fork: Rain*
+  m_snow                                  game/Weather:kSnowCount
+  m_sand                                  game/Weather:kSandCount
+
+# =============================================================================================
+# UI and camera (game/World.hpp, engine/Camera.hpp, engine/Ui.hpp)
+# =============================================================================================
+
+type CGWorldFrame WoW/Source/Ui/WorldFrame.h CGWorldFrame
+  sizeof                                  -
+  m_simpleTop                             game/World:kWorldFrameInput                 # hand: "the active input object"; fork: CSimpleTop*
+  m_defaultActionPointDDC.x               game/World:kWorldFrameCursorDdcX
+  m_defaultActionPointDDC.y               game/World:kWorldFrameCursorDdcY
+  m_camera                                game/World:kWorldFrameCamera
+
+type CSimpleTop Engine/Source/Frame/CSimpleTop.h CSimpleTop
+  sizeof                                  -
+  m_mousePosition.m_x                     game/World:kInputCursorNdcX
+  m_mousePosition.m_y                     game/World:kInputCursorNdcY
+  m_allowProtectedActions                 engine/Ui:kUiEnabledFlag                    # hand: "1 = UI shown"; fork: allowProtectedActions
+
+type CSimpleCamera WoW/Source/UIUtil/CSimpleCamera.h CSimpleCamera
+  sizeof                                  -
+  m_position                              engine/Camera:kCameraPosition
+  m_facing.a0                             engine/Camera:kCameraForward
+  m_facing.b0                             engine/Camera:kCameraRight
+  m_facing.c0                             engine/Camera:kCameraUp
+  m_fov                                   engine/Camera:kCameraFov
+
+skip game/World:kWorldFrameStandInBytes :: the byte size reserved for a stand-in frame (an allocation choice, not a layout)
+
+# =============================================================================================
+# Storm: signatures and MD5 (engine/Addon.hpp, engine/Lua.hpp)
+# =============================================================================================
+
+type SSignatureData Engine/Source/Storm/Source/SSignature.h SSignatureData
+  sizeof                                  -
+  magicBuffer                             engine/Addon:kSignatureCtxBlobPtr
+
+type MD5_CTX Engine/Source/Storm/Source/MD5.h MD5_CTX
+  sizeof                                  engine/Lua:kMD5ContextSize
+
+skip engine/Addon:kSignatureFileSize,engine/Addon:kSignatureDigestOffset,engine/Addon:kSignatureMagicOffset,engine/Addon:kSignatureBlockOffset :: the on-disk .sig file layout; the fork reads it with offsets, there is no struct
+skip engine/Addon:kAddonPublicKeySize :: the RSA modulus length, not a layout
+skip engine/Addon:kSignatureCtxBlobSize :: the window buffer size SSignatureData::magicBufferSize holds at run time (256 + the magic), not a layout
+
+# =============================================================================================
+# Sound (engine/Sound.hpp)
+# =============================================================================================
+
+skip engine/Sound:kOffGroupMasterVolume :: a field of the sound-group record behind SE2's group array; the fork has no type for it (FMOD internals)
