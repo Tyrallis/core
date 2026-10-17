@@ -5,6 +5,9 @@
 // is resolved through site.hpp, so an upstream rename fails the build rather than drifting. The
 // signature is text a human checks a detour against; the runtime does not interpret it. Only
 // function entries belong here: patch sites and data globals are not detour targets.
+//
+// The seams of include/wxl/seams/ are named points too (World.Preload is one) and are listed
+// ahead of these rows by Points.cpp; a function that has a seam is not repeated here.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -24,14 +27,6 @@
 #error "define WXL_HOOK_POINT(name, address, signature) before including Points.def"
 #endif
 
-// Loads the world around a position, with the loading screen when show_loading is nonzero.
-// Called with 1 from the movement update that follows a login or a teleport, with 0 for the
-// preloads around a cinematic camera, a far-sight target or a transport leg. On return the
-// terrain and objects around the position are resident.
-WXL_HOOK_POINT("World.Preload", WXL_SITE("World::Preload", 0),
-               "void __cdecl (const wxl_vec3* position, int32_t show_loading)")
-
 // Switches the loaded map: repoints the map globals, purges the loaded tiles, loads the new
 // map's tables and writes the id. Runs before World.Preload on a map change.
-WXL_HOOK_POINT("Map.Load", WXL_SITE("CMap::Load", 0),
-               "void __cdecl (const char* map_name, int32_t map_id)")
+WXL_HOOK_POINT("Map.Load", WXL_SITE("CMap::Load", 0), "void __cdecl (const char* map_name, int32_t map_id)")

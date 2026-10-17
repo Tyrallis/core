@@ -44,6 +44,10 @@ the lifecycle, the log.
 - **Addresses that fail at compile time.** Nothing is hardcoded: sites resolve by name against
   tables generated from the decompiled client, so a renamed function breaks the build instead of
   the game.
+- **Seams declared once.** Every function the runtime attaches to is one row in
+  `include/wxl/seams/`, with a `Before` and an `After` whose body is written once: the x86 build
+  generates a detour around the function from the row, the x64 build exports the pair for the
+  recompiled client to call from inside it.
 - **An unbuffered log.** One write per line, so a crash keeps everything up to it.
 
 ## 📋 Table of contents
@@ -116,8 +120,11 @@ thread, and says so in the log.
 
 ### Into the recompiled client (64-bit)
 
-The client links `WarcraftXL.lib` and calls `WarcraftXLInit` from
-[`include/wxl/core/init.h`](include/wxl/core/init.h). Mods are read from `Mods/` beside the
+The client builds this directory as a subdirectory of its own tree (`-DWXL_CORE_DIR` when it is
+not beside it), links the DLL and calls `WarcraftXLInit` from
+[`include/wxl/core/init.h`](include/wxl/core/init.h), handing over the accessors of
+`wxl_core_init` (today the map id). Its functions call the seams' `Before` and `After` from
+[`include/wxl/seams/seams.h`](include/wxl/seams/seams.h). Mods are read from `Mods/` beside the
 executable, with `bin/x64/` binaries.
 
 ## 🔌 What this runtime publishes
@@ -126,15 +133,31 @@ What a mod can reach **today**, by build:
 
 | | x86 | x64 |
 |---|---|---|
-| `wxl.hook` (named points) | yes | not yet |
+| `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
 | `wxl.object`, `wxl.script`, `wxl.storage`, `wxl.net`, `wxl.ui` | not yet | not yet |
-| events raised | `WorldEnter` | none yet |
+| events raised | `WorldEnter`, `WorldLeave` | `WorldEnter`, `WorldLeave` |
 | lifecycle stages | `EARLY` | `EARLY` |
 
 A mod that requires a service this runtime does not publish is refused before it loads, with the
 service and version named in the log. One that merely asks gets nothing and carries on.
+
+`attach` is refused on x64 because a seam there is two calls the client makes from inside a
+function it compiled, not a function a detour can replace: there is no `original` to hand the mod
+and nothing it could suppress. A mod that wants to sit at a seam subscribes to the events the seam
+raises; one that needs a detour requires `wxl.hook` or `wxl.hook.raw` and is refused on x64 at the door, before it loads.
+
+### The seams
+
+One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row per function:
+
+| Point | Function | Raises |
+|---|---|---|
+| `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
+
+A seam is named after the function it attaches to, never after what it means; the name is part of
+the ABI and is appended, never renamed or dropped.
 
 ## 🧩 The mods it ships
 
@@ -153,10 +176,12 @@ Both read memory before writing: if the bytes are already in the patched state t
 
 ```
 include/wxl/core/init.h          the 64-bit entry point, for the client to include
+include/wxl/seams/               the seam table (one .def per domain) and seams.h, their Before/After
 include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
 src/runtime/                     host bring-up, stages, the per-architecture attachment
+src/seams/                       the seam bodies, one file per domain (both); the x86 detours; the table as data (x64)
 src/hook/                        the detour engine and the named points        (x86)
-src/services/                    wxl.hook, wxl.hook.raw, wxl.patch             (x86)
+src/services/                    wxl.hook, wxl.hook.raw, wxl.patch                (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 mods/                            the mods above                                (x86)
@@ -174,6 +199,8 @@ tools/offsets/, tools/layouts/   regenerate the tables from the decompiled clien
 | A mod is missing from the log | wrong folder shape; it needs `Mods/<id>/mod.json` and `Mods/<id>/bin/<arch>/<name>.dll` |
 | `refused … requires service …` | the mod needs something this build does not publish; see the table above |
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
+| `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
+| `the client handed no map_id accessor` (x64) | the client was built against an older `init.h`; world events carry map `-1` until it passes one |
 
 ## 📄 License
 

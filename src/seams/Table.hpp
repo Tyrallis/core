@@ -1,4 +1,4 @@
-// The world seam: the detour that raises WXL_EV_WorldEnter.
+// The seam table as data: what the runtime can say about its seams without reaching the client.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,15 +16,21 @@
 
 #pragma once
 
-namespace wxl::core::world
+#include <span>
+
+namespace wxl::core::seams
 {
-    /**
-     * @brief Attaches the core's detour to the named point World.Preload.
-     *
-     * The detour raises WXL_EV_WorldEnter once the client's own function has returned and the
-     * call was the one with the loading screen: the login and teleport path, not the preloads
-     * around a cinematic or a far-sight target.
-     * @return true when the detour is live.
-     */
-    bool Install();
+    /// One row of seams.def, without its address: the same on both builds.
+    struct Seam
+    {
+        const char* name;      ///< "<domain>.<name>": the point's name
+        const char* symbol;    ///< the client function, as the recompiled client spells it
+        const char* signature; ///< the C signature of Before, After and the x86 detour, as text
+    };
+
+    /// Every seam, in table order.
+    std::span<const Seam> Table();
+
+    /// The seam carrying a point name, or null.
+    const Seam* Find(const char* name);
 }

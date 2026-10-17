@@ -24,7 +24,13 @@ namespace wxl::hook
 {
     namespace
     {
+        // The seams first, under the name their events are announced by, then the points that
+        // exist only as detour targets.
         constexpr Point kPoints[] = {
+#define WXL_SEAM(domain, name, symbol, params) \
+    { #domain "." #name, WXL_SITE(symbol, 0), "void __cdecl " #params },
+#include "wxl/seams/seams.def"
+#undef WXL_SEAM
 #define WXL_HOOK_POINT(name, address, signature) { name, address, signature },
 #include "hook/Points.def"
 #undef WXL_HOOK_POINT

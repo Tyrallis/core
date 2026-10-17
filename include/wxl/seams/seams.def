@@ -1,0 +1,29 @@
+// The seam table: every seam the runtime realises, one domain per file.
+//
+// A seam is a function of the client with a Before and an After, both realised by both builds:
+// on x86 a detour at the function's resolved address calls Before, the original, then After; on
+// x64 the recompiled client's own source calls Before where the function starts and After where
+// it returns. The body of each is written once, in src/seams/<Domain>.cpp.
+//
+// Include this with WXL_SEAM(domain, name, symbol, params) defined. This file holds nothing but
+// the domain tables, in the order below; the row shape and its columns are described in each.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, params) before including seams.def"
+#endif
+
+#include "wxl/seams/world.def"

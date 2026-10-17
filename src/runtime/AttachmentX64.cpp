@@ -15,20 +15,41 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "runtime/Attachment.hpp"
+#include "runtime/AttachmentX64.hpp"
 
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "seams/Table.hpp"
 
-// The seam table is not built yet: nothing is attached, so no event is raised and no service is
-// published. wxl.hook.raw and wxl.patch never exist here; wxl.hook arrives with the seam table.
+#include "wxl/services/hook.h"
+
+#include <cstddef>
+#include <cstring>
+
+namespace
+{
+    /// The client's accessors, as far as its wxl_core_init reached.
+    wxl_core_init g_init{};
+
+/// Whether a wxl_core_init of the given struct_size carries @p field.
+#define WXL_INIT_CARRIES(size, field) \
+    ((size) >= offsetof(wxl_core_init, field) + sizeof(wxl_core_init::field))
+}
 
 namespace wxl::core::attachment
 {
+    void Bind(const wxl_core_init& init)
+    {
+        g_init = wxl_core_init{};
+        if (WXL_INIT_CARRIES(init.struct_size, map_id)) g_init.map_id = init.map_id;
+        g_init.struct_size = sizeof g_init;
+    }
+
     void Prepare() {}
 
     std::vector<wxl_event> Events()
     {
-        return {};
+        return { WXL_EV_WorldEnter, WXL_EV_WorldLeave };
     }
 
     std::vector<wxl::host::PublishedService> Services()
@@ -38,6 +59,16 @@ namespace wxl::core::attachment
 
     void Install()
     {
-        WLOG_INFO(kTag, "no seams in this build: no event is raised and wxl.hook is not published");
+        // Nothing to attach: the client's source calls Before and After itself. What is checked
+        // is what it handed over, since a seam's body reads the client through it.
+        for (const seams::Seam& seam : seams::Table())
+            WLOG_INFO(kTag, "seam %s: Before and After are calls %s makes", seam.name, seam.symbol);
+        if (!g_init.map_id)
+            WLOG_WARN(kTag, "the client handed no map_id accessor; world events will carry map -1");
+    }
+
+    int32_t MapId()
+    {
+        return g_init.map_id ? g_init.map_id() : -1;
     }
 }

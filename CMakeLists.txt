@@ -74,14 +74,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Every binary lands at build/<Config>/ whatever folder declares it.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+# Every binary lands at <this tree>/<Config>/ whatever folder declares it; the current binary
+# directory rather than the top one, so that a client may add this directory as its own
+# subdirectory and build the DLL it links.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 # --- The SDK: the contract and the shared mod host -------------------------------------------------
 set(WXL_SDK_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
+add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
 
 # A single integer a mod can read out of wxl_runtime_info.version: major*10000 + minor*100 + patch.
 math(EXPR WXL_CORE_VERSION
@@ -90,11 +92,14 @@ math(EXPR WXL_CORE_VERSION
 set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
 # --- WarcraftXL.dll --------------------------------------------------------------------------------
-# What both architectures share: the log, the start-up and the mod host behind it. Each
-# architecture adds its entry point and its attachment to the client below.
+# What both architectures share: the log, the start-up, the mod host behind it, and the bodies
+# of the seams (one file per domain of include/wxl/seams/). Each architecture adds its entry
+# point and its attachment to the client below: the detours that run those bodies on x86, the
+# exports the client calls on x64.
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
-    src/common/Log.cpp)
+    src/common/Log.cpp
+    src/seams/World.cpp)
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 target_include_directories(wxl-core PRIVATE src include)
 target_link_libraries(wxl-core PRIVATE wxl::host)
@@ -124,7 +129,7 @@ if(WXL_CORE_X86)
         src/runtime/Main.cpp
         src/runtime/AttachmentX86.cpp
         src/runtime/Image.cpp
-        src/runtime/WorldSeam.cpp
+        src/seams/AttachX86.cpp
         src/hook/Engine.cpp
         src/hook/Points.cpp
         src/services/HookService.cpp
@@ -147,10 +152,14 @@ if(WXL_CORE_X86)
     set(WXL_CORE_WARNED_TARGETS wxl-core wxl-core-patcher)
 else()
     # The recompiled client links the DLL and calls WarcraftXLInit. Nothing is detoured and no
-    # address exists; the seams are calls the client's own source makes.
+    # address exists: the seams are calls the client's own source makes.
     target_sources(wxl-core PRIVATE
         src/runtime/Init.cpp
-        src/runtime/AttachmentX64.cpp)
+        src/runtime/AttachmentX64.cpp
+        src/seams/Table.cpp)
+
+    # The import library, for the client to link; the headers it needs are under include/.
+    install(TARGETS wxl-core ARCHIVE DESTINATION "lib/${WXL_CORE_ARCH_DIR}" COMPONENT core)
 
     set(WXL_CORE_WARNED_TARGETS wxl-core)
 endif()

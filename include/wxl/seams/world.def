@@ -1,0 +1,41 @@
+// The World domain: seams on the functions that load and unload the world.
+//
+// One row per seam, as WXL_SEAM(domain, name, symbol, params):
+//
+//   domain  the table this row belongs to; the first half of the point's name
+//   name    the client function the seam attaches to, never what it means: the second half of
+//           the point's name ("World.Preload"), the C++ namespace of its Before and After
+//           (wxl::seam::World::Preload), and part of the ABI -- appended, never renamed or
+//           dropped
+//   symbol  the function's qualified name as the recompiled client spells it: what WXL_SITE
+//           resolves on x86, and where the x64 call sites belong
+//   params  the parameter list, in parentheses, as the C boundary sees the function's
+//           arguments: a reference is a pointer, a class is its SDK struct. Before and After
+//           take exactly these; the x86 detour has this signature
+//
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, params) before including world.def"
+#endif
+
+// Loads the world around a position, with the loading screen when show_loading is nonzero.
+// Called with 1 from the movement update that follows a login or a teleport, with 0 for the
+// preloads around a cinematic camera, a far-sight target or a game object. The map id is already
+// the destination's when the call starts: CMap::Load ran before it. On return the terrain and
+// objects around the position are resident. Before raises WorldLeave and After raises
+// WorldEnter, both only when show_loading is nonzero.
+WXL_SEAM(World, Preload, "World::Preload", (const wxl_vec3* position, int32_t show_loading))

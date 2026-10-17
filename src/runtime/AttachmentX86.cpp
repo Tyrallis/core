@@ -20,12 +20,21 @@
 #include "hook/Engine.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Image.hpp"
-#include "runtime/WorldSeam.hpp"
+#include "seams/AttachX86.hpp"
 #include "services/HookService.hpp"
 #include "services/PatchService.hpp"
 
+#include "wxl/offsets/site.hpp"
 #include "wxl/services/hook.h"
 #include "wxl/services/patch.h"
+
+namespace
+{
+    /// Numeric id of the loaded map, -1 while none. Written by CMap::Load, read by the World
+    /// seams. The Map.cpp static: MinimapFrame.cpp and DayNight.cpp each have one of the same
+    /// name.
+    constexpr uintptr_t kMapId = WXL_STATIC_AT("s_mapId", 0x00ADFBC4);
+}
 
 namespace wxl::core::attachment
 {
@@ -37,7 +46,7 @@ namespace wxl::core::attachment
 
     std::vector<wxl_event> Events()
     {
-        return { WXL_EV_WorldEnter };
+        return { WXL_EV_WorldEnter, WXL_EV_WorldLeave };
     }
 
     std::vector<wxl::host::PublishedService> Services()
@@ -54,9 +63,16 @@ namespace wxl::core::attachment
         // The core's own detours go in before any mod can attach behind them, and only in the
         // image whose addresses they are.
         if (!image::IsClient())
-            WLOG_WARN(kTag, "the executable is not Wow.exe build %u: named hook points and "
-                            "WorldEnter are unavailable", static_cast<unsigned>(image::kBuild));
-        else if (!world::Install())
-            WLOG_ERROR(kTag, "world seam not installed; WorldEnter will not be raised");
+            WLOG_WARN(kTag, "the executable is not Wow.exe build %u: named hook points and the "
+                            "seams are unavailable; no world event will be raised",
+                      static_cast<unsigned>(image::kBuild));
+        else if (!seams::Install())
+            WLOG_ERROR(kTag, "a seam is not attached; its events will not be raised");
+    }
+
+    int32_t MapId()
+    {
+        if (!image::IsClient()) return -1;
+        return *reinterpret_cast<const int32_t*>(kMapId);
     }
 }

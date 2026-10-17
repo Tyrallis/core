@@ -17,21 +17,33 @@
 #include "wxl/core/init.h"
 
 #include "common/Log.hpp"
+#include "runtime/AttachmentX64.hpp"
 #include "runtime/Core.hpp"
 
 #include <windows.h>
+#include <cstddef>
+
+namespace
+{
+    /// The smallest wxl_core_init ever published: struct_size alone. A client built against
+    /// any version of the header from that one on is accepted; the fields it did not have are
+    /// read as absent.
+    constexpr uint32_t kMinInitSize = offsetof(wxl_core_init, map_id);
+}
 
 wxl_result WXL_CALL WarcraftXLInit(const wxl_core_init* init)
 {
-    if (!init || init->struct_size < sizeof(wxl_core_init))
+    if (!init || init->struct_size < kMinInitSize)
     {
         WLOG_ERROR(wxl::core::kTag, "WarcraftXLInit: wxl_core_init is %s (struct_size %u, need %u)",
                    init ? "too small" : "null", init ? init->struct_size : 0u,
-                   static_cast<unsigned>(sizeof(wxl_core_init)));
+                   static_cast<unsigned>(kMinInitSize));
         return WXL_E_INVALID;
     }
 
-    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu", GetCurrentThreadId());
+    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu (struct_size %u)",
+              GetCurrentThreadId(), init->struct_size);
+    wxl::core::attachment::Bind(*init);
     return wxl::core::Start() ? WXL_OK : WXL_E_FAILED;
 }
 
