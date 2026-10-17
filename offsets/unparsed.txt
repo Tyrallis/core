@@ -1,0 +1,4 @@
+# OFFSET:/STATIC: tags the tool could not confidently name: 0
+# Each entry: file:line  KIND  reason, then the tag line and the first source line after it.
+# These addresses are NOT in functions.def / statics.def. Fix the parser or the source.
+
