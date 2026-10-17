@@ -1,0 +1,30 @@
+# Build trees
+build/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.sln
+Debug/
+Release/
+
+# Compiler and linker output
+*.obj
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor and OS
+.vs/
+.vscode/
+*.swp
+Thumbs.db
