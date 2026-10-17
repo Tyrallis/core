@@ -31,3 +31,6 @@ Thumbs.db
 
 # Generated reports: reproducible by re-running the tools, so not kept in history.
 reports/
+
+# Documentation: working notes and designs, not shipped history.
+docs/
