@@ -31,6 +31,7 @@ namespace wxl::core::seams
         const char* returns;    ///< the row's return type, as text; "void" for none
         const char* convention; ///< the row's x86 calling convention: cdecl, thiscall or stdcall
         const char* params;     ///< the row's parameter list, as text, parentheses included
+        bool        gated;      ///< a WXL_SEAM_GATE row: its Gate can take the call
     };
 
     /// Every seam, in table order.

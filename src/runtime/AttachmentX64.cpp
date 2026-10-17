@@ -50,7 +50,10 @@ namespace wxl::core::attachment
         // Nothing to attach: the client's source calls Before and After itself. What is checked
         // is what it handed over, since a seam's body reads the client through it.
         for (const seams::Seam& seam : seams::Table())
-            WLOG_INFO(kTag, "seam %s: Before and After are calls %s makes", seam.name, seam.symbol);
+            WLOG_INFO(kTag, "seam %s: %s %s makes", seam.name,
+                      seam.gated ? "Gate is a test at the head of"
+                                 : "Before and After are calls",
+                      seam.symbol);
         for (const char* name : binding::Unbound())
             WLOG_WARN(kTag, "the client handed no %s accessor; what reads it answers absent", name);
     }

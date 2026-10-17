@@ -1,0 +1,45 @@
+// The NetClient domain: seams on the two functions every message of the world connection goes
+// through, in and out.
+//
+// Row shape and columns: see world.def, which documents them. Both rows are gated seams
+// (WXL_SEAM_GATE), because the contract lets a handler of MessageReceived or MessageSent write
+// WXL_TRUE through wxl_message_args::suppressed and expect the message to stop there. An
+// observing seam could report the message and not withhold it; only a gated one can.
+//
+// A message is a CDataStore positioned at its opcode: m_data + m_read is the opcode, and the
+// body runs from just past it to m_size. The opcode's width is not the same in both directions
+// -- the server writes a uint16, the client a uint32 -- so each body reads its own.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including netclient.def"
+#endif
+
+// Dispatches one message that arrived from the world server to the handler registered for its
+// opcode, and returns what that handler answered, or 0 when the opcode has none. The only
+// caller is HandleData, which builds the CDataStore over the received bytes on its stack and
+// throws away both the store and this result; so a Gate that takes the call need only
+// answer 0, and may leave the store untouched. Gate raises MessageReceived and takes the
+// call when a handler suppressed it, which is how a mod serves an opcode the client does not
+// know.
+WXL_SEAM_GATE(NetClient, ProcessMessage, "NetClient::ProcessMessage", int32_t, thiscall, (void* self, uint32_t time_received, void* message, int32_t unused))
+WXL_SEAM_RAISES(NetClient, ProcessMessage, MessageReceived)
+
+// Sends one finalised message to the world server, or holds it when the connection is suspended.
+// Called from everything that talks to the server. Gate raises MessageSent and takes the
+// call when a handler suppressed it, which stops the message being sent and being held.
+WXL_SEAM_GATE(NetClient, Send, "NetClient::Send", void, thiscall, (void* self, void* message))
+WXL_SEAM_RAISES(NetClient, Send, MessageSent)

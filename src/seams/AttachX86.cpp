@@ -29,12 +29,18 @@
 
 namespace
 {
-    // One Link per row: the detour in the row's convention, with the row's Before and After.
+    // One Link per row: the detour in the row's convention, with the row's own entry
+    // points. A gated row's Link runs the original only if its Gate lets it through.
 #define WXL_SEAM(domain, name, symbol, ret, conv, params)                                  \
-    using domain##_##name = ::wxl::core::seams::DetourOf<::wxl::seam::detail::conv_##conv,     \
-                                                     ret params>::Link<                    \
+    using domain##_##name = ::wxl::core::seams::DetourOf<::wxl::seam::detail::conv_##conv, \
+                                                         ret params>::Link<                \
         &::wxl::seam::domain::name::Before, &::wxl::seam::domain::name::After>;
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)                           \
+    using domain##_##name = ::wxl::core::seams::GateOf<::wxl::seam::detail::conv_##conv, \
+                                                       ret params>::Link<                \
+        &::wxl::seam::domain::name::Gate>;
 #include "wxl/seams/seams.def"
+#undef WXL_SEAM_GATE
 #undef WXL_SEAM
 
     struct Row
@@ -44,14 +50,20 @@ namespace
         void*       detour;
         void**      original;
         bool        attachable; ///< false for a regparm row: declared, never detoured
+        bool        gated;      ///< a WXL_SEAM_GATE row: its Gate can take the call
     };
 
     const Row kRows[] = {
-#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                       \
+#define WXL_SEAM_ROW(domain, name, symbol, gated)                                                \
     { #domain "." #name, WXL_SITE(symbol, 0), reinterpret_cast<void*>(&domain##_##name::Detour), \
-      reinterpret_cast<void**>(&domain##_##name::original), domain##_##name::kAttachable },
+      reinterpret_cast<void**>(&domain##_##name::original), domain##_##name::kAttachable,        \
+      gated },
+#define WXL_SEAM(domain, name, symbol, ret, conv, params) WXL_SEAM_ROW(domain, name, symbol, false)
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) WXL_SEAM_ROW(domain, name, symbol, true)
 #include "wxl/seams/seams.def"
+#undef WXL_SEAM_GATE
 #undef WXL_SEAM
+#undef WXL_SEAM_ROW
     };
 }
 
@@ -80,8 +92,9 @@ namespace wxl::core::seams
                 all = false;
                 continue;
             }
-            WLOG_INFO(kTag, "seam %s attached at 0x%08zX", row.name,
-                      static_cast<size_t>(row.address));
+            WLOG_INFO(kTag, "seam %s attached at 0x%08zX%s", row.name,
+                      static_cast<size_t>(row.address),
+                      row.gated ? ", gated" : "");
         }
         return all;
     }

@@ -297,6 +297,29 @@ namespace
     }
 
     /// The accessors the fake client hands over: what the seams and the checks below read.
+    /// A message as the client holds one: a buffer, its end, and where reading starts.
+    struct FakeStore
+    {
+        const uint8_t* data = nullptr;
+        uint32_t       size = 0;
+        uint32_t       read = 0;
+    };
+
+    const void* WXL_CALL FakeMessageData(const void* store)
+    {
+        return store ? static_cast<const FakeStore*>(store)->data : nullptr;
+    }
+
+    uint32_t WXL_CALL FakeMessageSize(const void* store)
+    {
+        return store ? static_cast<const FakeStore*>(store)->size : 0u;
+    }
+
+    uint32_t WXL_CALL FakeMessageRead(const void* store)
+    {
+        return store ? static_cast<const FakeStore*>(store)->read : 0u;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -335,6 +358,9 @@ namespace
         init.script_run             = &FakeRun;
         init.script_create_events   = &FakeCreateEvents;
         init.script_signal_event    = &FakeSignalEvent;
+        init.message_data           = &FakeMessageData;
+        init.message_size           = &FakeMessageSize;
+        init.message_read           = &FakeMessageRead;
         return init;
     }
 }
@@ -377,6 +403,8 @@ namespace
         case WXL_EV_TerrainChunkBuild: return sizeof(wxl_terrain_chunk_args);
         case WXL_EV_ScriptVmReady:
         case WXL_EV_ScriptVmClosing:   return sizeof(wxl_script_vm_args);
+        case WXL_EV_MessageReceived:
+        case WXL_EV_MessageSent:       return sizeof(wxl_message_args);
         default:                       return 0;
         }
     }
@@ -1017,6 +1045,95 @@ namespace
         g_host->Events().Unsubscribe(onReady);
     }
 
+    // --- NetClient: the gated seams, and what a handler's answer does to the call -------------
+
+    /// What the message handler below saw, and whether it is to stop what it is shown.
+    struct MessageWatch
+    {
+        int      calls  = 0;
+        uint32_t opcode = 0;
+        uint32_t size   = 0;
+        uint8_t  first  = 0;
+        bool     stop   = false;
+    };
+
+    void WXL_CALL OnMessage(void* user, const void* args)
+    {
+        MessageWatch&           watch   = *static_cast<MessageWatch*>(user);
+        const wxl_message_args& message = *static_cast<const wxl_message_args*>(args);
+        ++watch.calls;
+        watch.opcode = message.opcode;
+        watch.size   = message.size;
+        watch.first  = message.size ? static_cast<const uint8_t*>(message.data)[0] : uint8_t(0);
+        if (watch.stop && message.suppressed) *message.suppressed = WXL_TRUE;
+    }
+
+    void CheckNetClient()
+    {
+        MessageWatch incoming;
+        MessageWatch outgoing;
+        const wxl_subscription in =
+            g_host->Events().Subscribe(WXL_EV_MessageReceived, &OnMessage, &incoming, 0);
+        const wxl_subscription out =
+            g_host->Events().Subscribe(WXL_EV_MessageSent, &OnMessage, &outgoing, 0);
+
+        // An incoming message: a uint16 opcode, then three bytes of body.
+        const uint8_t received[] = { 0x34, 0x12, 0xAA, 0xBB, 0xCC };
+        FakeStore     store{ received, sizeof received, 0 };
+
+        void*    self    = reinterpret_cast<void*>(0x1000);
+        void*    message = &store;
+        uint32_t when    = 7;
+        int32_t  unused  = 0;
+        int32_t  answer  = -1;
+
+        bool taken = wxl::seam::NetClient::ProcessMessage::Gate(&answer, &self, &when, &message,
+                                                                &unused);
+        Check(!taken, "a message nobody stops lets the client's own dispatch run");
+        Check(incoming.calls == 1 && incoming.opcode == 0x1234u,
+              "the opcode is the uint16 the server wrote");
+        Check(incoming.size == 3u && incoming.first == 0xAA,
+              "and the body is what follows the opcode");
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        incoming.stop = true;
+        taken = wxl::seam::NetClient::ProcessMessage::Gate(&answer, &self, &when, &message,
+                                                           &unused);
+        Check(taken && answer == 0,
+              "a handler that suppresses it takes the call, and the client answers 0");
+
+        // An outgoing message: a uint32 opcode, then two bytes of body.
+        const uint8_t sent[] = { 0x78, 0x56, 0x00, 0x00, 0x11, 0x22 };
+        FakeStore     outStore{ sent, sizeof sent, 0 };
+        message = &outStore;
+
+        Check(!wxl::seam::NetClient::Send::Gate(&self, &message), "a message nobody stops is sent");
+        Check(outgoing.calls == 1 && outgoing.opcode == 0x5678u,
+              "the opcode is the uint32 the client wrote");
+        Check(outgoing.size == 2u && outgoing.first == 0x11, "and the body is what follows it");
+
+        outgoing.stop = true;
+        Check(wxl::seam::NetClient::Send::Gate(&self, &message),
+              "a handler that suppresses it stops the send");
+
+        // A store that has been reset carries a cursor past its end: there is no message in it.
+        outgoing.stop = false;
+        FakeStore reset{ sent, 0, 0xFFFFFFFFu };
+        message = &reset;
+        const int before = outgoing.calls;
+        Check(!wxl::seam::NetClient::Send::Gate(&self, &message),
+              "a reset store is not a message, and the call goes through untouched");
+
+        FakeStore stub{ sent, 2, 0 };
+        message = &stub;
+        Check(!wxl::seam::NetClient::Send::Gate(&self, &message),
+              "neither is a store too short to name an opcode");
+        Check(outgoing.calls == before, "and neither of those raised anything");
+
+        g_host->Events().Unsubscribe(in);
+        g_host->Events().Unsubscribe(out);
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -1063,6 +1180,48 @@ namespace
         Check(g_shimSelf == &thing && g_shimBefore == 57, "Before received `this` and the arguments");
         Check(g_shimAfter == 112 + 5 + 7, "After received the result first, then `this` and the arguments");
     }
+
+    int32_t g_gateCalls = 0;
+    void*   g_gateSelf  = nullptr;
+    bool    g_gateTakes = false;
+
+    bool WXL_CALL ShimGate(int32_t* result, void** self, int32_t* a, int32_t* b)
+    {
+        ++g_gateCalls;
+        g_gateSelf = *self;
+        *a         = *a + 1; // what the original is called with, if it is called at all
+        if (!g_gateTakes) return false;
+        *result = *a * 1000 + *b;
+        return true;
+    }
+
+    using ShimGateSeam = wxl::core::seams::GateOf<wxl::seam::detail::conv_thiscall,
+                                                  int32_t(void*, int32_t, int32_t)>;
+    using ShimGateLink = ShimGateSeam::Link<&ShimGate>;
+
+    /// Drives the generated gate as the hook engine's caller would, both ways: once letting the
+    /// original run with a rewritten argument, once taking the call away from it.
+    void CheckThiscallGate()
+    {
+        Thing thing;
+        auto  member = &Thing::Add;
+        ShimGateLink::original =
+            reinterpret_cast<ShimGateSeam::Fn>(*reinterpret_cast<void**>(&member));
+
+        using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
+        const AsThiscall detour = reinterpret_cast<AsThiscall>(&ShimGateLink::Detour);
+
+        g_gateTakes    = false;
+        int32_t result = detour(&thing, 5, 7);
+        Check(result == 100 + 6 + 7,
+              "a gate that lets the call through rewrites what the original is given");
+        Check(g_gateSelf == &thing && g_gateCalls == 1, "and it was handed the object once");
+
+        g_gateTakes = true;
+        result      = detour(&thing, 5, 7);
+        Check(result == 6 * 1000 + 7, "a gate that takes the call answers in the original's place");
+        Check(g_gateCalls == 2, "and the original never ran");
+    }
 #endif
 }
 
@@ -1092,8 +1251,10 @@ int main()
     CheckGameUI();
     CheckMapArea();
     CheckFrameScript();
+    CheckNetClient();
 #if defined(_M_IX86)
     CheckThiscallShim();
+    CheckThiscallGate();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

@@ -5,9 +5,31 @@
 // x64 the recompiled client's own source calls Before where the function starts and After where
 // it returns. The body of each is written once, in src/seams/<Domain>.cpp.
 //
-// Include this with WXL_SEAM(domain, name, symbol, ret, conv, params) defined. This file holds
-// nothing but the domain tables, in the order below; the row shape and its columns are
-// described in world.def.
+// There are two row shapes, and a seam is one or the other:
+//
+//   WXL_SEAM(domain, name, symbol, ret, conv, params)       an observing seam: Before, After
+//   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)  a gated seam: Gate
+//
+// An observing seam watches. It is told the call started and that it finished, and changes
+// neither. A gated seam stands in the doorway: its single entry point, Gate, is handed every
+// argument by address and answers whether it has taken the call -- taken means the function
+// does not run at all and the seam has said what it answers instead; not taken means the
+// function runs, with whatever the seam left at those addresses, which is also how an argument
+// is rewritten.
+//
+// A gated seam has no After, deliberately. On x64 the call sites are the client's own source,
+// and an After would have to be written at every return of the function rather than once at
+// its head; a seam that wants to watch a function watches it with the observing shape. So the
+// choice between the two is: does a promise of the contract need the call stopped or an
+// argument changed? If not, observe.
+//
+// A row whose parameter is a client type the boundary cannot name crosses as void*, and the
+// x64 call site then passes the address of a local copy of it: such an argument can be read
+// and not usefully rewritten. A row that means to be rewritten declares a type both sides
+// spell the same, as a path does.
+//
+// Include this with both macros defined. This file holds nothing but the domain tables, in the
+// order below; the columns are described in world.def.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -25,6 +47,11 @@
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including seams.def"
+#endif
+// No default: a consumer that has not been taught the deciding shape must not silently skip the
+// rows that use it. Define it, even to nothing, to say the omission is deliberate.
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
 
 // A second row shape, WXL_SEAM_RAISES(domain, name, event), says which events of the contract a
@@ -44,6 +71,7 @@
 #include "wxl/seams/gameui.def"
 #include "wxl/seams/maparea.def"
 #include "wxl/seams/framescript.def"
+#include "wxl/seams/netclient.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

@@ -158,4 +158,124 @@ namespace wxl::core::seams
             }
         };
     };
+
+    /**
+     * @brief The detour of one gated seam row: Gate decides, the original runs or does not.
+     *
+     * @tparam Conv       the row's convention tag (wxl::seam::detail::conv_*).
+     * @tparam Signature  the row's `ret params` as a function type.
+     *
+     * The arguments are the detour's own parameters, so their addresses are what Gate is given:
+     * a seam that writes through one rewrites what the original is then called with. A Gate
+     * that takes the call leaves the result it wrote, and the original never runs.
+     */
+    template <class Conv, class Signature>
+    struct GateOf;
+
+    template <class R, class... A>
+    struct GateOf<::wxl::seam::detail::conv_cdecl, R(A...)>
+    {
+        using Fn = R(__cdecl*)(A...);
+
+        template <auto Gate>
+        struct Link
+        {
+            static constexpr bool kAttachable = true;
+
+            static inline Fn original = nullptr;
+
+            static R __cdecl Detour(A... args)
+            {
+                if constexpr (std::is_void_v<R>)
+                {
+                    if (!Gate(&args...)) original(args...);
+                }
+                else
+                {
+                    R result{};
+                    if (!Gate(&result, &args...)) result = original(args...);
+                    return result;
+                }
+            }
+        };
+    };
+
+    template <class R, class... A>
+    struct GateOf<::wxl::seam::detail::conv_stdcall, R(A...)>
+    {
+        using Fn = R(__stdcall*)(A...);
+
+        template <auto Gate>
+        struct Link
+        {
+            static constexpr bool kAttachable = true;
+
+            static inline Fn original = nullptr;
+
+            static R __stdcall Detour(A... args)
+            {
+                if constexpr (std::is_void_v<R>)
+                {
+                    if (!Gate(&args...)) original(args...);
+                }
+                else
+                {
+                    R result{};
+                    if (!Gate(&result, &args...)) result = original(args...);
+                    return result;
+                }
+            }
+        };
+    };
+
+    // The __fastcall shim of a __thiscall function, as above; the object crosses by address
+    // like every other argument, so the shape is the same in every convention.
+    template <class R, class This, class... A>
+    struct GateOf<::wxl::seam::detail::conv_thiscall, R(This, A...)>
+    {
+        using Fn = R(__fastcall*)(This, void*, A...);
+
+        template <auto Gate>
+        struct Link
+        {
+            static constexpr bool kAttachable = true;
+
+            static inline Fn original = nullptr;
+
+            static R __fastcall Detour(This self, void*, A... args)
+            {
+                if constexpr (std::is_void_v<R>)
+                {
+                    if (!Gate(&self, &args...)) original(self, nullptr, args...);
+                }
+                else
+                {
+                    R result{};
+                    if (!Gate(&result, &self, &args...)) result = original(self, nullptr, args...);
+                    return result;
+                }
+            }
+        };
+    };
+
+    /// A gated row the x86 build declares but never attaches, as above.
+    template <class R, class... A>
+    struct GateOf<::wxl::seam::detail::conv_regparm, R(A...)>
+    {
+        using Fn = R(__cdecl*)(A...);
+
+        template <auto Gate>
+        struct Link
+        {
+            static constexpr bool kAttachable = false;
+
+            static inline Fn original = nullptr;
+
+            static R __cdecl Detour(A... args)
+            {
+                ((void)args, ...);
+                if constexpr (!std::is_void_v<R>) return R{};
+            }
+        };
+    };
 }

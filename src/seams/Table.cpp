@@ -25,8 +25,11 @@ namespace wxl::core::seams
     {
         constexpr Seam kSeams[] = {
 #define WXL_SEAM(domain, name, symbol, ret, conv, params) \
-    { #domain "." #name, symbol, #ret, #conv, #params },
+    { #domain "." #name, symbol, #ret, #conv, #params, false },
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) \
+    { #domain "." #name, symbol, #ret, #conv, #params, true },
 #include "wxl/seams/seams.def"
+#undef WXL_SEAM_GATE
 #undef WXL_SEAM
         };
     }
@@ -37,9 +40,11 @@ namespace wxl::core::seams
     {
         constexpr wxl_event kRaised[] = {
 #define WXL_SEAM(domain, name, symbol, ret, conv, params)
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)
 #define WXL_SEAM_RAISES(domain, name, event) WXL_EV_##event,
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_RAISES
+#undef WXL_SEAM_GATE
 #undef WXL_SEAM
         };
 

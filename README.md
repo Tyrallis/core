@@ -45,9 +45,10 @@ the lifecycle, the log.
   tables generated from the decompiled client, so a renamed function breaks the build instead of
   the game.
 - **Seams declared once.** Every function the runtime attaches to is one row in
-  `include/wxl/seams/`, with a `Before` and an `After` whose body is written once: the x86 build
-  generates a detour around the function from the row, the x64 build exports the pair for the
-  recompiled client to call from inside it.
+  `include/wxl/seams/`, whose body is written once: the x86 build generates a detour around the
+  function from the row, the x64 build exports the entry points for the recompiled client to
+  call from inside it. A row is observing (`Before`, `After`) or gated (`Gate`, which can stop
+  the call and rewrite its arguments).
 - **An unbuffered log.** One write per line, so a crash keeps everything up to it.
 
 ## 📋 Table of contents
@@ -195,7 +196,17 @@ raises; one that needs a detour requires `wxl.hook` or `wxl.hook.raw` and is ref
 
 ### The seams
 
-One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row per function:
+One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row per function.
+A row is one of two shapes:
+
+| Shape | Entry points | What it can do |
+|---|---|---|
+| `WXL_SEAM` | `Before`, `After` | watch the call start and finish |
+| `WXL_SEAM_GATE` | `Gate` | the above, plus stop the call and answer in its place, and rewrite what the function is given |
+
+A gated row is used only where a promise of the contract needs it -- suppressing a message,
+redirecting a file -- because it costs the recompiled client a real decision point in its own
+source. Everything else observes.
 
 | Point | Function | Raises |
 |---|---|---|
@@ -212,6 +223,8 @@ One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row p
 | `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | `ScriptVmReady` after, with the context CGGameUI's state implies and the new `lua_State*` |
 | `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `Initialize` announced |
 | `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | nothing: after, the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
+| `NetClient.ProcessMessage` (gated) | `NetClient::ProcessMessage(uint32_t time_received, CDataStore* message, int32_t)` | `MessageReceived` at the gate; suppressing it hides the message from the client entirely, which is how a mod serves an opcode the client does not know |
+| `NetClient.Send` (gated) | `NetClient::Send(CDataStore* message)` | `MessageSent` at the gate; suppressing it stops the message being sent |
 
 A seam is named after the function it attaches to, never after what it means; the name is part of
 the ABI and is appended, never renamed or dropped.

@@ -40,6 +40,8 @@ WXL_SEAM(Demo, Load, "Thing::Load", void, cdecl, (const wxl_vec3* position, int3
 WXL_SEAM_RAISES(Demo, Load, Opened)
 WXL_SEAM(Demo, Count, "Thing::Count", int32_t, thiscall, (void* self, int32_t flags))
 WXL_SEAM_RAISES(Demo, Count, Closed)
+WXL_SEAM_GATE(Demo, Open, "Thing::Open", int32_t, cdecl, (const char* path, uint32_t mode))
+WXL_SEAM_RAISES(Demo, Open, Opened)
 '''
 
 CONTRACT = '''// A synthetic event table.
@@ -86,6 +88,14 @@ int32_t Thing::Count(int32_t flags) {
     wxl::seam::Demo::Count::After(count, this, flags);
     return count;
 }
+
+int32_t Thing::Open(const char* path, uint32_t mode) {
+    int32_t answer = 0;
+    if (wxl::seam::Demo::Open::Gate(&answer, &path, &mode)) {
+        return answer;
+    }
+    return helper(mode);
+}
 '''
 
 # (label, Thing.cpp, Demo.cpp body, demo.def extra rows, exit code, text expected)
@@ -122,6 +132,27 @@ CASES = [
     ("`this` dropped from a thiscall seam's Before",
      GOOD.replace("Count::Before(this, flags)", "Count::Before(flags)"),
      1, "is passed 1 argument(s); the row declares 2"),
+    ("Gate deleted from a gated seam",
+     GOOD.replace("    if (wxl::seam::Demo::Open::Gate(&answer, &path, &mode)) {\n"
+                  "        return answer;\n    }\n", ""),
+     1, "the fork never calls wxl::seam::Demo::Open::Gate"),
+    ("two calls to Gate",
+     GOOD.replace("    return helper(mode);",
+                  "    wxl::seam::Demo::Open::Gate(&answer, &path, &mode);\n    return helper(mode);"),
+     1, "2 calls to wxl::seam::Demo::Open::Gate"),
+    ("an After called on a gated seam",
+     GOOD.replace("    return helper(mode);",
+                  "    answer = helper(mode);\n"
+                  "    wxl::seam::Demo::Open::After(answer, &path, &mode);\n    return answer;"),
+     1, "Demo.Open is a gated seam, whose entry points are Gate"),
+    ("a Gate called on an observing seam",
+     GOOD.replace("wxl::seam::Demo::Count::Before(this, flags);",
+                  "wxl::seam::Demo::Count::Gate(this, flags);"),
+     1, "Demo.Count is an observing seam, whose entry points are Before and After"),
+    ("the result pointer dropped from a gated seam's Gate",
+     GOOD.replace("Open::Gate(&answer, &path, &mode)", "Open::Gate(&path, &mode)"),
+     1, "is passed 2 argument(s); the row declares 3 "
+        "(a pointer to the int32_t to answer with, then path, mode)"),
 ]
 
 # (label, Demo.cpp body, demo.def replacement, exit code, text expected)

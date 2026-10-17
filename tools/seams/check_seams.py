@@ -28,7 +28,7 @@ from pathlib import Path
 
 # --- The seam table -------------------------------------------------------------------------
 
-SEAM_ROW = re.compile(r"\bWXL_SEAM\s*\(", re.MULTILINE)
+SEAM_ROW = re.compile(r"\bWXL_SEAM(_GATE)?\s*\(", re.MULTILINE)
 RAISES_ROW = re.compile(r"\bWXL_SEAM_RAISES\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)")
 EVENT_ROW = re.compile(r"\bWXL_EVENT\s*\(\s*\w+\s*,\s*(\w+)\s*,")
 RAISE_CALL = re.compile(r"\bRaise\s*\(\s*WXL_EV_(\w+)")
@@ -39,9 +39,9 @@ CONVENTIONS = ("cdecl", "thiscall", "stdcall", "regparm")
 
 
 class Seam:
-    """One WXL_SEAM row: where it was declared, and what it promises the fork calls."""
+    """One row of the table: where it was declared, and what it promises the fork calls."""
 
-    def __init__(self, domain, name, symbol, returns, convention, params, origin):
+    def __init__(self, domain, name, symbol, returns, convention, params, origin, gated):
         self.domain = domain
         self.name = name
         self.symbol = symbol
@@ -49,15 +49,30 @@ class Seam:
         self.convention = convention  # cdecl, thiscall, stdcall or regparm
         self.params = params          # list of parameter names, in order
         self.origin = origin          # "<file>:<line>" of the row
+        self.gated = gated            # a WXL_SEAM_GATE row: one entry point, Gate
         self.raises = []              # event names, without the WXL_EV_ prefix
 
     @property
     def returns_value(self):
         return self.returns != "void"
 
+    @property
+    def halves(self):
+        """The entry points the fork must call: a gated seam has one, an observing seam two."""
+        return ("Gate",) if self.gated else ("Before", "After")
+
     def arity(self, half):
-        """How many arguments a call to Before or After passes: After takes the result first."""
-        return len(self.params) + (1 if half == "After" and self.returns_value else 0)
+        """How many arguments a call to an entry point passes.
+
+        An observing After takes the result first. A gated Gate takes a pointer to the result
+        first, and every parameter by address, so its count is the same.
+        """
+        leads = (half == "After" and self.returns_value) or (half == "Gate" and self.returns_value)
+        return len(self.params) + (1 if leads else 0)
+
+    def leads_with_result(self, half):
+        """Whether the call's first argument is the result rather than a declared parameter."""
+        return self.returns_value and half in ("After", "Gate")
 
     @property
     def point(self):
@@ -130,6 +145,7 @@ def read_table(seams_dir, problems):
             continue
         text = strip_cxx(path.read_text(encoding="utf-8", errors="replace"), keep_strings=True)
         for match in SEAM_ROW.finditer(text):
+            gated = match.group(1) is not None
             open_at = match.end() - 1
             close = balanced(text, open_at)
             if close < 0:
@@ -138,9 +154,11 @@ def read_table(seams_dir, problems):
             columns = split_top_level(text[open_at + 1:close - 1])
             line = text.count("\n", 0, match.start()) + 1
             origin = "%s:%d" % (path.name, line)
+            macro = "WXL_SEAM_GATE" if gated else "WXL_SEAM"
             if len(columns) != 6:
-                problems.append("%s: a WXL_SEAM row has %d columns, expected 6 "
-                                "(domain, name, symbol, ret, conv, params)" % (origin, len(columns)))
+                problems.append("%s: a %s row has %d columns, expected 6 "
+                                "(domain, name, symbol, ret, conv, params)"
+                                % (origin, macro, len(columns)))
                 continue
             domain, name, symbol, returns, convention, params = columns
             symbol = symbol.strip().strip('"')
@@ -163,7 +181,7 @@ def read_table(seams_dir, problems):
                 problems.append("%s: %s.%s is thiscall but its first parameter is not `this` "
                                 "as a pointer" % (origin, domain, name))
                 continue
-            seams.append(Seam(domain, name, symbol, returns, convention, names, origin))
+            seams.append(Seam(domain, name, symbol, returns, convention, names, origin, gated))
 
         by_point = {s.point: s for s in seams}
         for match in RAISES_ROW.finditer(text):
@@ -362,7 +380,7 @@ def function_at(bodies, offset):
 
 # --- The fork's call sites ------------------------------------------------------------------
 
-CALL = re.compile(r"\bwxl\s*::\s*seam\s*::\s*(\w+)\s*::\s*(\w+)\s*::\s*(Before|After)\s*\(")
+CALL = re.compile(r"\bwxl\s*::\s*seam\s*::\s*(\w+)\s*::\s*(\w+)\s*::\s*(Before|After|Gate)\s*\(")
 
 
 class Call:
@@ -466,15 +484,21 @@ def check(seams, calls, problems):
 
     for seam in seams:
         mine = [c for c in calls if c.point == seam.point]
-        for half in ("Before", "After"):
+        for call in mine:
+            if call.half not in seam.halves:
+                problems.append("%s: calls %s::%s, but %s is %s seam, whose entry points are %s"
+                                % (call.where, seam.qualified, call.half, seam.point,
+                                   "a gated" if seam.gated else "an observing",
+                                   " and ".join(seam.halves)))
+        for half in seam.halves:
             halves = [c for c in mine if c.half == half]
             if not halves:
                 problems.append("%s (%s): the fork never calls %s::%s; the seam is declared and "
                                 "dead" % (seam.point, seam.origin, seam.qualified, half))
                 continue
-            if half == "Before" and len(halves) > 1:
-                problems.append("%s: %d calls to %s::Before (%s); a seam enters its function once"
-                                % (seam.point, len(halves), seam.qualified,
+            if half in ("Before", "Gate") and len(halves) > 1:
+                problems.append("%s: %d calls to %s::%s (%s); a seam enters its function once"
+                                % (seam.point, len(halves), seam.qualified, half,
                                    ", ".join(c.where for c in halves)))
             for call in halves:
                 if call.enclosing != seam.symbol:
@@ -485,14 +509,16 @@ def check(seams, calls, problems):
                 expected = seam.arity(half)
                 if len(call.args) != expected:
                     declared = ", ".join(seam.params) or "none"
-                    if half == "After" and seam.returns_value:
-                        declared = "the %s result, then %s" % (seam.returns, declared)
+                    if seam.leads_with_result(half):
+                        lead = ("a pointer to the %s to answer with" % seam.returns
+                                if half == "Gate" else "the %s result" % seam.returns)
+                        declared = "%s, then %s" % (lead, declared)
                     problems.append("%s: %s::%s is passed %d argument(s); the row declares %d (%s)"
                                     % (call.where, seam.qualified, half, len(call.args),
                                        expected, declared))
                     continue
-                # After's first argument is the result when the row returns one: any expression.
-                args = call.args[1:] if half == "After" and seam.returns_value else call.args
+                # The leading argument is the result, or a pointer to it: any expression.
+                args = call.args[1:] if seam.leads_with_result(half) else call.args
                 for index, (arg, param) in enumerate(zip(args, seam.params)):
                     offset = index + 1 + (1 if args is not call.args else 0)
                     if not param or normalise(param) in normalise(arg):
@@ -540,8 +566,9 @@ def main():
     if args.verbose:
         for seam in seams:
             mine = [c for c in calls if c.point == seam.point]
-            print("%-32s %-40s %-9s %-9s %-22s %s"
+            print("%-32s %-40s %-9s %-9s %-9s %-22s %s"
                   % (seam.point, seam.symbol, seam.returns, seam.convention,
+                     "gated" if seam.gated else "observing",
                      ",".join(seam.raises) or "-",
                      ", ".join("%s %s" % (c.half, c.where) for c in mine) or "NOT WIRED"))
 
@@ -552,8 +579,10 @@ def main():
             print("  " + problem, file=sys.stderr)
         return 1
 
-    print("check_seams: %d seam(s), %d event(s), %d call site(s), all wired as the table declares"
-          % (len(seams), len({e for s in seams for e in s.raises}), len(calls)))
+    print("check_seams: %d seam(s) (%d gated), %d event(s), %d call site(s), all wired as the "
+          "table declares"
+          % (len(seams), sum(1 for s in seams if s.gated),
+             len({e for s in seams for e in s.raises}), len(calls)))
     return 0
 
 

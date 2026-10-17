@@ -1,0 +1,34 @@
+// The NetClient domain of the client binding: a message in flight, as the NetClient seams read it.
+//
+// Row shapes: see binding.def, which documents them. A `message` is the CDataStore the client
+// passes to NetClient::ProcessMessage or NetClient::Send, positioned at its opcode: the bytes
+// from m_read to m_size are the message, and m_data is the buffer they live in. Nothing here
+// writes: a mod that wants the message not to happen suppresses it at the seam.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_BINDING_FIELD
+#error "define WXL_BINDING_FIELD(name, ret, Type, member, absent) before including netclient.def"
+#endif
+
+// The buffer the message lives in, null when the store holds nothing.
+WXL_BINDING_FIELD(message_data, const void*, CDataStore, "m_data", 0)
+
+// One past the last byte of the message, as an offset into that buffer.
+WXL_BINDING_FIELD(message_size, uint32_t, CDataStore, "m_size", 0)
+
+// The read cursor: where the message starts for whoever is about to read it. A store that has
+// been reset carries 0xFFFFFFFF here, which is past m_size and says there is nothing to read.
+WXL_BINDING_FIELD(message_read, uint32_t, CDataStore, "m_read", 0)

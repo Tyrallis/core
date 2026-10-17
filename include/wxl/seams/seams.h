@@ -23,10 +23,33 @@
 // x64 the recompiled client from inside the function, which is why this header is C++ and the
 // client includes it. A seam's body raises the events the call justifies, and nothing else.
 //
-// Before takes the row's parameters. After takes them too, and when the row returns a value,
-// that value first: a row `WXL_SEAM(MapArea, PrepareChunk, ..., void*, thiscall, (void* self,
-// int32_t x, int32_t y))` declares Before(self, x, y) and After(result, self, x, y). A thiscall
-// row's first parameter is `this`.
+// An observing seam, WXL_SEAM, is told what happened:
+//
+//   Before takes the row's parameters. After takes them too, and when the row returns a value,
+//   that value first: a row `WXL_SEAM(MapArea, PrepareChunk, ..., void*, thiscall, (void* self,
+//   int32_t x, int32_t y))` declares Before(self, x, y) and After(result, self, x, y). A
+//   thiscall row's first parameter is `this`.
+//
+// A gated seam, WXL_SEAM_GATE, stands in the doorway and has one entry point:
+//
+//   Gate takes every parameter by address and answers whether it has taken the call. True: the
+//   function does not run, and what it answers instead has been written through the extra
+//   first parameter, a pointer to the return value, which a void row does not have. False: the
+//   function runs, with whatever the seam left at those addresses, which is how an argument is
+//   rewritten.
+//
+//   WXL_SEAM_GATE(NetClient, Send, ..., void, thiscall, (void* self, void* msg)) declares
+//   bool Gate(void** self, void** msg). Taking the object by address is of no use to a seam,
+//   but the shape is uniform, and a uniform shape is what lets one declaration drive both
+//   realisations.
+//
+// A gated seam has no After. On x64 the call sites are the client's own source, and an After
+// would have to be written at every return of the function rather than once at its head; a
+// seam that wants to watch a function watches it with the observing shape.
+//
+// On x86 both shapes are one detour, differing in what it does around the original call. On
+// x64 an observing seam is two statements wrapped around the function's body, a gated one is a
+// single test at its head.
 //
 // C++17: the recompiled client compiles this header with its own language level.
 
@@ -59,7 +82,7 @@ namespace wxl::seam::detail
     {
     };
 
-    /// The types of Before and After for a row's signature: After takes a non-void result first.
+    /// The types of Before and After for an observing row: After takes a non-void result first.
     template <class Signature>
     struct Fn;
 
@@ -75,6 +98,28 @@ namespace wxl::seam::detail
     {
         using Before = void WXL_CALL(A...);
         using After  = void WXL_CALL(A...);
+    };
+
+    /**
+     * @brief The type of Gate for a gated row.
+     *
+     * Every parameter crosses by address, so the seam can rewrite what the function will see.
+     * Gate answers whether it has taken the call, writing what to answer instead through the
+     * leading result pointer, which a void row does not have.
+     */
+    template <class Signature>
+    struct GateFn;
+
+    template <class R, class... A>
+    struct GateFn<R(A...)>
+    {
+        using Gate = bool WXL_CALL(R*, A*...);
+    };
+
+    template <class... A>
+    struct GateFn<void(A...)>
+    {
+        using Gate = bool WXL_CALL(A*...);
     };
 
     /// Whether a return type comes back in a register: nothing, or a scalar of at most 8 bytes.
@@ -124,7 +169,18 @@ namespace wxl::seam
         WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::Before Before;                         \
         WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::After After;                           \
     }
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)                               \
+    namespace domain::name                                                                   \
+    {                                                                                        \
+        using Signature  = ret params;                                                       \
+        using Convention = ::wxl::seam::detail::conv_##conv;                                 \
+        static_assert(::wxl::seam::detail::Shape<Convention, Signature>::ok,                 \
+                      "seam " #domain "." #name ": a thiscall row takes `this` first, as a " \
+                      "pointer, and returns void or a scalar");                              \
+        WXL_CORE_API ::wxl::seam::detail::GateFn<Signature>::Gate Gate;                      \
+    }
 #include "wxl/seams/seams.def"
+#undef WXL_SEAM_GATE
 #undef WXL_SEAM
 } // namespace wxl::seam
 
