@@ -38,6 +38,10 @@
 extern "C" {
 #endif
 
+/// A function the client's script engine calls directly, as its lua_CFunction: the native side
+/// of a global set through the script rows of the binding. Answers how many results it pushed.
+typedef int32_t(WXL_CALL* wxl_script_native_fn)(void* state);
+
 /// What the client hands the runtime: one accessor per row of wxl/core/binding.def, in table
 /// order, map_id first. Zero it, set struct_size to sizeof(wxl_core_init); a later version of
 /// this header appends rows and the runtime reads only what struct_size covers.

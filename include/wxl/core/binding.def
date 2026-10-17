@@ -93,6 +93,7 @@
 #include "wxl/core/binding/corpse.def"
 #include "wxl/core/binding/gameui.def"
 #include "wxl/core/binding/maparea.def"
+#include "wxl/core/binding/script.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

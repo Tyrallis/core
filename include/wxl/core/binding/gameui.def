@@ -23,3 +23,11 @@
 // The guid the player has targeted, 0 for none: CGGameUI::m_lockedTarget, which only
 // CGGameUI::Target and CGGameUI::ClearTarget write.
 WXL_BINDING(ui_target_guid, uint64_t, (void), (), 0)
+
+// Nonzero while the game interface is up: CGGameUI::m_initialized, set at the end of
+// CGGameUI::Initialize and cleared by CGGameUI::Shutdown.
+WXL_BINDING(ui_initialized, int32_t, (void), (), 0)
+
+// Nonzero from the start of CGGameUI::InitializeFrameXML until the first world update after
+// login: CGGameUI::m_loggingIn, a byte.
+WXL_BINDING(ui_logging_in, uint8_t, (void), (), 0)

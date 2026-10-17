@@ -138,9 +138,52 @@ What a mod can reach **today**, by build:
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
-| `wxl.object`, `wxl.script`, `wxl.storage`, `wxl.net`, `wxl.ui` | not yet | not yet |
-| events raised | `WorldEnter`, `WorldLeave` | `WorldEnter`, `WorldLeave` |
+| `wxl.object` (world objects) | yes | yes |
+| `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
+| `wxl.storage`, `wxl.net`, `wxl.ui` | not yet | not yet |
+| events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY` | `EARLY` |
+
+### `wxl.script` and the two script contexts
+
+The client runs one Lua state at a time and rebuilds it at every change of interface: the login
+glue and the game each get a fresh context, and both are created and destroyed more than once in
+a session (log in, log out, log in again, ReloadUI). `ScriptVmReady` is raised from
+`FrameScript.Initialize` with `context` set to `WXL_SCRIPT_CONTEXT_GAME` when
+`CGGameUI::m_loggingIn` or `CGGameUI::m_initialized` is set at that moment and to
+`WXL_SCRIPT_CONTEXT_GLUE` otherwise; `ScriptVmClosing` is raised from `FrameScript.Destroy`
+naming the same context. Two contexts the client creates and flushes before any interface loads
+-- the one `InitializeClient` makes at process start, and the one `CGGameUI::ShutdownGame` makes
+on logout -- are announced as glue.
+
+**Nothing registered survives a context.** The Lua state is closed with it, which takes every
+global and every event listener. The service forgets what it was told at `ScriptVmClosing` and
+refuses `register_function`, `register_event`, `fire_event` and `run` with `WXL_E_FAILED` until
+the next `ScriptVmReady`. A mod registers its functions and declares its events from a
+`ScriptVmReady` handler, every time, and keeps nothing it got from the previous context.
+
+Every call from Lua into a registered function runs under the crash guard (below): a function
+that faults answers the script with an error naming the fault, and its mod is disabled.
+`register_event` works by installing the client's own event table again with the declared names
+appended behind it, so each has an index `fire_event` can signal through `FrameScript_SignalEvent`;
+on the stock client that is the same `FrameScript_CreateEvents` call the client makes, reissued.
+
+### The crash guard
+
+Every call from the runtime into a mod -- `wxl_mod_query`, `wxl_mod_load`, `wxl_mod_stage`,
+`wxl_mod_unload`, every event handler and every script function -- runs under a structured
+exception handler (`sdk/host/guard.cpp`, MSVC only; a plain call elsewhere). A mod whose code
+faults is logged with its id, what it was doing and the fault, and **disabled**: its event
+subscriptions are dropped (the rest of the dispatch in progress included), its remaining stages
+and its unload are skipped, the script functions it registered are taken back, and its binary is
+left mapped rather than unloaded. One that faults in `wxl_mod_query` or `wxl_mod_load` is refused
+instead. The client goes on.
+
+What the guard does not do: it does not unwind the faulting frames (destructors do not run,
+locks stay held), it does not withdraw the services the mod published (another mod may hold the
+pointer, and calls into them will now reach code that faulted once), and it does not repair
+anything the mod wrote before it faulted, in its own state or in the client's. Disabling a mod
+is a judgement that the rest of the process is more likely intact than not; it is not a proof.
 
 A mod that requires a service this runtime does not publish is refused before it loads, with the
 service and version named in the log. One that merely asks gets nothing and carries on.
@@ -157,6 +200,18 @@ One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row p
 | Point | Function | Raises |
 |---|---|---|
 | `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
+| `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` | `Update` before |
+| `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: x64 only) | `ObjectCreate` after |
+| `ObjectMgr.ObjDelete` | `ObjDelete(void* object)` | `ObjectDestroy` before |
+| `ObjectMgr.DestroyRemovedObject` | `DestroyRemovedObject(void* object)` (regparm: x64 only) | `ObjectDestroy` before, for an object still tracked |
+| `Unit.OnDeath` | `CGUnit_C::OnDeath()` | `UnitDeath` after |
+| `Unit.OnAuraAdded`, `Unit.OnAuraRemoved` | `CGUnit_C::OnAuraAdded/OnAuraRemoved(uint32_t index, uint8_t a3, void* aura, int32_t spell_id)` | `UnitAuraChanged` after |
+| `Player.UpdateInventoryComponent` | `CGPlayer_C::UpdateInventoryComponent(int32_t slot, const void* old_item)` | `EquipmentChanged` after, when the item id moved |
+| `GameUI.SendTarget`, `GameUI.ClearTarget` | `CGGameUI::SendTarget(uint64_t guid)`, `CGGameUI::ClearTarget(uint64_t guid, int32_t a2)` | `TargetChanged` after, once per change of `m_lockedTarget` |
+| `MapArea.PrepareChunk` | `CMapArea::PrepareChunk(int32_t chunk_x, int32_t chunk_y)` | `TerrainChunkBuild` before |
+| `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | `ScriptVmReady` after, with the context CGGameUI's state implies and the new `lua_State*` |
+| `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `Initialize` announced |
+| `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | nothing: after, the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
 
 A seam is named after the function it attaches to, never after what it means; the name is part of
 the ABI and is appended, never renamed or dropped.
@@ -183,7 +238,7 @@ include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
 src/runtime/                     host bring-up, stages, the per-architecture attachment
 src/seams/                       the seam bodies, one file per domain (both); the x86 detours; the table as data (x64)
 src/hook/                        the detour engine and the named points        (x86)
-src/services/                    wxl.hook, wxl.hook.raw, wxl.patch                (x86)
+src/services/                    wxl.script (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 mods/                            the mods above                                (x86)

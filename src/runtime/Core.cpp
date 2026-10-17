@@ -18,6 +18,7 @@
 
 #include "common/Log.hpp"
 #include "runtime/Attachment.hpp"
+#include "services/ScriptService.hpp"
 
 #include "wxl/host/mod_host.hpp"
 
@@ -90,6 +91,12 @@ namespace
 
     CoreSink g_sink;
 
+    /// The host disabled a mod: the script functions it registered are withdrawn.
+    void OnModDisabled(void*, wxl::host::ModHost::ModToken token, const char*)
+    {
+        wxl::core::services::script::OnModDisabled(token);
+    }
+
     // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam
     // exists yet from which the mods could be told to let go before the process ends.
     wxl::host::ModHost* g_host = nullptr;
@@ -149,6 +156,7 @@ namespace wxl::core
                 WLOG_INFO(kTag, "service %s version %u", service.name.c_str(), service.version);
 
             g_host = new wxl::host::ModHost(std::move(cfg));
+            g_host->SetDisableHandler(&OnModDisabled, nullptr);
 
             attachment::Install();
 
@@ -156,8 +164,14 @@ namespace wxl::core
             g_host->Stage(WXL_STAGE_EARLY);
 
             for (const wxl::host::LoadedMod& mod : g_host->Loaded())
-                WLOG_INFO(kTag, "mod %s %s (%s) is up", mod.id.c_str(),
-                          mod.manifest.version.text.c_str(), mod.name.c_str());
+            {
+                if (mod.disabled)
+                    WLOG_WARN(kTag, "mod %s %s (%s) is disabled: it faulted %s", mod.id.c_str(),
+                              mod.manifest.version.text.c_str(), mod.name.c_str(), mod.fault.c_str());
+                else
+                    WLOG_INFO(kTag, "mod %s %s (%s) is up", mod.id.c_str(),
+                              mod.manifest.version.text.c_str(), mod.name.c_str());
+            }
             for (const wxl::host::RefusedMod& mod : g_host->Refused())
                 WLOG_INFO(kTag, "mod %s was not loaded: %s",
                           mod.id.empty() ? mod.directory_name.c_str() : mod.id.c_str(),

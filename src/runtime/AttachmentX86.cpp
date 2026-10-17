@@ -26,10 +26,12 @@
 #include "seams/Table.hpp"
 #include "services/HookService.hpp"
 #include "services/PatchService.hpp"
+#include "services/ScriptService.hpp"
 
 #include "wxl/services/hook.h"
 #include "wxl/services/object.h"
 #include "wxl/services/patch.h"
+#include "wxl/services/script.h"
 
 namespace wxl::core::attachment
 {
@@ -54,6 +56,7 @@ namespace wxl::core::attachment
             { WXL_HOOK_RAW_SERVICE, WXL_HOOK_RAW_SERVICE_VERSION, &services::HookRawApi() },
             { WXL_PATCH_SERVICE, WXL_PATCH_SERVICE_VERSION, &services::PatchApi() },
             { WXL_OBJECT_SERVICE, WXL_OBJECT_SERVICE_VERSION, objects::Api() },
+            { WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &services::ScriptApi() },
         };
     }
 

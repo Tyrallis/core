@@ -1,0 +1,70 @@
+// The Script domain of the client binding: the client's own Lua 5.1 state and the FrameScript
+// layer over it, as wxl.script drives them.
+//
+// Row shapes: see binding.def, which documents them. Every `state` parameter is the lua_State*
+// a script_state row answered, or the one a native function was called with; an index is a Lua
+// stack index (1 is the first argument, -1 the top). A value type crosses as a wxl_value_type, so
+// Lua's own type codes stay on the client's side.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including script.def"
+#endif
+
+// The live script context, FrameScript's s_context, or null while none exists.
+WXL_BINDING(script_state, void*, (void), (), 0)
+
+// Whether a global of that name holds anything but nil, read without disturbing the stack.
+WXL_BINDING(script_global_is_set, wxl_bool, (void* state, const char* name), (state, name), WXL_FALSE)
+
+// Sets the global to a C closure of fn with one numeric upvalue, slot, which the function reads
+// back with script_closure_slot while it runs.
+WXL_BINDING(script_set_global_closure, void, (void* state, const char* name, wxl_script_native_fn fn, uint32_t slot), (state, name, fn, slot), (void)0)
+
+// Sets the global to nil.
+WXL_BINDING(script_clear_global, void, (void* state, const char* name), (state, name), (void)0)
+
+// The first upvalue of the running closure, as set by script_set_global_closure.
+WXL_BINDING(script_closure_slot, uint32_t, (void* state), (state), 0)
+
+// The stack: how many values, what one is, reading and pushing them.
+WXL_BINDING(script_top, int32_t, (void* state), (state), 0)
+WXL_BINDING(script_value_type, uint32_t, (void* state, int32_t index), (state, index), 0)
+WXL_BINDING(script_to_number, double, (void* state, int32_t index), (state, index), 0.0)
+WXL_BINDING(script_to_string, const char*, (void* state, int32_t index, uint32_t* length), (state, index, length), 0)
+WXL_BINDING(script_to_bool, wxl_bool, (void* state, int32_t index), (state, index), WXL_FALSE)
+WXL_BINDING(script_push_number, void, (void* state, double value), (state, value), (void)0)
+WXL_BINDING(script_push_string, void, (void* state, const char* text, uint32_t length), (state, text, length), (void)0)
+WXL_BINDING(script_push_bool, void, (void* state, wxl_bool value), (state, value), (void)0)
+WXL_BINDING(script_push_nil, void, (void* state), (state), (void)0)
+WXL_BINDING(script_pop, void, (void* state, int32_t count), (state, count), (void)0)
+
+// Raises a script error carrying the message, as lua_error does: on the client this call does
+// not return, so nothing that needs unwinding may be live in the caller when it is made.
+WXL_BINDING(script_error, void, (void* state, const char* message), (state, message), (void)0)
+
+// Runs a chunk of source in the live context, untainted, named `name` in error messages:
+// FrameScript_Execute(source, name, nullptr).
+WXL_BINDING(script_run, void, (const char* source, const char* name), (source, name), (void)0)
+
+// Installs the script event table: FrameScript_CreateEvents(names, count). An event already in
+// the hash keeps its listeners; the index of each name becomes its position in `names`. The
+// strings are kept by pointer, so they must outlive the context.
+WXL_BINDING(script_create_events, void, (const char** names, uint32_t count), (names, count), (void)0)
+
+// Signals the event at `index` to every frame listening, with the `arg_count` values on top of
+// the stack as arguments; the values are left on the stack: FrameScript_SignalEvent(index, L, n).
+WXL_BINDING(script_signal_event, void, (uint32_t index, void* state, int32_t arg_count), (index, state, arg_count), (void)0)

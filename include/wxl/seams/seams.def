@@ -43,6 +43,7 @@
 #include "wxl/seams/player.def"
 #include "wxl/seams/gameui.def"
 #include "wxl/seams/maparea.def"
+#include "wxl/seams/framescript.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

@@ -74,6 +74,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# /EHs rather than /EHsc: a mod's function reached through a C function pointer may throw, and
+# the service that called it catches that at the boundary. With 'c' the compiler would assume
+# it cannot. The SDK's host library makes the same choice for the same reason.
+string(REPLACE "/EHsc" "/EHs" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
 # Every binary lands at <this tree>/<Config>/ whatever folder declares it; the current binary
 # directory rather than the top one, so that a client may add this directory as its own
 # subdirectory and build the DLL it links.
@@ -93,8 +98,9 @@ set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
 # --- WarcraftXL.dll --------------------------------------------------------------------------------
 # What both architectures share: the log, the start-up, the mod host behind it, the bodies of
-# the seams (one file per domain of include/wxl/seams/) and the leaf reads of wxl.object (one
-# file per kind of object under src/objects/). Each architecture adds its entry point, its
+# the seams (one file per domain of include/wxl/seams/), the leaf reads of wxl.object (one
+# file per kind of object under src/objects/) and wxl.script, which reaches the client's Lua
+# through the binding like everything else. Each architecture adds its entry point, its
 # attachment to the client and its realisation of the client binding below: memory reads at
 # measured offsets on x86 (BindingX86.cpp), the accessors the client handed over on x64
 # (BindingTable.cpp).
@@ -108,6 +114,7 @@ file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/ob
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
     src/common/Log.cpp
+    src/services/ScriptService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
@@ -126,6 +133,7 @@ add_executable(wxl-core-seam-harness
     tests/seam_harness.cpp
     src/common/Log.cpp
     src/binding/BindingTable.cpp
+    src/services/ScriptService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 target_include_directories(wxl-core-seam-harness PRIVATE src include)

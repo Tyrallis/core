@@ -17,10 +17,12 @@
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
 #include "seams/Table.hpp"
+#include "services/ScriptService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
+#include "wxl/services/script.h"
 
 #if defined(_M_IX86)
     #include "seams/Detour.hpp"
@@ -28,7 +30,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -108,6 +112,190 @@ namespace
     int32_t WXL_CALL FakeTileX(const void* area) { return static_cast<const FakeArea*>(area)->tileX; }
     int32_t WXL_CALL FakeTileY(const void* area) { return static_cast<const FakeArea*>(area)->tileY; }
 
+    // --- A fake script engine: a value stack, globals, an event table, as the script rows see them
+
+    struct FakeValue
+    {
+        uint32_t    type = WXL_VALUE_NIL;
+        double      number = 0.0;
+        std::string string;
+        bool        boolean = false;
+    };
+
+    /// A global the runtime set: the C closure and the slot in its upvalue.
+    struct FakeClosure
+    {
+        wxl_script_native_fn fn   = nullptr;
+        uint32_t             slot = 0;
+    };
+
+    struct FakeSignal
+    {
+        uint32_t               index = 0;
+        std::vector<FakeValue> args;
+    };
+
+    struct FakeVm
+    {
+        bool                                  live = false;
+        std::vector<FakeValue>                stack;
+        std::map<std::string, FakeClosure>    closures;      ///< globals the runtime set
+        std::set<std::string>                 clientGlobals; ///< globals the client set
+        uint32_t                              runningSlot = 0;
+        std::vector<std::string>              errors;
+        std::vector<std::string>              ran;
+        std::vector<std::vector<std::string>> eventTables; ///< every table installed, in order
+        std::vector<FakeSignal>               signals;
+    };
+
+    FakeVm  g_vm;
+    int32_t g_uiInitialized = 0;
+    uint8_t g_uiLoggingIn   = 0;
+
+    FakeVm* Vm(void* state) { return static_cast<FakeVm*>(state); }
+
+    /// The stack slot a positive Lua index names, or null.
+    const FakeValue* At(void* state, int32_t index)
+    {
+        FakeVm* vm = Vm(state);
+        if (!vm || index <= 0 || static_cast<size_t>(index) > vm->stack.size()) return nullptr;
+        return &vm->stack[static_cast<size_t>(index) - 1];
+    }
+
+    void* WXL_CALL FakeScriptState(void) { return g_vm.live ? &g_vm : nullptr; }
+    int32_t WXL_CALL FakeUiInitialized(void) { return g_uiInitialized; }
+    uint8_t WXL_CALL FakeUiLoggingIn(void) { return g_uiLoggingIn; }
+
+    wxl_bool WXL_CALL FakeGlobalIsSet(void* state, const char* name)
+    {
+        return Vm(state)->closures.count(name) || Vm(state)->clientGlobals.count(name) ? WXL_TRUE
+                                                                                      : WXL_FALSE;
+    }
+
+    void WXL_CALL FakeSetGlobalClosure(void* state, const char* name, wxl_script_native_fn fn, uint32_t slot)
+    {
+        Vm(state)->closures[name] = FakeClosure{fn, slot};
+    }
+
+    void WXL_CALL FakeClearGlobal(void* state, const char* name) { Vm(state)->closures.erase(name); }
+    uint32_t WXL_CALL FakeClosureSlot(void* state) { return Vm(state)->runningSlot; }
+    int32_t WXL_CALL FakeTop(void* state) { return static_cast<int32_t>(Vm(state)->stack.size()); }
+
+    uint32_t WXL_CALL FakeValueType(void* state, int32_t index)
+    {
+        const FakeValue* value = At(state, index);
+        return value ? value->type : WXL_VALUE_NIL;
+    }
+
+    double WXL_CALL FakeToNumber(void* state, int32_t index)
+    {
+        const FakeValue* value = At(state, index);
+        return value ? value->number : 0.0;
+    }
+
+    const char* WXL_CALL FakeToString(void* state, int32_t index, uint32_t* length)
+    {
+        const FakeValue* value = At(state, index);
+        if (!value) return nullptr;
+        if (length) *length = static_cast<uint32_t>(value->string.size());
+        return value->string.c_str();
+    }
+
+    wxl_bool WXL_CALL FakeToBool(void* state, int32_t index)
+    {
+        const FakeValue* value = At(state, index);
+        return value && value->boolean ? WXL_TRUE : WXL_FALSE;
+    }
+
+    void WXL_CALL FakePushNumber(void* state, double number)
+    {
+        FakeValue value;
+        value.type   = WXL_VALUE_NUMBER;
+        value.number = number;
+        Vm(state)->stack.push_back(value);
+    }
+
+    void WXL_CALL FakePushString(void* state, const char* text, uint32_t length)
+    {
+        FakeValue value;
+        value.type   = WXL_VALUE_STRING;
+        value.string = std::string(text, length);
+        Vm(state)->stack.push_back(value);
+    }
+
+    void WXL_CALL FakePushBool(void* state, wxl_bool flag)
+    {
+        FakeValue value;
+        value.type    = WXL_VALUE_BOOL;
+        value.boolean = flag != WXL_FALSE;
+        Vm(state)->stack.push_back(value);
+    }
+
+    void WXL_CALL FakePushNil(void* state) { Vm(state)->stack.push_back(FakeValue{}); }
+
+    void WXL_CALL FakePop(void* state, int32_t count)
+    {
+        std::vector<FakeValue>& stack = Vm(state)->stack;
+        const size_t            n     = count > 0 ? static_cast<size_t>(count) : 0;
+        stack.resize(stack.size() > n ? stack.size() - n : 0);
+    }
+
+    /// The fake records the error and returns, where the client's would not; the thunk is
+    /// written so that it returns nothing to the caller either way.
+    void WXL_CALL FakeError(void* state, const char* message) { Vm(state)->errors.push_back(message); }
+
+    void WXL_CALL FakeRun(const char* source, const char* name)
+    {
+        g_vm.ran.push_back(std::string(name) + ": " + source);
+    }
+
+    void WXL_CALL FakeCreateEvents(const char** names, uint32_t count)
+    {
+        g_vm.eventTables.push_back(std::vector<std::string>(names, names + count));
+    }
+
+    void WXL_CALL FakeSignalEvent(uint32_t index, void* state, int32_t argCount)
+    {
+        FakeSignal signal;
+        signal.index                  = index;
+        std::vector<FakeValue>& stack = Vm(state)->stack;
+        const size_t            n     = argCount > 0 ? static_cast<size_t>(argCount) : 0;
+        signal.args.assign(stack.end() - static_cast<std::ptrdiff_t>(n), stack.end());
+        Vm(state)->signals.push_back(signal);
+    }
+
+    /// Calls a global the runtime set, as the client's Lua would: the arguments on the stack,
+    /// the closure's slot in its upvalue, the results being whatever the function left on top.
+    std::vector<FakeValue> CallGlobal(const char* name, std::vector<FakeValue> args, bool* found)
+    {
+        const auto it = g_vm.closures.find(name);
+        *found         = it != g_vm.closures.end();
+        if (!*found) return {};
+        g_vm.stack       = std::move(args);
+        g_vm.runningSlot = it->second.slot;
+        const int32_t pushed = it->second.fn(&g_vm);
+        const size_t  n      = pushed > 0 ? static_cast<size_t>(pushed) : 0;
+        std::vector<FakeValue> results(g_vm.stack.end() - static_cast<std::ptrdiff_t>(n), g_vm.stack.end());
+        g_vm.stack.clear();
+        return results;
+    }
+
+    FakeValue Number(double number)
+    {
+        FakeValue value;
+        value.type   = WXL_VALUE_NUMBER;
+        value.number = number;
+        return value;
+    }
+
+    FakeValue String(const char* text)
+    {
+        FakeValue value;
+        value.type   = WXL_VALUE_STRING;
+        value.string = text;
+        return value;
+    }
+
     /// The accessors the fake client hands over: what the seams and the checks below read.
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
@@ -126,6 +314,27 @@ namespace
         init.visible_item_id        = &FakeVisibleItemIdOf;
         init.map_area_tile_x        = &FakeTileX;
         init.map_area_tile_y        = &FakeTileY;
+        init.ui_initialized         = &FakeUiInitialized;
+        init.ui_logging_in          = &FakeUiLoggingIn;
+        init.script_state           = &FakeScriptState;
+        init.script_global_is_set   = &FakeGlobalIsSet;
+        init.script_set_global_closure = &FakeSetGlobalClosure;
+        init.script_clear_global    = &FakeClearGlobal;
+        init.script_closure_slot    = &FakeClosureSlot;
+        init.script_top             = &FakeTop;
+        init.script_value_type      = &FakeValueType;
+        init.script_to_number       = &FakeToNumber;
+        init.script_to_string       = &FakeToString;
+        init.script_to_bool         = &FakeToBool;
+        init.script_push_number     = &FakePushNumber;
+        init.script_push_string     = &FakePushString;
+        init.script_push_bool       = &FakePushBool;
+        init.script_push_nil        = &FakePushNil;
+        init.script_pop             = &FakePop;
+        init.script_error           = &FakeError;
+        init.script_run             = &FakeRun;
+        init.script_create_events   = &FakeCreateEvents;
+        init.script_signal_event    = &FakeSignalEvent;
         return init;
     }
 }
@@ -166,6 +375,8 @@ namespace
         case WXL_EV_EquipmentChanged:  return sizeof(wxl_equipment_args);
         case WXL_EV_TargetChanged:     return sizeof(wxl_target_args);
         case WXL_EV_TerrainChunkBuild: return sizeof(wxl_terrain_chunk_args);
+        case WXL_EV_ScriptVmReady:
+        case WXL_EV_ScriptVmClosing:   return sizeof(wxl_script_vm_args);
         default:                       return 0;
         }
     }
@@ -563,6 +774,249 @@ namespace
         Check(args.chunk_x == 3 && args.chunk_y == 9, "and the chunk the call named");
     }
 
+    // --- wxl.script: what a mod registers, called back through the fake engine -----------------
+
+    wxl_str Str(const char* text) { return wxl_str{text, static_cast<uint32_t>(strlen(text))}; }
+
+    const wxl_script_api& Script() { return wxl::core::services::ScriptApi(); }
+
+    int      g_greetCalls      = 0;
+    uint32_t g_greetArgTypes[3]{};
+    bool     g_greetWrongTypeMissed = false;
+
+    /// Greet(n, name): answers "hi <name>", n * 2, true, nil; fails on anything else.
+    void WXL_CALL Greet(wxl_script_call* call, void* user)
+    {
+        const wxl_script_api& api = Script();
+        if (user) *static_cast<int*>(user) += 1;
+
+        double  n = 0.0;
+        wxl_str s{nullptr, 0};
+        if (api.arg_count(call) != 2 || !api.arg_number(call, 0, &n) || !api.arg_string(call, 1, &s))
+        {
+            api.fail(call, Str("usage: Greet(number, string)"));
+            return;
+        }
+        for (uint32_t i = 0; i < 3; ++i) g_greetArgTypes[i] = api.arg_type(call, i);
+        wxl_bool flag = WXL_FALSE;
+        wxl_str  text{nullptr, 0};
+        g_greetWrongTypeMissed = api.arg_bool(call, 0, &flag) == WXL_FALSE &&
+                                 api.arg_string(call, 0, &text) == WXL_FALSE &&
+                                 api.arg_number(call, 1, &n) == WXL_FALSE && n == 21.0;
+
+        char line[64];
+        snprintf(line, sizeof line, "hi %.*s", static_cast<int>(s.size), s.data);
+        api.push_string(call, Str(line));
+        api.push_number(call, n * 2);
+        api.push_bool(call, WXL_TRUE);
+        api.push_nil(call);
+    }
+
+    /// Fails after pushing: the push must not reach the caller.
+    void WXL_CALL Failing(wxl_script_call* call, void*)
+    {
+        Script().push_number(call, 1.0);
+        Script().fail(call, Str("nope"));
+    }
+
+#if defined(_MSC_VER)
+    void WXL_CALL Crashing(wxl_script_call*, void*)
+    {
+        volatile int* nowhere = nullptr;
+        *nowhere              = 1;
+    }
+#endif
+
+    /// A mod's ScriptVmReady handler: registers its function on every new context and keeps
+    /// the answer in `user`.
+    void WXL_CALL OnVmReadyRegister(void* user, const void*)
+    {
+        *static_cast<wxl_result*>(user) = Script().register_function("WxlHarnessGreet", &Greet, &g_greetCalls);
+    }
+
+    /// FrameScript: Initialize's After raises ScriptVmReady naming the context CGGameUI's state
+    /// implies, Destroy's Before raises ScriptVmClosing naming the same one; the service takes
+    /// registrations only between the two, drives calls through the engine, and starts over on
+    /// the next context.
+    void CheckFrameScript()
+    {
+        const wxl_script_api& api = Script();
+        Check(g_host->Services().Get(WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION) == &api,
+              "wxl.script is published to mods");
+        Check(api.struct_size == sizeof(wxl_script_api), "with the layout script.h declares");
+
+        Check(api.register_function("WxlHarnessEarly", &Greet, nullptr) == WXL_E_FAILED,
+              "register_function before any context exists is refused");
+        Check(api.register_event("WXL_HARNESS_EARLY") == WXL_E_FAILED &&
+                  api.fire_event("WXL_HARNESS_EARLY", nullptr, 0) == WXL_E_FAILED &&
+                  api.run(Str("x = 1"), "early") == WXL_E_FAILED,
+              "so are register_event, fire_event and run");
+
+        wxl_result registered = WXL_E_FAILED;
+        const wxl_subscription onReady =
+            g_host->Events().Subscribe(WXL_EV_ScriptVmReady, &OnVmReadyRegister, &registered, 0);
+
+        // The login-side context: CGGameUI is neither logging in nor initialised.
+        g_vm.live       = true;
+        g_uiInitialized = 0;
+        g_uiLoggingIn   = 0;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::Before(0);
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        const Received* ready = Only(WXL_EV_ScriptVmReady);
+        Check(ready != nullptr, "FrameScript.Initialize raises ScriptVmReady once");
+        if (ready)
+            Check(ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE &&
+                      ready->As<wxl_script_vm_args>().native_state == &g_vm,
+                  "it says glue while CGGameUI is neither logging in nor initialised, and carries the client's state");
+        Check(api.context() == WXL_SCRIPT_CONTEXT_GLUE, "context() says the same");
+        Check(registered == WXL_OK && g_vm.closures.count("WxlHarnessGreet") == 1,
+              "a function registered from the ScriptVmReady handler is a global of that context");
+        Check(api.register_function("WxlHarnessGreet", &Greet, nullptr) == WXL_E_INVALID,
+              "registering a name again is refused");
+        g_vm.clientGlobals.insert("GetTime");
+        Check(api.register_function("GetTime", &Greet, nullptr) == WXL_E_INVALID,
+              "a global the client set is not shadowed");
+        Check(api.register_function(nullptr, &Greet, nullptr) == WXL_E_INVALID &&
+                  api.register_function("", &Greet, nullptr) == WXL_E_INVALID &&
+                  api.register_function("WxlHarnessNull", nullptr, nullptr) == WXL_E_INVALID,
+              "a null name or function is refused");
+
+        bool found = false;
+        std::vector<FakeValue> results = CallGlobal("WxlHarnessGreet", {Number(21.0), String("bob")}, &found);
+        Check(found && g_greetCalls == 1, "a call from script reaches the mod's function");
+        Check(results.size() == 4 && results[0].type == WXL_VALUE_STRING && results[0].string == "hi bob" &&
+                  results[1].type == WXL_VALUE_NUMBER && results[1].number == 42.0 &&
+                  results[2].type == WXL_VALUE_BOOL && results[2].boolean &&
+                  results[3].type == WXL_VALUE_NIL,
+              "with its arguments, and brings back what it pushed, in order");
+        Check(g_greetArgTypes[0] == WXL_VALUE_NUMBER && g_greetArgTypes[1] == WXL_VALUE_STRING &&
+                  g_greetArgTypes[2] == WXL_VALUE_NIL,
+              "arg_type names each argument's type and nil past the last");
+        Check(g_greetWrongTypeMissed, "an argument of the wrong type is a miss, not a conversion");
+        results = CallGlobal("WxlHarnessGreet", {Number(1.0)}, &found);
+        Check(results.empty() && !g_vm.errors.empty() && g_vm.errors.back() == "usage: Greet(number, string)",
+              "fail raises its message on the script side once the function returns");
+
+        Check(api.register_function("WxlHarnessFail", &Failing, nullptr) == WXL_OK, "a second function registers");
+        results = CallGlobal("WxlHarnessFail", {}, &found);
+        Check(found && results.empty() && g_vm.errors.back() == "nope",
+              "a function that fails after pushing hands the caller the error, not the results");
+
+        Check(api.run(Str("print(1)"), "harness") == WXL_OK && !g_vm.ran.empty() &&
+                  g_vm.ran.back() == "harness: print(1)",
+              "run hands the chunk and its name to the engine");
+
+        // Events: one declared before the client installs its table, one after.
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1 &&
+                  g_vm.eventTables.back() == std::vector<std::string>{"WXL_HARNESS_EVENT"},
+              "an event declared before the client's table is installed on its own");
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1,
+              "declaring it again changes nothing");
+        const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
+        wxl::seam::FrameScript::CreateEvents::Before(clientNames, 2);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
+        Check(g_vm.eventTables.size() == 2 &&
+                  g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT"},
+              "once the client installs its table, FrameScript.CreateEvents installs it again with the declared event behind it");
+        Check(api.register_event("WXL_HARNESS_LATE") == WXL_OK && g_vm.eventTables.size() == 3 &&
+                  g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT", "WXL_HARNESS_LATE"},
+              "an event declared afterwards is appended, keeping every index");
+        const wxl_value payload[2] = {wxl_value{WXL_VALUE_NUMBER, {7.0}}, wxl_value{WXL_VALUE_STRING, {0.0}}};
+        wxl_value       text       = payload[1];
+        text.as.string             = Str("x");
+        const wxl_value args[2]    = {payload[0], text};
+        Check(api.fire_event("WXL_HARNESS_LATE", args, 2) == WXL_OK && g_vm.signals.size() == 1 &&
+                  g_vm.signals[0].index == 3 && g_vm.signals[0].args.size() == 2 &&
+                  g_vm.signals[0].args[0].number == 7.0 && g_vm.signals[0].args[1].string == "x" &&
+                  g_vm.stack.empty(),
+              "fire_event signals the event at its index with the values pushed, and leaves the stack as it found it");
+        Check(api.fire_event("WXL_HARNESS_NOT_DECLARED", nullptr, 0) == WXL_E_NOT_FOUND,
+              "firing an event nobody declared is not found");
+
+#if defined(_MSC_VER)
+        Check(api.register_function("WxlHarnessCrash", &Crashing, nullptr) == WXL_OK, "a faulting function registers like any other");
+        results = CallGlobal("WxlHarnessCrash", {}, &found);
+        Check(found && results.empty() && g_vm.errors.back().find("WxlHarnessCrash faulted (access violation") != std::string::npos,
+              "a script function that faults answers the caller with an error naming the fault, and the harness is still here");
+        Check(g_vm.closures.count("WxlHarnessCrash") == 0, "and the global is taken away");
+        Check(g_vm.closures.count("WxlHarnessGreet") == 1, "the others stay");
+#endif
+
+        // Closing: announced with the context Ready named, then nothing is accepted.
+        g_received.clear();
+        wxl::seam::FrameScript::Destroy::Before();
+        wxl::seam::FrameScript::Destroy::After();
+        const Received* closing = Only(WXL_EV_ScriptVmClosing);
+        Check(closing != nullptr && closing->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
+              "FrameScript.Destroy raises ScriptVmClosing once, naming the context Ready did");
+        g_vm.live = false;
+        Check(api.register_function("WxlHarnessLate", &Greet, nullptr) == WXL_E_FAILED &&
+                  api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_FAILED,
+              "after ScriptVmClosing nothing is accepted until the next context");
+        {
+            // A closure the dead context left behind, called anyway: an error, not the mod.
+            g_greetCalls      = 0;
+            FakeClosure stale = g_vm.closures["WxlHarnessGreet"];
+            g_vm.closures.clear();
+            g_vm.runningSlot = stale.slot;
+            const int32_t pushed = stale.fn(&g_vm);
+            Check(pushed == 0 && g_greetCalls == 0 && g_vm.errors.back().find("no longer provides") != std::string::npos,
+                  "a closure outliving its registration answers an error instead of calling the mod");
+        }
+        g_received.clear();
+        wxl::seam::FrameScript::Destroy::Before();
+        wxl::seam::FrameScript::Destroy::After();
+        Check(g_received.empty(), "a Destroy with no context announced raises nothing");
+
+        // The game context: InitializeFrameXML sets m_loggingIn before it creates the context.
+        g_vm.live     = true;
+        g_uiLoggingIn = 1;
+        registered    = WXL_E_FAILED;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::Before(1);
+        wxl::seam::FrameScript::Initialize::After(1, 1);
+        ready = Only(WXL_EV_ScriptVmReady);
+        Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
+              "the context created while CGGameUI is logging in is the game's");
+        Check(registered == WXL_OK && g_vm.closures.count("WxlHarnessGreet") == 1,
+              "the handler registered again on the new context, and the name was free: the old registration died with its context");
+        Check(api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_NOT_FOUND,
+              "the events declared on the old context are gone too");
+        results = CallGlobal("WxlHarnessGreet", {Number(2.0), String("ann")}, &found);
+        Check(found && results.size() == 4 && results[0].string == "hi ann", "and the new registration works");
+
+        // ReloadUI: Flush destroys and recreates with m_initialized still set.
+        wxl::seam::FrameScript::Destroy::Before();
+        wxl::seam::FrameScript::Destroy::After();
+        g_vm.closures.clear();
+        g_uiLoggingIn   = 0;
+        g_uiInitialized = 1;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::Before(0);
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        ready = Only(WXL_EV_ScriptVmReady);
+        Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
+              "a context recreated while the game interface is initialised is the game's");
+
+        // Back to the glue: ShutdownGame cleared both flags before the flush.
+        wxl::seam::FrameScript::Destroy::Before();
+        wxl::seam::FrameScript::Destroy::After();
+        g_vm.closures.clear();
+        g_uiInitialized = 0;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::Before(0);
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        ready = Only(WXL_EV_ScriptVmReady);
+        Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
+              "a context recreated once the game interface is down is the glue's");
+
+        wxl::seam::FrameScript::Destroy::Before();
+        wxl::seam::FrameScript::Destroy::After();
+        g_vm.live = false;
+        g_host->Events().Unsubscribe(onReady);
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -620,6 +1074,8 @@ int main()
     config.runtime_id   = "harness";
     config.runtime_name = "seam harness";
     config.events       = wxl::core::seams::RaisedEvents();
+    config.services.push_back(wxl::host::PublishedService{
+        WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &wxl::core::services::ScriptApi()});
     g_host              = std::make_unique<wxl::host::ModHost>(std::move(config));
 
     printf("seam harness: %zu seam(s), %zu raisable event(s), %zu binding row(s) left unbound by the fake\n",
@@ -635,6 +1091,7 @@ int main()
     CheckPlayer();
     CheckGameUI();
     CheckMapArea();
+    CheckFrameScript();
 #if defined(_M_IX86)
     CheckThiscallShim();
 #endif

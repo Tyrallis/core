@@ -24,6 +24,7 @@
 #include "wxl/events.h"
 #include "wxl/offsets/layout.hpp"
 #include "wxl/offsets/site.hpp"
+#include "wxl/services/script.h"
 
 #include <windows.h>
 #include <cstddef>
@@ -85,6 +86,64 @@ namespace
     }
 
     constexpr std::size_t kCorpsePosition = WXL_FIELD("CGCorpse_C", "m_passenger") + WXL_FIELD("CPassenger", "m_position");
+
+    // The client's Lua 5.1 and the FrameScript layer, called as the C functions they are. The
+    // pseudo-indices and type codes are Lua 5.1's public API, the same in every build of it.
+    constexpr int32_t kLuaGlobalsIndex = -10002;              // LUA_GLOBALSINDEX
+    constexpr int32_t kLuaUpvalue1     = kLuaGlobalsIndex - 1; // lua_upvalueindex(1)
+    constexpr int32_t kLuaTBoolean     = 1;
+    constexpr int32_t kLuaTNumber      = 3;
+    constexpr int32_t kLuaTString      = 4;
+
+    using LuaGetTop        = int32_t(__cdecl*)(void* L);
+    using LuaSetTop        = void(__cdecl*)(void* L, int32_t index);
+    using LuaType          = int32_t(__cdecl*)(void* L, int32_t index);
+    using LuaToNumber      = double(__cdecl*)(void* L, int32_t index);
+    using LuaToLString     = const char*(__cdecl*)(void* L, int32_t index, std::size_t* length);
+    using LuaToBoolean     = int32_t(__cdecl*)(void* L, int32_t index);
+    using LuaPushNumber    = void(__cdecl*)(void* L, double value);
+    using LuaPushLString   = void(__cdecl*)(void* L, const char* text, std::size_t length);
+    using LuaPushBoolean   = void(__cdecl*)(void* L, int32_t value);
+    using LuaPushNil       = void(__cdecl*)(void* L);
+    using LuaPushCClosure  = void(__cdecl*)(void* L, wxl_script_native_fn fn, int32_t upvalues);
+    using LuaGetField      = void(__cdecl*)(void* L, int32_t index, const char* key);
+    using LuaSetField      = void(__cdecl*)(void* L, int32_t index, const char* key);
+    using LuaError         = int32_t(__cdecl*)(void* L);
+    using ScriptExecute    = void(__cdecl*)(const char* source, const char* name, const char* taint);
+    using ScriptCreateEvts = void(__cdecl*)(const char** names, uint32_t count);
+    using ScriptSignal     = void(__cdecl*)(uint32_t index, void* L, int32_t arg_count);
+
+    LuaGetTop       LuaGetTopAt() { return reinterpret_cast<LuaGetTop>(WXL_SITE("lua_gettop", 0)); }
+    LuaSetTop       LuaSetTopAt() { return reinterpret_cast<LuaSetTop>(WXL_SITE("lua_settop", 0)); }
+    LuaType         LuaTypeAt() { return reinterpret_cast<LuaType>(WXL_SITE("lua_type", 0)); }
+    LuaToNumber     LuaToNumberAt() { return reinterpret_cast<LuaToNumber>(WXL_SITE("lua_tonumber", 0)); }
+    LuaToLString    LuaToLStringAt() { return reinterpret_cast<LuaToLString>(WXL_SITE("lua_tolstring", 0)); }
+    LuaToBoolean    LuaToBooleanAt() { return reinterpret_cast<LuaToBoolean>(WXL_SITE("lua_toboolean", 0)); }
+    LuaPushNumber   LuaPushNumberAt() { return reinterpret_cast<LuaPushNumber>(WXL_SITE("lua_pushnumber", 0)); }
+    LuaPushLString  LuaPushLStringAt() { return reinterpret_cast<LuaPushLString>(WXL_SITE("lua_pushlstring", 0)); }
+    LuaPushBoolean  LuaPushBooleanAt() { return reinterpret_cast<LuaPushBoolean>(WXL_SITE("lua_pushboolean", 0)); }
+    LuaPushNil      LuaPushNilAt() { return reinterpret_cast<LuaPushNil>(WXL_SITE("lua_pushnil", 0)); }
+    LuaPushCClosure LuaPushCClosureAt() { return reinterpret_cast<LuaPushCClosure>(WXL_SITE("lua_pushcclosure", 0)); }
+    LuaGetField     LuaGetFieldAt() { return reinterpret_cast<LuaGetField>(WXL_SITE("lua_getfield", 0)); }
+    LuaSetField     LuaSetFieldAt() { return reinterpret_cast<LuaSetField>(WXL_SITE("lua_setfield", 0)); }
+    LuaError        LuaErrorAt() { return reinterpret_cast<LuaError>(WXL_SITE("lua_error", 0)); }
+
+    // Two overloads carry each FrameScript name: the (source, name, taint) Execute and the
+    // (index, L, argCount) SignalEvent are the ones wxl.script drives.
+    ScriptExecute    ScriptExecuteAt() { return reinterpret_cast<ScriptExecute>(WXL_SITE_AT("FrameScript_Execute", 0x00819210, 0)); }
+    ScriptCreateEvts ScriptCreateEventsAt() { return reinterpret_cast<ScriptCreateEvts>(WXL_SITE("FrameScript_CreateEvents", 0)); }
+    ScriptSignal     ScriptSignalEventAt() { return reinterpret_cast<ScriptSignal>(WXL_SITE_AT("FrameScript_SignalEvent", 0x0081AA00, 0)); }
+
+    uint32_t ValueType(int32_t luaType)
+    {
+        switch (luaType)
+        {
+        case kLuaTNumber: return WXL_VALUE_NUMBER;
+        case kLuaTString: return WXL_VALUE_STRING;
+        case kLuaTBoolean: return WXL_VALUE_BOOL;
+        default: return WXL_VALUE_NIL;
+        }
+    }
 }
 
 namespace wxl::core::binding::x86
@@ -159,6 +218,132 @@ namespace wxl::core::binding
     uint64_t ui_target_guid(void)
     {
         return IsClient() ? *reinterpret_cast<const uint64_t*>(WXL_STATIC("CGGameUI::m_lockedTarget")) : 0;
+    }
+
+    int32_t ui_initialized(void)
+    {
+        return IsClient() ? *reinterpret_cast<const int32_t*>(WXL_STATIC("CGGameUI::m_initialized")) : 0;
+    }
+
+    uint8_t ui_logging_in(void)
+    {
+        return IsClient() ? *reinterpret_cast<const uint8_t*>(WXL_STATIC("CGGameUI::m_loggingIn")) : 0;
+    }
+
+    // --- script.def: the client's Lua, called as the C functions they are ---------------------
+
+    void* script_state(void)
+    {
+        // The FrameScript.cpp s_context: OsIME.cpp has one of the same name.
+        constexpr std::uintptr_t kContext = WXL_STATIC_AT("s_context", 0x00D3F78C);
+        return IsClient() ? *reinterpret_cast<void* const*>(kContext) : nullptr;
+    }
+
+    wxl_bool script_global_is_set(void* state, const char* name)
+    {
+        if (!IsClient() || !state || !name) return WXL_FALSE;
+        LuaGetFieldAt()(state, kLuaGlobalsIndex, name);
+        const int32_t type = LuaTypeAt()(state, -1);
+        LuaSetTopAt()(state, -2);
+        return type > 0 ? WXL_TRUE : WXL_FALSE;
+    }
+
+    void script_set_global_closure(void* state, const char* name, wxl_script_native_fn fn, uint32_t slot)
+    {
+        if (!IsClient() || !state || !name || !fn) return;
+        LuaPushNumberAt()(state, static_cast<double>(slot));
+        LuaPushCClosureAt()(state, fn, 1);
+        LuaSetFieldAt()(state, kLuaGlobalsIndex, name);
+    }
+
+    void script_clear_global(void* state, const char* name)
+    {
+        if (!IsClient() || !state || !name) return;
+        LuaPushNilAt()(state);
+        LuaSetFieldAt()(state, kLuaGlobalsIndex, name);
+    }
+
+    uint32_t script_closure_slot(void* state)
+    {
+        if (!IsClient() || !state) return 0;
+        return static_cast<uint32_t>(LuaToNumberAt()(state, kLuaUpvalue1));
+    }
+
+    int32_t script_top(void* state)
+    {
+        return IsClient() && state ? LuaGetTopAt()(state) : 0;
+    }
+
+    uint32_t script_value_type(void* state, int32_t index)
+    {
+        return IsClient() && state ? ValueType(LuaTypeAt()(state, index)) : WXL_VALUE_NIL;
+    }
+
+    double script_to_number(void* state, int32_t index)
+    {
+        return IsClient() && state ? LuaToNumberAt()(state, index) : 0.0;
+    }
+
+    const char* script_to_string(void* state, int32_t index, uint32_t* length)
+    {
+        if (!IsClient() || !state) return nullptr;
+        std::size_t size = 0;
+        const char* text = LuaToLStringAt()(state, index, &size);
+        if (length) *length = static_cast<uint32_t>(size);
+        return text;
+    }
+
+    wxl_bool script_to_bool(void* state, int32_t index)
+    {
+        return IsClient() && state && LuaToBooleanAt()(state, index) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    void script_push_number(void* state, double value)
+    {
+        if (IsClient() && state) LuaPushNumberAt()(state, value);
+    }
+
+    void script_push_string(void* state, const char* text, uint32_t length)
+    {
+        if (IsClient() && state) LuaPushLStringAt()(state, text ? text : "", text ? length : 0u);
+    }
+
+    void script_push_bool(void* state, wxl_bool value)
+    {
+        if (IsClient() && state) LuaPushBooleanAt()(state, value ? 1 : 0);
+    }
+
+    void script_push_nil(void* state)
+    {
+        if (IsClient() && state) LuaPushNilAt()(state);
+    }
+
+    void script_pop(void* state, int32_t count)
+    {
+        if (IsClient() && state && count > 0) LuaSetTopAt()(state, -count - 1);
+    }
+
+    void script_error(void* state, const char* message)
+    {
+        if (!IsClient() || !state) return;
+        const char* text = message ? message : "WarcraftXL: error";
+        LuaPushLStringAt()(state, text, std::strlen(text));
+        LuaErrorAt()(state);
+    }
+
+    void script_run(const char* source, const char* name)
+    {
+        if (IsClient() && source) ScriptExecuteAt()(source, name ? name : "WarcraftXL", nullptr);
+    }
+
+    void script_create_events(const char** names, uint32_t count)
+    {
+        if (IsClient() && (names || count == 0)) ScriptCreateEventsAt()(names, count);
+    }
+
+    void script_signal_event(uint32_t index, void* state, int32_t arg_count)
+    {
+        if (IsClient() && state) ScriptSignalEventAt()(index, state, arg_count);
     }
 
     wxl_bool object_position(const void* object, wxl_vec3* out)
