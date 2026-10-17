@@ -96,10 +96,15 @@ set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 # of the seams (one file per domain of include/wxl/seams/). Each architecture adds its entry
 # point and its attachment to the client below: the detours that run those bodies on x86, the
 # exports the client calls on x64.
+# The domain bodies are globbed with CONFIGURE_DEPENDS: adding a domain means adding its .def and
+# its .cpp, and CMake picks the file up on the next build without this list being edited.
+file(GLOB WXL_SEAM_BODIES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/seams/*.cpp")
+list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/(AttachX86|Table)\.cpp$")
+
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
     src/common/Log.cpp
-    src/seams/World.cpp)
+    ${WXL_SEAM_BODIES})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 target_include_directories(wxl-core PRIVATE src include)
 target_link_libraries(wxl-core PRIVATE wxl::host)
