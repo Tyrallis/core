@@ -27,13 +27,19 @@ binary, and write them out as X-macro tables for `core`.
     static BLIT_FUNCTION s_blits[BlitFormats_Last][BlitFormats_Last][BlitAlphas_Last];
 
 Outputs (in the output directory):
-    functions.def   one row per function address
+    functions.def   one row per function address, with its extent (bound and length)
     statics.def     one row per static address
     unparsed.txt    every OFFSET:/STATIC: tag the tool could not confidently name
     summary.txt     counts, coverage and anomalies
 
 Invariant: every OFFSET:/STATIC: tag ends up either as rows or as an unparsed entry, and the
 tool refuses to write anything if the totals do not reconcile.
+
+Function extents come from the original image (Wow.exe): its PE section headers bucket the
+addresses, so a function's `bound` is the distance to the next tagged address in the same
+section (an upper bound: untagged code may lie in between), and a linear sweep of its bytes
+(x86_sweep.py) gives its `length` where the int3 padding between functions makes the end
+unambiguous.
 
 Python 3, standard library only.
 """
@@ -42,7 +48,12 @@ import argparse
 import collections
 import os
 import re
+import struct
 import sys
+
+sys.dont_write_bytecode = True      # no __pycache__ next to the tool
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import x86_sweep  # noqa: E402
 
 SOURCE_EXTENSIONS = ('.cpp', '.c', '.h', '.hpp', '.inl', '.cc', '.cxx')
 HEADER_EXTENSIONS = ('.h', '.hpp', '.inl')
@@ -537,6 +548,168 @@ def c_string(s):
 
 
 # ----------------------------------------------------------------------------------------------
+# The original image: PE sections, and function extents derived from them.
+# ----------------------------------------------------------------------------------------------
+
+IMAGE_RELATIVE = os.path.join('client', 'game', 'base', 'Wow.exe')
+
+
+class Section:
+    __slots__ = ('name', 'start', 'end', 'raw_offset', 'raw_size', 'code')
+
+    def __init__(self, name, start, end, raw_offset, raw_size, code):
+        self.name = name
+        self.start = start          # virtual address of the first byte
+        self.end = end              # virtual address past the last byte (VirtualSize)
+        self.raw_offset = raw_offset
+        self.raw_size = raw_size
+        self.code = code            # IMAGE_SCN_CNT_CODE
+
+
+class Image:
+    """Wow.exe: its section table and a reader for its bytes by virtual address."""
+
+    def __init__(self, path):
+        self.path = path
+        with open(path, 'rb') as f:
+            self.data = f.read()
+        d = self.data
+        if len(d) < 0x40 or d[:2] != b'MZ':
+            fail('not a PE image: %s' % path)
+        pe = struct.unpack_from('<I', d, 0x3C)[0]
+        if d[pe:pe + 4] != b'PE\0\0':
+            fail('not a PE image: %s' % path)
+        machine, count, _, _, _, opt_size, _ = struct.unpack_from('<HHIIIHH', d, pe + 4)
+        if machine != 0x14C:
+            fail('not a 32-bit x86 image: %s' % path)
+        magic = struct.unpack_from('<H', d, pe + 24)[0]
+        if magic != 0x10B:
+            fail('not a PE32 image: %s' % path)
+        self.base = struct.unpack_from('<I', d, pe + 24 + 28)[0]
+        self.sections = []
+        off = pe + 24 + opt_size
+        for i in range(count):
+            hdr = d[off + i * 40:off + i * 40 + 40]
+            name = hdr[:8].rstrip(b'\0').decode('ascii', errors='replace')
+            vsize, vaddr, rsize, roff = struct.unpack_from('<IIII', hdr, 8)
+            flags = struct.unpack_from('<I', hdr, 36)[0]
+            self.sections.append(Section(name, self.base + vaddr, self.base + vaddr + vsize,
+                                         roff, rsize, bool(flags & 0x20)))
+
+    def section_of(self, va):
+        for s in self.sections:
+            if s.start <= va < s.end:
+                return s
+        return None
+
+    def read(self, va, n):
+        """Bytes [va, va+n) of the mapped image; bytes past a section's raw data read as zero."""
+        s = self.section_of(va)
+        if s is None:
+            return b''
+        n = min(n, s.end - va)
+        raw = va - s.start
+        avail = max(0, min(n, s.raw_size - raw))
+        out = self.data[s.raw_offset + raw:s.raw_offset + raw + avail] if avail else b''
+        return out + b'\0' * (n - len(out))
+
+
+def find_image(explicit):
+    """The image path: --image, then $DAWNLIGHT_ROOT, then the ancestors of this script."""
+    if explicit:
+        return explicit if os.path.isfile(explicit) else None
+    root = os.environ.get('DAWNLIGHT_ROOT')
+    if root and os.path.isfile(os.path.join(root, IMAGE_RELATIVE)):
+        return os.path.join(root, IMAGE_RELATIVE)
+    here = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        candidate = os.path.join(here, IMAGE_RELATIVE)
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+
+
+class Extent:
+    __slots__ = ('bound', 'length', 'status', 'section')
+
+    def __init__(self, bound, length, status, section):
+        self.bound = bound          # distance to the next tagged address in the section; 0 = none
+        self.length = length        # decoded length; 0 = not determined
+        self.status = status        # x86_sweep status, or 'no image'
+        self.section = section      # section name, or None
+
+
+def compute_extents(image, fn_addresses, st_addresses):
+    """
+    Extent per distinct function address. Boundaries are the distinct tagged addresses (of both
+    kinds) of the same section, so a folded address counts once and a code address never takes
+    its bound from a data address. Without an image every function address is one bucket and
+    no length is decoded.
+    """
+    extents = {}
+    if image is None:
+        ordered = sorted(fn_addresses)
+        for a, nxt in zip(ordered, ordered[1:] + [None]):
+            extents[a] = Extent(nxt - a if nxt is not None else 0, 0, 'no image', None)
+        return extents
+    buckets = collections.defaultdict(set)
+    for a in fn_addresses | st_addresses:
+        s = image.section_of(a)
+        buckets[s.name if s else None].add(a)
+    for name, addresses in buckets.items():
+        ordered = sorted(addresses)
+        section = next((s for s in image.sections if s.name == name), None)
+        for a, nxt in zip(ordered, ordered[1:] + [None]):
+            if a not in fn_addresses:
+                continue
+            bound = nxt - a if nxt is not None else 0
+            length, status = 0, 'no section'
+            if section is not None and section.code:
+                limit = nxt if nxt is not None else section.end
+                end, status = x86_sweep.function_end(image.read, a, limit)
+                if end is not None:
+                    length = end - a
+            extents[a] = Extent(bound, length, status, name)
+    return extents
+
+
+def gap_is_whole_functions(image, start, limit):
+    """
+    Whether [start, limit) is int3 padding plus a chain of functions the sweep can delimit,
+    the last of which ends at limit. Returns (True, limit) or (False, where the chain stops).
+    """
+    pos = start
+    align = x86_sweep.ALIGN
+    chained = 0
+    while pos < limit:
+        if image.read(pos, 1) == b'\xcc':
+            pos += 1
+            continue
+        if pos % align:
+            return False, pos, chained
+        end, status = x86_sweep.function_end(image.read, pos, limit)
+        if end is None:
+            return False, pos, chained
+        pos = end
+        chained += 1
+    return True, limit, chained
+
+
+def padding_start_before(image, va):
+    """The start of the int3 run that ends at va, or va when the byte before it is not int3."""
+    s = image.section_of(va - 1)
+    if s is None:
+        return va
+    p = va
+    while p - 1 >= s.start and image.read(p - 1, 1) == b'\xcc':
+        p -= 1
+    return p
+
+
+# ----------------------------------------------------------------------------------------------
 # Main pass.
 # ----------------------------------------------------------------------------------------------
 
@@ -720,6 +893,19 @@ FUNCTION_NOTES = """\
 //            applied; explicit specialisations keep their <args>; operators as `operator+=`,
 //            `operator()`, `operator uint32_t`).
 //   address  one instantiation's address. A template tag lists several addresses: one row each.
+//   bound    an UPPER BOUND on the function's size: the distance from its address to the next
+//            tagged address in the same section of Wow.exe (functions and statics, each
+//            distinct address once). The decompilation does not cover the whole binary, so
+//            untagged code may sit between the two; a large bound means a large untagged gap,
+//            not a large function. 0 is a sentinel: the address is the last tagged one of its
+//            section. Rows sharing an address (folded bodies) share the bound.
+//   length   the function's decoded size, from a linear sweep of its bytes that stops at the
+//            int3 padding the linker puts before the next function (see x86_sweep.py). Always
+//            <= bound when both are known. 0 means the sweep could not settle the end: the
+//            function ends exactly on a 16-byte boundary with code after it, which the bytes
+//            alone cannot split between it and its (untagged) successor, or an opcode the
+//            decoder does not know. A site inside the function is valid at delta < length,
+//            or < bound when length is 0.
 //   verify   "manual", "auto" or "none": the VERIFY: tag above the OFFSET: tag, i.e. whether the
 //            decompiled body was checked by hand against the original. A confidence signal.
 //   targs    the instantiation's template arguments when the tag gives them ("" otherwise);
@@ -744,17 +930,18 @@ def row_key(r):
     return (r.address, r.name, r.file, r.line, r.targs)
 
 
-def write_functions(path, rows):
+def write_functions(path, rows, extents):
     rows = sorted(rows, key=row_key)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(DEF_HEADER.format(
             title='Function addresses of Wow.exe 3.3.5a (12340), derived from the client fork.',
             tag='OFFSET:', macro='WXL_OFFSET_FUNCTION',
-            columns='(name, address, verify, targs, file, line)',
+            columns='(name, address, bound, length, verify, targs, file, line)',
             count=len(rows), notes=FUNCTION_NOTES, filename='functions.def'))
         for r in rows:
-            f.write('WXL_OFFSET_FUNCTION(%s, 0x%08X, %s, %s, %s, %d)\n' % (
-                c_string(r.name), r.address, c_string(r.verify or 'none'),
+            e = extents[r.address]
+            f.write('WXL_OFFSET_FUNCTION(%s, 0x%08X, 0x%X, 0x%X, %s, %s, %s, %d)\n' % (
+                c_string(r.name), r.address, e.bound, e.length, c_string(r.verify or 'none'),
                 c_string(r.targs), c_string(r.file), r.line))
 
 
@@ -789,7 +976,138 @@ def pct(part, whole):
     return 100.0 * part / whole if whole else 0.0
 
 
-def write_summary(path, root, files, results, out_dir):
+BOUND_BUCKETS = ((16, 'under 16'), (64, '16 to 63'), (256, '64 to 255'), (1024, '256 to 1023'),
+                 (4096, '1024 to 4095'), (None, '4096 and over'))
+
+
+def bound_bucket(b):
+    for limit, label in BOUND_BUCKETS:
+        if limit is None or b < limit:
+            return label
+
+
+def write_extent_summary(w, image, extents, fn_rows, st_rows):
+    fn_addresses = {r.address for r in fn_rows}
+    st_addresses = {r.address for r in st_rows}
+    names = collections.defaultdict(set)
+    for r in fn_rows:
+        names[r.address].add(r.name)
+
+    def label(a):
+        nm = sorted(names[a])
+        return nm[0] + (' (+%d more)' % (len(nm) - 1) if len(nm) > 1 else '')
+
+    w('Image and sections (what the function extents are measured against)')
+    w('--------------------------------------------------------------------')
+    if image is None:
+        w('  IMAGE NOT FOUND: %s was not located (--image, $DAWNLIGHT_ROOT, or an ancestor of the tool).' % IMAGE_RELATIVE)
+        w('  FALLBACK HEURISTIC IN EFFECT: every function address is treated as one code section, the')
+        w('  bound is the distance to the next tagged function address whatever its section, and no')
+        w('  length is decoded (every length column is 0). Re-run with the image to get real extents.')
+    else:
+        w('  image : %s, %d bytes, base 0x%08X, %d sections' % (
+            os.path.basename(image.path), len(image.data), image.base, len(image.sections)))
+        w('  %-8s %-21s %-5s %10s %8s' % ('section', 'virtual range', 'kind', 'functions', 'statics'))
+        for s in image.sections:
+            fc = sum(1 for a in fn_addresses if s.start <= a < s.end)
+            sc = sum(1 for a in st_addresses if s.start <= a < s.end)
+            w('  %-8s 0x%08X-0x%08X %-5s %10d %8d' % (
+                s.name, s.start, s.end, 'code' if s.code else 'data', fc, sc))
+        out_fn = sorted(a for a in fn_addresses if image.section_of(a) is None)
+        out_st = sorted(a for a in st_addresses if image.section_of(a) is None)
+        w('  outside every section: functions %d, statics %d' % (len(out_fn), len(out_st)))
+        for a in out_fn[:20]:
+            w('    0x%08X  %s' % (a, label(a)))
+        for a in out_st[:20]:
+            w('    0x%08X  (static)' % a)
+        extra = [s.name for s in image.sections if s.name not in ('.text', '.rdata', '.data', '.rsrc', '.reloc', '.tls', '.idata', '.zdata')]
+        if extra:
+            w('  note: the image carries sections a stock 12340 Wow.exe does not (%s); only the' % ', '.join(extra))
+            w('  section ranges are used, and the bytes of .text are read as they are in this file.')
+    w('')
+
+    w('Function extents (bound: next tagged address in the section; length: decoded end)')
+    w('-----------------------------------------------------------------------------------')
+    distinct = sorted(fn_addresses)
+    bounds = [extents[a].bound for a in distinct]
+    sentinels = [a for a in distinct if extents[a].bound == 0]
+    w('  distinct function addresses %d (rows %d; rows sharing an address share its extent)' % (len(distinct), len(fn_rows)))
+    w('  sentinels (bound 0: last tagged address of its section): %d' % len(sentinels))
+    for a in sentinels:
+        e = extents[a]
+        w('    0x%08X  %s  in %s%s' % (a, label(a), e.section or '?',
+                                        ('  length 0x%X (decoded up to the section end)' % e.length) if e.length else ''))
+    w('  bound distribution (bytes), sentinels excluded:')
+    hist = collections.Counter(bound_bucket(b) for b in bounds if b)
+    for _, lbl in BOUND_BUCKETS:
+        w('    %-14s %6d' % (lbl, hist.get(lbl, 0)))
+    unaligned = [a for a in distinct if a % x86_sweep.ALIGN]
+    w('  function addresses not %d-byte aligned: %d (the linker aligns every function start; such a' % (x86_sweep.ALIGN, len(unaligned)))
+    w('  tag points into a body and should be fixed upstream; meanwhile it cuts the previous bound short)')
+    for a in unaligned:
+        w('    0x%08X  %s' % (a, label(a)))
+    w('  largest bounds (a big untagged gap follows each; the length shows the function itself):')
+    for a in sorted((a for a in distinct if extents[a].bound), key=lambda a: (-extents[a].bound, a))[:20]:
+        e = extents[a]
+        w('    0x%08X  bound 0x%06X  length 0x%05X  %s' % (a, e.bound, e.length, label(a)))
+    w('')
+
+    w('  length (0 = not determined):')
+    status = collections.Counter(extents[a].status for a in distinct)
+    determined = sum(1 for a in distinct if extents[a].length)
+    w('    determined %d, not determined %d' % (determined, len(distinct) - determined))
+    for st, text in (('padding', 'ends before int3 padding'),
+                     ('limit', 'runs up to the next tagged address, no padding between'),
+                     ('aligned', 'NOT determined: ret/jmp on a 16-byte boundary, code follows (its own funclet or an untagged neighbour)'),
+                     ('undecodable', 'NOT determined: opcode unknown to the decoder'),
+                     ('empty', 'NOT determined: the start byte is padding'),
+                     ('no section', 'NOT determined: address outside a code section'),
+                     ('no image', 'NOT determined: no image')):
+        if status.get(st):
+            w('    %6d  %s' % (status[st], text))
+    if image is not None:
+        over = [a for a in distinct if extents[a].length and extents[a].bound and extents[a].length > extents[a].bound]
+        w('    length greater than bound: %d (must be 0)' % len(over))
+        # Cross-check: between a decoded end and the next tagged address there must be nothing
+        # but int3 padding and whole untagged functions, i.e. the gap must itself decode as a
+        # chain of padded functions that lands exactly on the successor. A chain that breaks
+        # means the sweep ended too early (it cut the function) or the decoder is wrong.
+        direct = chained = 0
+        broken = []
+        for a, nxt in zip(distinct, distinct[1:]):
+            e = extents[a]
+            if not e.length or e.section != '.text':
+                continue
+            if e.length == e.bound:
+                direct += 1
+                continue
+            end = a + e.length
+            if padding_start_before(image, nxt) == end:
+                direct += 1
+                continue
+            ok, stop, count = gap_is_whole_functions(image, end, nxt)
+            if ok:
+                chained += 1
+            else:
+                broken.append((a, e, stop, count))
+        w('    cross-check of every decoded length against the bytes up to the tagged successor:')
+        w('      %6d  the successor (or the padding before it) follows the function directly' % direct)
+        w('      %6d  untagged functions follow: the gap decodes as a chain of padded functions' % chained)
+        w('      %6d  the gap does not decode as whole functions all the way to the successor. A chain' % len(broken))
+        w('              that stops after 0 functions right at the decoded end would mean the sweep cut the')
+        w('              function; one that stops later means the gap holds something the sweep cannot')
+        w('              delimit (an untagged function ending on alignment, data, CRT or library code).')
+        for a, e, stop, count in broken[:40]:
+            w('      0x%08X  length 0x%X (%s)  bound 0x%X  chain of %d stops at 0x%08X  %s' % (
+                a, e.length, e.status, e.bound, count, stop, label(a)))
+        for st in ('aligned', 'undecodable', 'empty'):
+            sample = [a for a in distinct if extents[a].status == st][:10]
+            if sample:
+                w('    first %s %d: %s' % (st, len(sample), ', '.join('0x%08X' % a for a in sample)))
+    w('')
+
+
+def write_summary(path, root, files, results, out_dir, image, extents):
     tags = results['tags']
     rows = results['rows']
     unparsed = results['unparsed']
@@ -869,6 +1187,8 @@ def write_summary(path, root, files, results, out_dir):
     w('  (see unparsed.txt)')
     w('')
 
+    write_extent_summary(w, image, extents, fn_rows, st_rows)
+
     w('Addresses carrying more than one row (thunks, Win32/Win64 twins, shared bodies)')
     w('------------------------------------------------------------------------------')
     for label, rl in (('functions', fn_rows), ('statics', st_rows)):
@@ -920,12 +1240,19 @@ def main():
     ap.add_argument('client', help='path to the client checkout (read-only input)')
     ap.add_argument('--out', default=None,
                     help='output directory (default: ../../offsets relative to this script)')
+    ap.add_argument('--image', default=None,
+                    help='the original Wow.exe, for sections and function extents (default: '
+                         '$DAWNLIGHT_ROOT/%s, else the first ancestor of this tool that has it)' % IMAGE_RELATIVE.replace('\\', '/'))
     ap.add_argument('--quiet', action='store_true', help='do not print the summary')
     args = ap.parse_args()
 
     root = os.path.abspath(args.client)
     if not os.path.isdir(root):
         fail('not a directory: %s' % root)
+    image_path = find_image(args.image)
+    if args.image and image_path is None:
+        fail('image not found: %s' % args.image)
+    image = Image(image_path) if image_path else None
     out_dir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'offsets')
     out_dir = os.path.abspath(out_dir)
 
@@ -959,11 +1286,21 @@ def main():
         if (r.file, r.kind) not in seen:
             fail('row without a tag: %s %s' % (r.file, r.name))
 
+    fn_rows = [r for r in results['rows'] if r.kind == 'OFFSET']
+    st_rows = [r for r in results['rows'] if r.kind == 'STATIC']
+    extents = compute_extents(image, {r.address for r in fn_rows}, {r.address for r in st_rows})
+    for r in fn_rows:
+        e = extents.get(r.address)
+        if e is None:
+            fail('no extent for 0x%08X' % r.address)
+        if e.length and e.bound and e.length > e.bound:
+            fail('length 0x%X exceeds bound 0x%X at 0x%08X' % (e.length, e.bound, r.address))
+
     os.makedirs(out_dir, exist_ok=True)
-    write_functions(os.path.join(out_dir, 'functions.def'), [r for r in results['rows'] if r.kind == 'OFFSET'])
-    write_statics(os.path.join(out_dir, 'statics.def'), [r for r in results['rows'] if r.kind == 'STATIC'])
+    write_functions(os.path.join(out_dir, 'functions.def'), fn_rows, extents)
+    write_statics(os.path.join(out_dir, 'statics.def'), st_rows)
     write_unparsed(os.path.join(out_dir, 'unparsed.txt'), results['unparsed'])
-    lines = write_summary(os.path.join(out_dir, 'summary.txt'), root, files, results, out_dir)
+    lines = write_summary(os.path.join(out_dir, 'summary.txt'), root, files, results, out_dir, image, extents)
     if not args.quiet:
         stop = next((i for i, l in enumerate(lines) if l.startswith('Addresses carrying')), len(lines))
         print('\n'.join(lines[:stop]))

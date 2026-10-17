@@ -44,6 +44,104 @@ Unparsed residue, by reason
 ---------------------------
   (see unparsed.txt)
 
+Image and sections (what the function extents are measured against)
+--------------------------------------------------------------------
+  image : Wow.exe, 7705088 bytes, base 0x00400000, 7 sections
+  section  virtual range         kind   functions  statics
+  .text    0x00401000-0x009DE3B3 code       24762        0
+  .rdata   0x009DF000-0x00AB5679 data           0      274
+  .data    0x00AB6000-0x00DD0508 data           0     4699
+  .zdata   0x00DD1000-0x00DD2000 data           0        0
+  .tls     0x00DD2000-0x00DD2019 data           0        2
+  .rsrc    0x00DD3000-0x00DFCAD0 data           0        0
+  .wxl     0x00DFD000-0x00DFD1A9 data           0        0
+  outside every section: functions 0, statics 0
+  note: the image carries sections a stock 12340 Wow.exe does not (.wxl); only the
+  section ranges are used, and the bytes of .text are read as they are in this file.
+
+Function extents (bound: next tagged address in the section; length: decoded end)
+-----------------------------------------------------------------------------------
+  distinct function addresses 24762 (rows 26077; rows sharing an address share its extent)
+  sentinels (bound 0: last tagged address of its section): 1
+    0x009C56E0  LoadEncryptedModule  in .text  length 0x162 (decoded up to the section end)
+  bound distribution (bytes), sentinels excluded:
+    under 16            0
+    16 to 63         5542
+    64 to 255       13131
+    256 to 1023      5386
+    1024 to 4095      648
+    4096 and over      54
+  function addresses not 16-byte aligned: 4 (the linker aligns every function start; such a
+  tag points into a body and should be fixed upstream; meanwhile it cuts the previous bound short)
+    0x00626546  Script_SetEquipmentSet
+    0x00630061  Script_SetBuybackItem
+    0x00899EFF  SPIRIT_IP_MR_V3_NAME_38
+    0x0089A78E  SPIRIT_IP_MR_V3_NAME_155
+  largest bounds (a big untagged gap follows each; the length shows the function itself):
+    0x009905C0  bound 0x017B00  length 0x0008B  GetLiquidTypeRecForArea
+    0x009AD0B0  bound 0x012CD0  length 0x0007A  DayNight::DNPlanet::Initialize
+    0x0040B7F0  bound 0x0118C0  length 0x0035D  WinMain
+    0x0088ABD0  bound 0x00B530  length 0x00000  BSN::BSNPrimitiveWalker::Walk
+    0x0083DFA0  bound 0x009C80  length 0x002CA  regexec
+    0x00473340  bound 0x007A90  length 0x000C2  FMOD_oggpack_read
+    0x00695FD0  bound 0x006DF0  length 0x06DE6  CGxDeviceOpenGl::ISetTexGen
+    0x006277F0  bound 0x006140  length 0x06134  CGTooltip::SetItem
+    0x00863580  bound 0x005690  length 0x0003B  luaK_patchlist
+    0x00440D80  bound 0x002A20  length 0x003EC  Blizzard::Process::LaunchChildProcessWithArguments
+    0x0043DEC0  bound 0x0029F0  length 0x000C1  TimerFunc
+    0x009013B0  bound 0x002620  length 0x02618  FMOD::CodecIT::openInternal
+    0x0043B060  bound 0x0025C0  length 0x00026  System_Streaming::HttpCallback::ReceivedData
+    0x008D67D0  bound 0x002240  length 0x0223C  FMOD::SystemI::createSoundInternal
+    0x009C30F0  bound 0x001FA0  length 0x00027  BSN::Decoder::GetAlignedData
+    0x008FE980  bound 0x001F50  length 0x01F4C  FMOD::CodecIT::updateRow
+    0x009411A0  bound 0x001E40  length 0x01E3C  FMOD_Resampler_Cubic
+    0x0080E1B0  bound 0x001D30  length 0x01D21  PendingSpellCast::OnSpellGo
+    0x006238A0  bound 0x001AB0  length 0x01AA3  CGTooltip::SetSpell
+    0x0051D9B0  bound 0x001A80  length 0x01A78  CGGameUI::RegisterGameCVars
+
+  length (0 = not determined):
+    determined 24744, not determined 18
+     23266  ends before int3 padding
+      1478  runs up to the next tagged address, no padding between
+        18  NOT determined: ret/jmp on a 16-byte boundary, code follows (its own funclet or an untagged neighbour)
+    length greater than bound: 0 (must be 0)
+    cross-check of every decoded length against the bytes up to the tagged successor:
+       24354  the successor (or the padding before it) follows the function directly
+         361  untagged functions follow: the gap decodes as a chain of padded functions
+          28  the gap does not decode as whole functions all the way to the successor. A chain
+              that stops after 0 functions right at the decoded end would mean the sweep cut the
+              function; one that stops later means the gap holds something the sweep cannot
+              delimit (an untagged function ending on alignment, data, CRT or library code).
+      0x0040B7F0  length 0x35D (padding)  bound 0x118C0  chain of 4 stops at 0x0040BE50  WinMain
+      0x0041D300  length 0x19 (padding)  bound 0x300  chain of 1 stops at 0x0041D3B0  OggRead
+      0x0041E170  length 0xC (padding)  bound 0xB0  chain of 0 stops at 0x0041E180  InitOggDecompression
+      0x00422910  length 0x9B (padding)  bound 0x650  chain of 8 stops at 0x00422CE0  SFileCloseFile
+      0x00429630  length 0x6 (padding)  bound 0x140  chain of 4 stops at 0x004296F0  IOMpqUnit::GetType
+      0x00429790  length 0x35 (padding)  bound 0xD0  chain of 0 stops at 0x004297D0  Blizzard::String::QuickFormat<N>::QuickFormat
+      0x00429860  length 0x9 (padding)  bound 0x1C0  chain of 4 stops at 0x00429940  Blizzard::Thread::LocalObject<T>::Delete
+      0x00429A20  length 0x39 (padding)  bound 0xF90  chain of 5 stops at 0x00429C60  IOLockUnit::ReplaceNext
+      0x0042AB10  length 0x8A (padding)  bound 0x640  chain of 11 stops at 0x0042AF60  System_String::FindI
+      0x00433BA0  length 0x63 (padding)  bound 0x320  chain of 2 stops at 0x00433CC0  Blizzard::Util::HashMap<K, V>::Find
+      0x00433EC0  length 0x8E (padding)  bound 0x430  chain of 3 stops at 0x00434010  Blizzard::Util::HashMap<K, V>::CopyEntries
+      0x004342F0  length 0x9E (padding)  bound 0x8A0  chain of 9 stops at 0x00434560  IOMpqReadUnit::ReadSectors
+      0x00436070  length 0x27 (padding)  bound 0x250  chain of 0 stops at 0x004360A0  Blizzard::Thread::LocalObject<T>::Delete
+      0x00438AD0  length 0x59 (padding)  bound 0xB00  chain of 2 stops at 0x00438BE0  System_Thread::ThreadWorker::ThreadWorker
+      0x0043A400  length 0x9E (padding)  bound 0x740  chain of 14 stops at 0x0043A9C0  Blizzard::Util::HashMap<K, V>::Insert
+      0x00440BD0  length 0x8D (padding)  bound 0x1B0  chain of 1 stops at 0x00440CD0  Blizzard::Repair::RepairCache::Load
+      0x00440D80  length 0x3EC (padding)  bound 0x2A20  chain of 31 stops at 0x00442DC0  Blizzard::Process::LaunchChildProcessWithArguments
+      0x00473340  length 0xC2 (padding)  bound 0x7A90  chain of 13 stops at 0x00474200  FMOD_oggpack_read
+      0x0083DFA0  length 0x2CA (padding)  bound 0x9C80  chain of 25 stops at 0x00842B90  regexec
+      0x00863580  length 0x3B (padding)  bound 0x5690  chain of 7 stops at 0x00863F20  luaK_patchlist
+      0x0086BEA0  length 0x1E (padding)  bound 0x520  chain of 0 stops at 0x0086BEC0  OsGetExePath
+      0x008C4040  length 0x15B (padding)  bound 0x210  chain of 0 stops at 0x008C41A0  HidDevice::GetDeviceProperty
+      0x008C4250  length 0x128 (padding)  bound 0x840  chain of 1 stops at 0x008C46D0  HidDevice::EnumerateInterface
+      0x0094B8F0  length 0x12 (padding)  bound 0x440  chain of 0 stops at 0x0094B920  FMOD::SampleOpenAL::setBufferData
+      0x00957FB0  length 0x19 (padding)  bound 0xCD0  chain of 0 stops at 0x00957FD0  FLAC__bitmath_ilog2
+      0x009905C0  length 0x8B (padding)  bound 0x17B00  chain of 57 stops at 0x009922C0  GetLiquidTypeRecForArea
+      0x009AD0B0  length 0x7A (padding)  bound 0x12CD0  chain of 10 stops at 0x009AD5D0  DayNight::DNPlanet::Initialize
+      0x009C30F0  length 0x27 (padding)  bound 0x1FA0  chain of 6 stops at 0x009C4760  BSN::Decoder::GetAlignedData
+    first aligned 10: 0x00436860, 0x0043AE10, 0x004408B0, 0x00447170, 0x005689A0, 0x005E6880, 0x00634820, 0x007BA050, 0x007D7C30, 0x007E5130
+
 Addresses carrying more than one row (thunks, Win32/Win64 twins, shared bodies)
 ------------------------------------------------------------------------------
   functions: 879 addresses with several rows (689 of them one name tagged in several files, 190 with different names)
