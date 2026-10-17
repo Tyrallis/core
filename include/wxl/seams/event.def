@@ -1,0 +1,38 @@
+// The Event domain: seams on the scheduler that drives the client's ticks.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, params) before including event.def"
+#endif
+
+// Dispatches EVENT_ID_UPDATE to the one scheduler context this client creates, once per
+// iteration of the frame driver that actually ticked. Its two callers are the main loop
+// (SchedulerThreadProcProcess, only on the branch where the wait timed out) and
+// EventForceIdleProcessing, which drives the same sequence while a modal window move or resize
+// holds the main loop; the two cannot run at the same time, so one call is one tick.
+//
+// elapsed_sec is seconds, computed by the caller from the millisecond clock. Before raises
+// Update, ahead of the client's own EVENT_ID_UPDATE handlers, so a mod's tick runs before the
+// game's. After raises nothing: the tick's fact is that it started.
+//
+// The one case where the call is not the fact: a context in SCHEDSTATE_CLOSED, during scheduler
+// teardown, reaches this function and dispatches nothing. Time still advanced and elapsed_sec is
+// still true, so the event is not false there; what it loses is the client's own handlers, which
+// a mod cannot observe anyway.
+WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", (void* context, uint32_t curr_time, float elapsed_sec))
+WXL_SEAM_RAISES(Event, DispatchUpdate, Update)

@@ -97,9 +97,10 @@ set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 # point and its attachment to the client below: the detours that run those bodies on x86, the
 # exports the client calls on x64.
 # The domain bodies are globbed with CONFIGURE_DEPENDS: adding a domain means adding its .def and
-# its .cpp, and CMake picks the file up on the next build without this list being edited.
+# its .cpp, and CMake picks the file up on the next build without this list being edited. Table.cpp
+# is swept up with them: it is the table as data, which both architectures read.
 file(GLOB WXL_SEAM_BODIES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/seams/*.cpp")
-list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/(AttachX86|Table)\.cpp$")
+list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/AttachX86\.cpp$")
 
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
@@ -110,6 +111,19 @@ target_include_directories(wxl-core PRIVATE src include)
 target_link_libraries(wxl-core PRIVATE wxl::host)
 target_compile_definitions(wxl-core PRIVATE
     ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
+
+# --- The seam harness --------------------------------------------------------------------------
+# The seam bodies are the same code on both architectures, so they can be checked without a
+# client: this links the bodies themselves against a real mod host and drives each seam's Before
+# and After. It supplies its own Host() and MapId() in place of Core.cpp and the attachments,
+# which carry an architecture's entry point. Built for both, run by hand or by ctest.
+add_executable(wxl-core-seam-harness tests/seam_harness.cpp src/common/Log.cpp ${WXL_SEAM_BODIES})
+target_include_directories(wxl-core-seam-harness PRIVATE src include)
+target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host)
+target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)
+
+enable_testing()
+add_test(NAME seams COMMAND wxl-core-seam-harness)
 
 install(TARGETS wxl-core RUNTIME DESTINATION "bin/${WXL_CORE_ARCH_DIR}" COMPONENT core)
 install(FILES "$<TARGET_PDB_FILE:wxl-core>" DESTINATION "bin/${WXL_CORE_ARCH_DIR}"
@@ -160,8 +174,7 @@ else()
     # address exists: the seams are calls the client's own source makes.
     target_sources(wxl-core PRIVATE
         src/runtime/Init.cpp
-        src/runtime/AttachmentX64.cpp
-        src/seams/Table.cpp)
+        src/runtime/AttachmentX64.cpp)
 
     # The import library, for the client to link; the headers it needs are under include/.
     install(TARGETS wxl-core ARCHIVE DESTINATION "lib/${WXL_CORE_ARCH_DIR}" COMPONENT core)
@@ -169,6 +182,7 @@ else()
     set(WXL_CORE_WARNED_TARGETS wxl-core)
 endif()
 
+list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness)
 foreach(target IN LISTS WXL_CORE_WARNED_TARGETS)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
 endforeach()

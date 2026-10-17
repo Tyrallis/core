@@ -26,4 +26,19 @@
 #error "define WXL_SEAM(domain, name, symbol, params) before including seams.def"
 #endif
 
+// A second row shape, WXL_SEAM_RAISES(domain, name, event), says which events of the contract a
+// seam's body raises: one row per event, next to the seam that raises it. Both attachments build
+// the list of raisable events from it, so a seam cannot be live on one architecture and silent on
+// the other. A consumer that only wants the seams leaves it undefined and gets nothing.
+#ifndef WXL_SEAM_RAISES
+    #define WXL_SEAM_RAISES(domain, name, event)
+    #define WXL_SEAM_RAISES_DEFAULTED
+#endif
+
 #include "wxl/seams/world.def"
+#include "wxl/seams/event.def"
+
+#ifdef WXL_SEAM_RAISES_DEFAULTED
+    #undef WXL_SEAM_RAISES
+    #undef WXL_SEAM_RAISES_DEFAULTED
+#endif

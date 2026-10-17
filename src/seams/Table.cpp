@@ -16,6 +16,7 @@
 
 #include "seams/Table.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace wxl::core::seams
@@ -31,6 +32,23 @@ namespace wxl::core::seams
     }
 
     std::span<const Seam> Table() { return kSeams; }
+
+    std::vector<wxl_event> RaisedEvents()
+    {
+        constexpr wxl_event kRaised[] = {
+#define WXL_SEAM(domain, name, symbol, params)
+#define WXL_SEAM_RAISES(domain, name, event) WXL_EV_##event,
+#include "wxl/seams/seams.def"
+#undef WXL_SEAM_RAISES
+#undef WXL_SEAM
+        };
+
+        std::vector<wxl_event> events;
+        for (const wxl_event event : kRaised)
+            if (std::find(events.begin(), events.end(), event) == events.end())
+                events.push_back(event);
+        return events;
+    }
 
     const Seam* Find(const char* name)
     {

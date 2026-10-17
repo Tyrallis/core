@@ -3,7 +3,7 @@
   "id": "wxl.glue-unlock",
   "name": "Glue unlock",
   "version": "1.0.0",
-  "abi": "0.1",
+  "abi": "0.2",
   "description": "Bypasses the client's Lua/XML signature check so custom interface code loads.",
   "binaries": {
     "win-x86": "bin/x86/glue-unlock.dll"

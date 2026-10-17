@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include "wxl/events.h"
+
 #include <span>
+#include <vector>
 
 namespace wxl::core::seams
 {
@@ -33,4 +36,12 @@ namespace wxl::core::seams
 
     /// The seam carrying a point name, or null.
     const Seam* Find(const char* name);
+
+    /**
+     * @brief Every event some seam's body raises, each once, in table order.
+     *
+     * Derived from the WXL_SEAM_RAISES rows, so both attachments answer Events() with the same
+     * list and a seam cannot be live on one architecture and silent on the other.
+     */
+    std::vector<wxl_event> RaisedEvents();
 }

@@ -49,7 +49,9 @@ namespace wxl::core::attachment
 
     std::vector<wxl_event> Events()
     {
-        return { WXL_EV_WorldEnter, WXL_EV_WorldLeave };
+        // The seam bodies are the same code on both architectures, so the events they raise are
+        // the same list: the one the seam table derives.
+        return seams::RaisedEvents();
     }
 
     std::vector<wxl::host::PublishedService> Services()

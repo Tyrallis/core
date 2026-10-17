@@ -3,7 +3,7 @@
   "id": "wxl.named-archives",
   "name": "Named archives",
   "version": "1.0.0",
-  "abi": "0.1",
+  "abi": "0.2",
   "description": "Widens the client's patch-archive scan from Patch-?.MPQ to Patch-*.MPQ, so an archive or folder can carry a full name.",
   "binaries": {
     "win-x86": "bin/x86/named-archives.dll"
