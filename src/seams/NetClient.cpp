@@ -107,3 +107,34 @@ namespace wxl::seam::NetClient::Send
         return sending.suppressed != WXL_FALSE;
     }
 }
+
+namespace wxl::seam::NetClient::HandleConnect
+{
+    void WXL_CALL Before(void*) {}
+
+    void WXL_CALL After(int32_t, void*)
+    {
+        // Raised after, so that a handler asking the client about itself is told it is
+        // connected. The address is not carried: nothing the client hands this function knows
+        // it, and the contract says an empty address means the runtime does not expose one.
+        if (wxl::host::ModHost* host = wxl::core::Host())
+        {
+            wxl_connection_args args{};
+            host->Raise(WXL_EV_Connected, &args);
+        }
+    }
+}
+
+namespace wxl::seam::NetClient::HandleDisconnect
+{
+    void WXL_CALL Before(void*)
+    {
+        if (wxl::host::ModHost* host = wxl::core::Host())
+        {
+            wxl_connection_args args{};
+            host->Raise(WXL_EV_Disconnected, &args);
+        }
+    }
+
+    void WXL_CALL After(int32_t, void*) {}
+}

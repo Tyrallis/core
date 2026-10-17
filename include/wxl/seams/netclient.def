@@ -43,3 +43,15 @@ WXL_SEAM_RAISES(NetClient, ProcessMessage, MessageReceived)
 // call when a handler suppressed it, which stops the message being sent and being held.
 WXL_SEAM_GATE(NetClient, Send, "NetClient::Send", void, thiscall, (void* self, void* message))
 WXL_SEAM_RAISES(NetClient, Send, MessageSent)
+
+// Takes the connection to the world server up, on the main thread: the event queue drains
+// it from the client's own loop, not from the socket's thread. After raises Connected, once
+// the client has moved itself into the connected state.
+WXL_SEAM(NetClient, HandleConnect, "NetClient::HandleConnect", int32_t, thiscall, (void* self))
+WXL_SEAM_RAISES(NetClient, HandleConnect, Connected)
+
+// Takes it down again, from the same queue. Before raises Disconnected, while the client
+// still believes it is connected, so a handler sees the world as it was rather than as the
+// teardown has already left it.
+WXL_SEAM(NetClient, HandleDisconnect, "NetClient::HandleDisconnect", int32_t, thiscall, (void* self))
+WXL_SEAM_RAISES(NetClient, HandleDisconnect, Disconnected)

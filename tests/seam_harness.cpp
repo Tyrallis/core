@@ -405,6 +405,10 @@ namespace
         case WXL_EV_ScriptVmClosing:   return sizeof(wxl_script_vm_args);
         case WXL_EV_MessageReceived:
         case WXL_EV_MessageSent:       return sizeof(wxl_message_args);
+        case WXL_EV_Connected:
+        case WXL_EV_Disconnected:      return sizeof(wxl_connection_args);
+        case WXL_EV_Input:             return sizeof(wxl_input_args);
+        case WXL_EV_FileOpen:          return sizeof(wxl_file_open_args);
         default:                       return 0;
         }
     }
@@ -1134,6 +1138,109 @@ namespace
         g_host->Events().Unsubscribe(out);
     }
 
+    // --- Input: a gate that can answer a window message in the client's place -----------------
+
+    bool g_swallow = false;
+    int  g_messages = 0;
+
+    void WXL_CALL OnInput(void*, const void* args)
+    {
+        const wxl_input_args& input = *static_cast<const wxl_input_args*>(args);
+        ++g_messages;
+        if (g_swallow && input.handled) *input.handled = WXL_TRUE;
+    }
+
+    void CheckInput()
+    {
+        const wxl_subscription sub =
+            g_host->Events().Subscribe(WXL_EV_Input, &OnInput, nullptr, 0);
+
+        void*     window  = reinterpret_cast<void*>(0x2000);
+        uint32_t  message = 0x0100; // WM_KEYDOWN
+        uintptr_t wparam  = 0x41;
+        intptr_t  lparam  = 1;
+        intptr_t  answer  = -1;
+
+        g_swallow = false;
+        Check(!wxl::seam::Input::WindowProc::Gate(&answer, &window, &message, &wparam, &lparam),
+              "a message nobody claims reaches the client's own window procedure");
+        Check(g_messages == 1, "and the handler saw it once");
+
+        g_swallow = true;
+        Check(wxl::seam::Input::WindowProc::Gate(&answer, &window, &message, &wparam, &lparam),
+              "a handler that writes handled takes the call away from the client");
+        Check(answer == 0, "and the window procedure answers 0, as one that handled a message does");
+
+        g_host->Events().Unsubscribe(sub);
+    }
+
+    // --- Storage: a gate that changes what the client is about to open ------------------------
+
+    const char* g_answerWith = nullptr;
+
+    void WXL_CALL OnFileOpen(void*, const void* args)
+    {
+        const wxl_file_open_args& open = *static_cast<const wxl_file_open_args*>(args);
+        if (!g_answerWith || !open.redirect || !open.redirect_capacity) return;
+        const size_t length = strlen(g_answerWith);
+        if (length + 1 > open.redirect_capacity) return;
+        memcpy(open.redirect, g_answerWith, length + 1);
+    }
+
+    void CheckStorage()
+    {
+        const wxl_subscription sub =
+            g_host->Events().Subscribe(WXL_EV_FileOpen, &OnFileOpen, nullptr, 0);
+
+        void*       archive = nullptr;
+        const char* asked   = "World\\Maps\\Azeroth\\Azeroth.wdt";
+        const char* name    = asked;
+        uint32_t    flags   = 0;
+        void**      file    = nullptr;
+        int32_t     answer  = -1;
+
+        g_answerWith = nullptr;
+        Check(!wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file),
+              "a file nobody claims is opened by the client, as asked");
+        Check(name == asked, "and the name it was handed is untouched");
+
+        g_answerWith = "Mods\\example\\Azeroth.wdt";
+        Check(!wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file),
+              "a redirected file is still opened by the client: the gate does not take the call");
+        Check(name != asked && strcmp(name, g_answerWith) == 0,
+              "but what it opens is the path the handler wrote");
+
+        // The redirected path has to outlive the gate: the client opens it afterwards.
+        const char* kept = name;
+        g_answerWith     = nullptr;
+        name             = asked;
+        wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file);
+        Check(kept[0] == 0,
+              "a redirect lives in one buffer per thread, so it lasts until that thread opens "
+              "the next file and no longer");
+
+        g_host->Events().Unsubscribe(sub);
+    }
+
+    // --- NetClient: the connection coming up and going away ------------------------------------
+
+    void CheckNetConnection()
+    {
+        g_received.clear();
+        wxl::seam::NetClient::HandleConnect::Before(nullptr);
+        Check(Only(WXL_EV_Connected) == nullptr, "Connected is not raised on the way in");
+        wxl::seam::NetClient::HandleConnect::After(1, nullptr);
+        Check(Only(WXL_EV_Connected) != nullptr,
+              "it is raised once the client has moved itself into the connected state");
+
+        g_received.clear();
+        wxl::seam::NetClient::HandleDisconnect::Before(nullptr);
+        Check(Only(WXL_EV_Disconnected) != nullptr,
+              "Disconnected is raised before the client tears the connection down");
+        wxl::seam::NetClient::HandleDisconnect::After(1, nullptr);
+        Check(Count(WXL_EV_Disconnected) == 1, "and only once");
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -1252,6 +1359,9 @@ int main()
     CheckMapArea();
     CheckFrameScript();
     CheckNetClient();
+    CheckNetConnection();
+    CheckInput();
+    CheckStorage();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();

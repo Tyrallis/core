@@ -1,0 +1,38 @@
+// The Storage domain: a seam on the one function every file of the client is opened through.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including storage.def"
+#endif
+
+// Opens a file by name, from an archive or from the whole mounted set when the archive is
+// null. Twenty callers across the engine -- models, textures, movies, sounds, the client
+// databases -- so this is where a file is opened, whatever opens it. A class static declared
+// STORMAPI, which is __stdcall: an explicit convention on a function with external linkage, so
+// the compiler cannot have given it one of its own.
+//
+// Gated, because the contract lets a handler of FileOpen write a path into
+// wxl_file_open_args::redirect and expect that file to be opened instead. The gate never takes
+// the call: it rewrites the name it was handed and lets the client's own open run, which is
+// the one thing only this shape can do. Nothing is substituted unless a handler asks.
+//
+// FileOpened is not raised here. It carries the result, and this function has a dozen returns;
+// reaching all of them from the recompiled client's source is what the gated shape exists to
+// avoid. It stays unraised until there is a shape that can answer for it honestly.
+WXL_SEAM_GATE(Storage, OpenFile, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
+WXL_SEAM_RAISES(Storage, OpenFile, FileOpen)
