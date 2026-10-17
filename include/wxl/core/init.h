@@ -38,20 +38,20 @@
 extern "C" {
 #endif
 
-/// What the client hands the runtime. Zero it, set struct_size to sizeof(wxl_core_init); a later
-/// version of this header appends fields and the runtime reads only what struct_size covers.
+/// What the client hands the runtime: one accessor per row of wxl/core/binding.def, in table
+/// order, map_id first. Zero it, set struct_size to sizeof(wxl_core_init); a later version of
+/// this header appends rows and the runtime reads only what struct_size covers.
 ///
 /// The function pointers are accessors: the runtime is a DLL and reads the client's state only
 /// through what the client hands it here. Each may be left NULL, in which case what is built on
-/// it answers its documented default.
+/// it answers the row's documented absent value.
 typedef struct wxl_core_init
 {
     uint32_t struct_size;
 
-    /// Numeric id of the loaded map, -1 while none: the client's s_mapId (Map.cpp), which
-    /// CMap::Load writes. Read by the World seams to name the map in WorldEnter and WorldLeave;
-    /// NULL makes them carry -1.
-    int32_t(WXL_CALL* map_id)(void);
+#define WXL_BINDING(name, ret, params, args, absent) ret(WXL_CALL* name) params;
+#include "wxl/core/binding.def"
+#undef WXL_BINDING
 } wxl_core_init;
 
 /**

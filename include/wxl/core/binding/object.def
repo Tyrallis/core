@@ -1,0 +1,38 @@
+// The Object domain of the client binding: what every CGObject_C answers.
+//
+// Row shapes: see binding.def, which documents them. `object` is a CGObject_C* the runtime got
+// from a seam; the service never hands a binding a null or a pointer it is not tracking.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including object.def"
+#endif
+
+// The object descriptor block (CGObjectData) every kind carries, behind CGObject_C::m_obj.
+WXL_BINDING_FIELD_VIA(object_guid, uint64_t, CGObject_C, "m_obj", CGObjectData, "m_guid", 0)
+WXL_BINDING_FIELD_VIA(object_entry, uint32_t, CGObject_C, "m_obj", CGObjectData, "m_entryID", 0)
+WXL_BINDING_FIELD_VIA(object_scale, float, CGObject_C, "m_obj", CGObjectData, "m_scale", 0.0f)
+
+// The client's OBJECT_TYPE_ID of the object, which wxl_object_type numbers identically.
+WXL_BINDING_FIELD(object_type_id, uint32_t, CGObject_C, "m_typeId", 0)
+
+// The virtuals every kind overrides. On x64 the client calls them; on x86 the runtime calls the
+// kind's own function (CGUnit_C::GetPosition, CGGameObject_C::GetPosition, ...) at its resolved
+// address, or reads the field the function reads where the kind has no function of its own.
+// False when the kind has no such fact: an item has no place in the world and a corpse no name.
+WXL_BINDING(object_position, wxl_bool, (const void* object, wxl_vec3* out), (object, out), WXL_FALSE)
+WXL_BINDING(object_facing, wxl_bool, (const void* object, float* out), (object, out), WXL_FALSE)
+WXL_BINDING(object_name, const char*, (const void* object), (object), 0)

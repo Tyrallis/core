@@ -27,17 +27,19 @@ CHECKER = HERE / "check_seams.py"
 
 SEAMS_DEF = '''// A synthetic seam table.
 #ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, params) before including seams.def"
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
 #include "wxl/seams/demo.def"
 '''
 
 DEMO_DEF = '''// The demo domain.
 #ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, params) before including demo.def"
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including demo.def"
 #endif
-WXL_SEAM(Demo, Load, "Thing::Load", (const wxl_vec3* position, int32_t flags))
+WXL_SEAM(Demo, Load, "Thing::Load", void, cdecl, (const wxl_vec3* position, int32_t flags))
 WXL_SEAM_RAISES(Demo, Load, Opened)
+WXL_SEAM(Demo, Count, "Thing::Count", int32_t, thiscall, (void* self, int32_t flags))
+WXL_SEAM_RAISES(Demo, Count, Closed)
 '''
 
 CONTRACT = '''// A synthetic event table.
@@ -52,6 +54,13 @@ namespace wxl::seam::Demo::Load {
         if (flags) host->Raise(WXL_EV_Opened, &args);
     }
     void After(const wxl_vec3* position, int32_t flags) {}
+}
+
+namespace wxl::seam::Demo::Count {
+    void Before(void* self, int32_t flags) {}
+    void After(int32_t result, void* self, int32_t flags) {
+        if (result) host->Raise(WXL_EV_Closed, &args);
+    }
 }
 '''
 
@@ -69,6 +78,13 @@ void Thing::Load(const C3Vector& position, int32_t flags) {
     }
     helper(flags);
     wxl::seam::Demo::Load::After(WarcraftXL::Vec3(position), flags);
+}
+
+int32_t Thing::Count(int32_t flags) {
+    wxl::seam::Demo::Count::Before(this, flags);
+    int32_t count = helper(flags);
+    wxl::seam::Demo::Count::After(count, this, flags);
+    return count;
 }
 '''
 
@@ -100,6 +116,12 @@ CASES = [
      GOOD.replace("    helper(flags);",
                   "    wxl::seam::Demo::Load::Before(WarcraftXL::Vec3(position), flags);"),
      1, "2 calls to wxl::seam::Demo::Load::Before"),
+    ("the result dropped from a returning seam's After",
+     GOOD.replace("Count::After(count, this, flags)", "Count::After(this, flags)"),
+     1, "is passed 2 argument(s); the row declares 3 (the int32_t result, then self, flags)"),
+    ("`this` dropped from a thiscall seam's Before",
+     GOOD.replace("Count::Before(this, flags)", "Count::Before(flags)"),
+     1, "is passed 1 argument(s); the row declares 2"),
 ]
 
 # (label, Demo.cpp body, demo.def replacement, exit code, text expected)
@@ -109,8 +131,8 @@ EVENT_CASES = [
      1, "the table says a Demo seam raises Opened, but Demo.cpp never raises it"),
     ("the body raises an undeclared event",
      BODY.replace("if (flags) host->Raise(WXL_EV_Opened, &args);",
-                  "host->Raise(WXL_EV_Opened, &args); host->Raise(WXL_EV_Closed, &args);"),
-     DEMO_DEF, 1, "raises Closed, which no WXL_SEAM_RAISES row of the Demo domain declares"),
+                  "host->Raise(WXL_EV_Opened, &args); host->Raise(WXL_EV_Broken, &args);"),
+     DEMO_DEF, 1, "raises Broken, which no WXL_SEAM_RAISES row of the Demo domain declares"),
     ("a row names an event the contract does not have", BODY,
      DEMO_DEF.replace("WXL_SEAM_RAISES(Demo, Load, Opened)",
                       "WXL_SEAM_RAISES(Demo, Load, Opened)\n"
@@ -119,6 +141,15 @@ EVENT_CASES = [
     ("a raises row for a seam no row declares", BODY,
      DEMO_DEF + "WXL_SEAM_RAISES(Demo, Ghost, Closed)\n",
      1, "WXL_SEAM_RAISES names Demo.Ghost, which no WXL_SEAM row declares"),
+    ("a row without its ABI columns", BODY,
+     DEMO_DEF.replace('"Thing::Load", void, cdecl, ', '"Thing::Load", '),
+     1, "a WXL_SEAM row has 4 columns, expected 6"),
+    ("a row with a convention the generator does not know", BODY,
+     DEMO_DEF.replace("void, cdecl,", "void, pascal,"),
+     1, "the conv column of Demo.Load is `pascal`"),
+    ("a thiscall row whose first parameter is not a pointer", BODY,
+     DEMO_DEF.replace("thiscall, (void* self, int32_t flags)", "thiscall, (int32_t self, int32_t flags)"),
+     1, "is thiscall but its first parameter is not `this` as a pointer"),
 ]
 
 

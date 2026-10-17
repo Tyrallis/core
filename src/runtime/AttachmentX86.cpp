@@ -1,4 +1,4 @@
-// The x86 attachment: MinHook detours at resolved addresses, and the services built on them.
+// The x86 attachment: the hook engine, the detours, and the services only a shipped binary has.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,8 +16,10 @@
 
 #include "runtime/Attachment.hpp"
 
+#include "binding/BindingX86.hpp"
 #include "common/Log.hpp"
 #include "hook/Engine.hpp"
+#include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Image.hpp"
 #include "seams/AttachX86.hpp"
@@ -25,22 +27,15 @@
 #include "services/HookService.hpp"
 #include "services/PatchService.hpp"
 
-#include "wxl/offsets/site.hpp"
 #include "wxl/services/hook.h"
+#include "wxl/services/object.h"
 #include "wxl/services/patch.h"
-
-namespace
-{
-    /// Numeric id of the loaded map, -1 while none. Written by CMap::Load, read by the World
-    /// seams. The Map.cpp static: MinimapFrame.cpp and DayNight.cpp each have one of the same
-    /// name.
-    constexpr uintptr_t kMapId = WXL_STATIC_AT("s_mapId", 0x00ADFBC4);
-}
 
 namespace wxl::core::attachment
 {
     void Prepare()
     {
+        binding::x86::Prepare();
         if (!wxl::hook::Init())
             WLOG_ERROR(kTag, "hook engine unavailable; detours will be refused");
     }
@@ -58,6 +53,7 @@ namespace wxl::core::attachment
             { WXL_HOOK_SERVICE, WXL_HOOK_SERVICE_VERSION, &services::HookApi() },
             { WXL_HOOK_RAW_SERVICE, WXL_HOOK_RAW_SERVICE_VERSION, &services::HookRawApi() },
             { WXL_PATCH_SERVICE, WXL_PATCH_SERVICE_VERSION, &services::PatchApi() },
+            { WXL_OBJECT_SERVICE, WXL_OBJECT_SERVICE_VERSION, objects::Api() },
         };
     }
 
@@ -67,15 +63,10 @@ namespace wxl::core::attachment
         // image whose addresses they are.
         if (!image::IsClient())
             WLOG_WARN(kTag, "the executable is not Wow.exe build %u: named hook points and the "
-                            "seams are unavailable; no world event will be raised",
+                            "seams are unavailable; no world event will be raised and wxl.object "
+                            "sees no object",
                       static_cast<unsigned>(image::kBuild));
         else if (!seams::Install())
             WLOG_ERROR(kTag, "a seam is not attached; its events will not be raised");
-    }
-
-    int32_t MapId()
-    {
-        if (!image::IsClient()) return -1;
-        return *reinterpret_cast<const int32_t*>(kMapId);
     }
 }

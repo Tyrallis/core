@@ -736,6 +736,7 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   m_characterComponent                    game/Unit:kUnitCharacterComponentField
   m_unit                                  -                                            # CGUnit base: the unit descriptor block
   m_movement                              -                                            # CGUnit base: the movement block GetPosition reads
+  m_movementData.m_facing                 -                                            # wxl.object: the raw facing when the unit is read by field
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData
@@ -747,10 +748,28 @@ type CGUnitData WoW/Source/Object/Unit.h CGUnitData
   m_unitFieldHealth                       -                                            # read by wxl.object unit_health
   m_unitFieldMaxhealth                    -                                            # read by wxl.object unit_max_health
   m_unitFieldLevel                        -                                            # read by wxl.object unit_level
+  m_unitFieldCharm                        -                                            # wxl.object unit reads, one row per fact of binding/unit.def
+  m_unitFieldSummon                       -
+  m_unitFieldCharmedby                    -
+  m_unitFieldSummonedby                   -
+  m_unitFieldCreatedby                    -
+  m_unitFieldBytes0                       -                                            # race, class, sex, power type
+  m_unitFieldPower                        -
+  sizeof(m_unitFieldPower)                -                                            # the bound of the power index
+  m_unitFieldMaxpower                     -
+  sizeof(m_unitFieldMaxpower)             -
+  m_unitFieldFactiontemplate              -
+  m_unitFieldFlags                        -
+  m_unitFieldFlags2                       -
+  m_unitFieldDisplayid                    -
+  m_unitFieldNativedisplayid              -
+  m_unitDynamicFlags                      -
+  m_unitNpcFlags                          -
 
 type CGGameObject_C WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C
   sizeof                                  -
   m_typeData                              game/GameObject:kTypeHelper
+  m_gameObject                            -                                            # CGGameObject base: the game-object descriptor block
 
 type CGGameObject_C_TypeBase WoW/Source/Object/ObjectClient/GameObject_C.h CGGameObject_C_TypeBase
   sizeof                                  -
@@ -767,6 +786,86 @@ type CGGameObjectData WoW/Source/Object/GameObject.h CGGameObjectData
   m_flags                                 game/GameObject:kDescFlags+0x18
   m_parentRotation                        game/GameObject:kDescParentRotation+0x18
   m_state                                 game/GameObject:kDescBytes1+0x18
+  m_createdBy                             -                                            # wxl.object game-object reads
+  m_dynamicFlags                          -
+  m_faction                               -
+  m_level                                 -
+  m_typeID                                -
+  m_artKit                                -
+
+# The remaining object types wxl.object reads, each as its client class (the descriptor pointer
+# sits in the second base) and its descriptor block. All refs are "-": no hand constant covers them.
+type CGPlayer_C WoW/Source/Object/ObjectClient/Player_C.h CGPlayer_C
+  sizeof                                  -
+  m_player                                -                                            # CGPlayer base: the player descriptor block
+
+type CGPlayerData WoW/Source/Object/Player.h CGPlayerData
+  sizeof                                  -
+  m_playerFlags                           -
+  m_playerGuildid                         -
+  m_playerGuildrank                       -
+  m_playerVisibleItems                    -
+  sizeof(m_playerVisibleItems)            -                                            # the bound of the visible-item slot
+  m_playerChosenTitle                     -
+
+type VisibleItem_C WoW/Source/Object/ObjectClient/VisibleItem_C.h VisibleItem_C
+  sizeof                                  -                                            # the stride of m_playerVisibleItems
+  m_itemId                                -
+
+type CGItem_C WoW/Source/Object/ObjectClient/Item_C.h CGItem_C
+  sizeof                                  -
+  m_item                                  -                                            # CGItem base: the item descriptor block
+
+type CGItemData WoW/Source/Object/Item.h CGItemData
+  sizeof                                  -
+  m_itemFieldOwner                        -
+  m_itemFieldContained                    -
+  m_itemFieldCreator                      -
+  m_itemFieldStackCount                   -
+  m_itemFieldDuration                     -
+  m_itemFieldFlags                        -
+  m_itemFieldDurability                   -
+  m_itemFieldMaxdurability                -
+
+type CGContainer_C WoW/Source/Object/ObjectClient/Container_C.h CGContainer_C
+  sizeof                                  -
+  m_container                             -                                            # CGContainer base: the container descriptor block
+
+type CGContainerData WoW/Source/Object/Container.h CGContainerData
+  sizeof                                  -
+  m_containerFieldNumSlots                -
+  m_containerFieldSlot1                   -
+  sizeof(m_containerFieldSlot1)           -                                            # the bound of the container slot
+
+type CGDynamicObject_C WoW/Source/Object/ObjectClient/DynamicObject_C.h CGDynamicObject_C
+  sizeof                                  -
+  m_dynamicObject                         -                                            # CGDynamicObject base: the dynamic-object descriptor block
+
+type CGDynamicObjectData WoW/Source/Object/DynamicObject.h CGDynamicObjectData
+  sizeof                                  -
+  m_caster                                -
+  m_spellID                               -
+  m_radius                                -
+  m_castTime                              -
+
+type CGCorpse_C WoW/Source/Object/ObjectClient/Corpse_C.h CGCorpse_C
+  sizeof                                  -
+  m_corpse                                -                                            # CGCorpse base: the corpse descriptor block
+  m_passenger                             -                                            # where a corpse keeps its position and facing
+
+type CGCorpseData WoW/Source/Object/Corpse.h CGCorpseData
+  sizeof                                  -
+  m_corpseFieldOwner                      -
+  m_corpseFieldParty                      -
+  m_corpseFieldDisplayId                  -
+  m_corpseFieldGuild                      -
+  m_corpseFieldFlags                      -
+  m_corpseFieldDynamicFlags               -
+
+type CPassenger WoW/Source/Object/Passenger.h CPassenger
+  sizeof                                  -
+  m_position                              -
+  m_facing                                -
 
 skip game/Unit:kVtNamePosition,game/Unit:kVtPosition,game/Unit:kVtRawPosition,game/Unit:kVtFacing :: vtable slot indices of CGObject_C, not data members
 

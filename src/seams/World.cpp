@@ -16,8 +16,8 @@
 
 #include "wxl/seams/seams.h"
 
+#include "binding/Binding.hpp"
 #include "common/Log.hpp"
-#include "runtime/Attachment.hpp"
 #include "runtime/Core.hpp"
 
 #include "wxl/events.h"
@@ -57,7 +57,7 @@ namespace wxl::seam::World::Preload
         if (!host) return;
 
         wxl_world_args args{};
-        args.map_id   = static_cast<uint32_t>(wxl::core::attachment::MapId());
+        args.map_id   = static_cast<uint32_t>(wxl::core::binding::map_id());
         args.position = *position;
         g_inWorld     = true;
         g_mapId       = args.map_id;

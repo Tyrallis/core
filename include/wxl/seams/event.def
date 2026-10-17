@@ -17,7 +17,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, params) before including event.def"
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including event.def"
 #endif
 
 // Dispatches EVENT_ID_UPDATE to the one scheduler context this client creates, once per
@@ -34,5 +34,5 @@
 // teardown, reaches this function and dispatches nothing. Time still advanced and elapsed_sec is
 // still true, so the event is not false there; what it loses is the client's own handlers, which
 // a mod cannot observe anyway.
-WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", (void* context, uint32_t curr_time, float elapsed_sec))
+WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, cdecl, (void* context, uint32_t curr_time, float elapsed_sec))
 WXL_SEAM_RAISES(Event, DispatchUpdate, Update)

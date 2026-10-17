@@ -1,4 +1,4 @@
-// The attachment: how this build reaches the client, and what it can offer mods as a result.
+// What an architecture's attachment to the client supplies to the shared start-up.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -22,12 +22,6 @@
 #include <cstdint>
 #include <vector>
 
-/// One implementation per architecture, chosen by the build: AttachmentX86.cpp detours the
-/// shipped binary at resolved addresses and publishes the services built on that; AttachmentX64.cpp
-/// is called by the client's own source and publishes what the seam table can serve. Core.cpp
-/// calls these in order around the host's construction and never knows which one it got. The
-/// seam bodies under src/seams/ read the client through the accessors at the end, which each
-/// side fills its own way.
 namespace wxl::core::attachment
 {
     /**
@@ -49,12 +43,4 @@ namespace wxl::core::attachment
      *        so that no mod can get in front of them.
      */
     void Install();
-
-    /**
-     * @brief Numeric id of the loaded map, -1 while none; the client's s_mapId (the Map.cpp one).
-     *
-     * On x86 a read of the static at its resolved address, -1 outside the client image; on x64
-     * the accessor the client handed WarcraftXLInit, -1 when it handed none.
-     */
-    int32_t MapId();
 }

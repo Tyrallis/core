@@ -24,8 +24,8 @@ namespace wxl::core::seams
     namespace
     {
         constexpr Seam kSeams[] = {
-#define WXL_SEAM(domain, name, symbol, params) \
-    { #domain "." #name, symbol, "void __cdecl " #params },
+#define WXL_SEAM(domain, name, symbol, ret, conv, params) \
+    { #domain "." #name, symbol, #ret, #conv, #params },
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM
         };
@@ -36,7 +36,7 @@ namespace wxl::core::seams
     std::vector<wxl_event> RaisedEvents()
     {
         constexpr wxl_event kRaised[] = {
-#define WXL_SEAM(domain, name, symbol, params)
+#define WXL_SEAM(domain, name, symbol, ret, conv, params)
 #define WXL_SEAM_RAISES(domain, name, event) WXL_EV_##event,
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_RAISES

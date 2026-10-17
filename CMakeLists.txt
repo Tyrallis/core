@@ -81,7 +81,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
-# --- The SDK: the contract and the shared mod host -------------------------------------------------
+# --- The SDK: the contract, the shared mod host and the shared runtime half of wxl.object -------
 set(WXL_SDK_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
 
@@ -92,34 +92,44 @@ math(EXPR WXL_CORE_VERSION
 set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
 # --- WarcraftXL.dll --------------------------------------------------------------------------------
-# What both architectures share: the log, the start-up, the mod host behind it, and the bodies
-# of the seams (one file per domain of include/wxl/seams/). Each architecture adds its entry
-# point and its attachment to the client below: the detours that run those bodies on x86, the
-# exports the client calls on x64.
-# The domain bodies are globbed with CONFIGURE_DEPENDS: adding a domain means adding its .def and
-# its .cpp, and CMake picks the file up on the next build without this list being edited. Table.cpp
-# is swept up with them: it is the table as data, which both architectures read.
+# What both architectures share: the log, the start-up, the mod host behind it, the bodies of
+# the seams (one file per domain of include/wxl/seams/) and the leaf reads of wxl.object (one
+# file per kind of object under src/objects/). Each architecture adds its entry point, its
+# attachment to the client and its realisation of the client binding below: memory reads at
+# measured offsets on x86 (BindingX86.cpp), the accessors the client handed over on x64
+# (BindingTable.cpp).
+# The domain bodies and the object reads are globbed with CONFIGURE_DEPENDS: adding a domain means
+# adding its .def and its .cpp, and CMake picks the file up on the next build without this list
+# being edited. Table.cpp is swept up with them: it is the table as data, which both read.
 file(GLOB WXL_SEAM_BODIES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/seams/*.cpp")
 list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/AttachX86\.cpp$")
+file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/objects/*.cpp")
 
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
     src/common/Log.cpp
-    ${WXL_SEAM_BODIES})
+    ${WXL_SEAM_BODIES}
+    ${WXL_OBJECT_READS})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 target_include_directories(wxl-core PRIVATE src include)
-target_link_libraries(wxl-core PRIVATE wxl::host)
+target_link_libraries(wxl-core PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core PRIVATE
     ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
 
 # --- The seam harness --------------------------------------------------------------------------
 # The seam bodies are the same code on both architectures, so they can be checked without a
-# client: this links the bodies themselves against a real mod host and drives each seam's Before
-# and After. It supplies its own Host() and MapId() in place of Core.cpp and the attachments,
-# which carry an architecture's entry point. Built for both, run by hand or by ctest.
-add_executable(wxl-core-seam-harness tests/seam_harness.cpp src/common/Log.cpp ${WXL_SEAM_BODIES})
+# client: this links the bodies themselves, the object reads and the table-filled client binding
+# against a real mod host, binds the client binding to a fake world, and drives each seam's
+# Before and After. It supplies its own Host() in place of Core.cpp and the attachments, which
+# carry an architecture's entry point. Built for both, run by hand or by ctest.
+add_executable(wxl-core-seam-harness
+    tests/seam_harness.cpp
+    src/common/Log.cpp
+    src/binding/BindingTable.cpp
+    ${WXL_SEAM_BODIES}
+    ${WXL_OBJECT_READS})
 target_include_directories(wxl-core-seam-harness PRIVATE src include)
-target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host)
+target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)
 
 enable_testing()
@@ -148,6 +158,7 @@ if(WXL_CORE_X86)
         src/runtime/Main.cpp
         src/runtime/AttachmentX86.cpp
         src/runtime/Image.cpp
+        src/binding/BindingX86.cpp
         src/seams/AttachX86.cpp
         src/hook/Engine.cpp
         src/hook/Points.cpp
@@ -171,10 +182,12 @@ if(WXL_CORE_X86)
     set(WXL_CORE_WARNED_TARGETS wxl-core wxl-core-patcher)
 else()
     # The recompiled client links the DLL and calls WarcraftXLInit. Nothing is detoured and no
-    # address exists: the seams are calls the client's own source makes.
+    # address exists: the seams are calls the client's own source makes, and the client is read
+    # through the accessors it handed over.
     target_sources(wxl-core PRIVATE
         src/runtime/Init.cpp
-        src/runtime/AttachmentX64.cpp)
+        src/runtime/AttachmentX64.cpp
+        src/binding/BindingTable.cpp)
 
     # The import library, for the client to link; the headers it needs are under include/.
     install(TARGETS wxl-core ARCHIVE DESTINATION "lib/${WXL_CORE_ARCH_DIR}" COMPONENT core)

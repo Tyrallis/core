@@ -1,4 +1,4 @@
-// The x64 attachment: calls the client's own source makes. No detour, no address.
+// The x64 attachment: nothing to detour, the accessors the client handed over, and the services.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -15,36 +15,17 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "runtime/Attachment.hpp"
-#include "runtime/AttachmentX64.hpp"
 
+#include "binding/Binding.hpp"
 #include "common/Log.hpp"
+#include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
 #include "seams/Table.hpp"
 
-#include "wxl/services/hook.h"
-
-#include <cstddef>
-#include <cstring>
-
-namespace
-{
-    /// The client's accessors, as far as its wxl_core_init reached.
-    wxl_core_init g_init{};
-
-/// Whether a wxl_core_init of the given struct_size carries @p field.
-#define WXL_INIT_CARRIES(size, field) \
-    ((size) >= offsetof(wxl_core_init, field) + sizeof(wxl_core_init::field))
-}
+#include "wxl/services/object.h"
 
 namespace wxl::core::attachment
 {
-    void Bind(const wxl_core_init& init)
-    {
-        g_init = wxl_core_init{};
-        if (WXL_INIT_CARRIES(init.struct_size, map_id)) g_init.map_id = init.map_id;
-        g_init.struct_size = sizeof g_init;
-    }
-
     void Prepare() {}
 
     std::vector<wxl_event> Events()
@@ -56,7 +37,9 @@ namespace wxl::core::attachment
 
     std::vector<wxl::host::PublishedService> Services()
     {
-        return {};
+        return {
+            { WXL_OBJECT_SERVICE, WXL_OBJECT_SERVICE_VERSION, objects::Api() },
+        };
     }
 
     void Install()
@@ -65,12 +48,7 @@ namespace wxl::core::attachment
         // is what it handed over, since a seam's body reads the client through it.
         for (const seams::Seam& seam : seams::Table())
             WLOG_INFO(kTag, "seam %s: Before and After are calls %s makes", seam.name, seam.symbol);
-        if (!g_init.map_id)
-            WLOG_WARN(kTag, "the client handed no map_id accessor; world events will carry map -1");
-    }
-
-    int32_t MapId()
-    {
-        return g_init.map_id ? g_init.map_id() : -1;
+        for (const char* name : binding::Unbound())
+            WLOG_WARN(kTag, "the client handed no %s accessor; what reads it answers absent", name);
     }
 }

@@ -8,8 +8,11 @@ sources and fails when the two disagree.
 A seam is declared once and realised twice.
 
 The **x86** realisation is generated: `core/src/seams/AttachX86.cpp` expands every row of the table
-into a detour and attaches it at `WXL_SITE(symbol, 0)`. Nothing can drift, because nothing is
-written by hand -- a row that loses its symbol fails the build in `WXL_SITE` at compile time.
+into a detour in the row's calling convention (`core/src/seams/Detour.hpp`: a `__cdecl` or
+`__stdcall` function, or a `__fastcall` shim standing in for a `__thiscall` member) and attaches it
+at `WXL_SITE(symbol, 0)`. Nothing can drift, because nothing is written by hand -- a row that loses
+its symbol fails the build in `WXL_SITE` at compile time, and a row that lacks its `ret` or `conv`
+column does not expand at all.
 
 The **x64** realisation is a pair of calls sitting inside an upstream function, in a fork that keeps
 pulling from upstream. A merge that drops one of those lines is silent: the build succeeds, the
@@ -26,8 +29,9 @@ For every row of the seam table:
 | **present** | the fork calls `wxl::seam::<Domain>::<Name>::Before`, and `::After`, at least once each |
 | **once in** | exactly one `Before`: a function is entered once. `After` may repeat, one per return path |
 | **in place** | every call sits inside the function the row's `symbol` column names, not another one |
-| **arity** | the call passes as many arguments as the row declares parameters |
-| **arguments** | argument *n* carries the row's parameter *n* by name |
+| **arity** | the call passes as many arguments as the row declares parameters; `After` of a row with a return type takes the result first, so one more |
+| **arguments** | argument *n* carries the row's parameter *n* by name; a `thiscall` row's first parameter is carried by `this` |
+| **ABI** | every row has its six columns; `ret` is not empty; `conv` is `cdecl`, `thiscall` or `stdcall`; a `thiscall` row's first parameter is a pointer |
 
 and, in the other direction:
 
@@ -37,7 +41,9 @@ and, in the other direction:
 
 The argument rule compares names, not types: argument *n*'s expression must contain the row's *n*th
 parameter name, ignoring case and underscores. `WarcraftXL::Vec3(position)` carries `position`;
-`entity->m_guid` carries `guid`. It exists to catch a swapped pair, which arity alone would not --
+`entity->m_guid` carries `guid`; `this` carries a `thiscall` row's first parameter whatever the
+row names it. The result argument of a returning seam's `After` is not checked by name: it is
+whatever the function is about to return. It exists to catch a swapped pair, which arity alone would not --
 the call would still compile if the two happened to be convertible. It is deliberately a wiring
 check and not a type check: the compiler does types, and does them better. Its known limit is that
 an unrelated expression which happens to spell the parameter's name passes, so it narrows the hole

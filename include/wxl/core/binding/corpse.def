@@ -1,0 +1,30 @@
+// The Corpse domain of the client binding: the corpse descriptor block (CGCorpseData).
+//
+// Row shapes: see binding.def, which documents them. The rows read through
+// CGCorpse_C::m_corpse; a corpse's position and facing come from its CPassenger, read by
+// object_position and object_facing of object.def.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including corpse.def"
+#endif
+
+WXL_BINDING_FIELD_VIA(corpse_owner, uint64_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldOwner", 0)
+WXL_BINDING_FIELD_VIA(corpse_party, uint64_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldParty", 0)
+WXL_BINDING_FIELD_VIA(corpse_display_id, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldDisplayId", 0)
+WXL_BINDING_FIELD_VIA(corpse_guild, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldGuild", 0)
+WXL_BINDING_FIELD_VIA(corpse_flags, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldFlags", 0)
+WXL_BINDING_FIELD_VIA(corpse_dynamic_flags, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldDynamicFlags", 0)

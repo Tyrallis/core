@@ -1,4 +1,4 @@
-// DLL entry on x64: DllMain opens the log; WarcraftXLInit, called by the client, starts the runtime.
+// WarcraftXL.dll on x64: the entry point the recompiled client calls, and the DLL's own entry.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,8 +16,8 @@
 
 #include "wxl/core/init.h"
 
+#include "binding/Binding.hpp"
 #include "common/Log.hpp"
-#include "runtime/AttachmentX64.hpp"
 #include "runtime/Core.hpp"
 
 #include <windows.h>
@@ -41,9 +41,9 @@ wxl_result WXL_CALL WarcraftXLInit(const wxl_core_init* init)
         return WXL_E_INVALID;
     }
 
-    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu (struct_size %u)",
-              GetCurrentThreadId(), init->struct_size);
-    wxl::core::attachment::Bind(*init);
+    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu (struct_size %u of %u)",
+              GetCurrentThreadId(), init->struct_size, static_cast<unsigned>(sizeof(wxl_core_init)));
+    wxl::core::binding::Bind(*init);
     return wxl::core::Start() ? WXL_OK : WXL_E_FAILED;
 }
 

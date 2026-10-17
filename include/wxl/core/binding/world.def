@@ -1,4 +1,6 @@
-// The x64 attachment's own entry: what WarcraftXLInit hands it before the host comes up.
+// The World domain of the client binding: the map.
+//
+// Row shapes: see binding.def, which documents them.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,17 +16,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#pragma once
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including world.def"
+#endif
 
-#include "wxl/core/init.h"
-
-namespace wxl::core::attachment
-{
-    /**
-     * @brief Keeps the accessors the client passed to WarcraftXLInit.
-     *
-     * Reads only what init->struct_size covers; a field the client's header did not have yet
-     * stays null and the accessor built on it answers its documented default.
-     */
-    void Bind(const wxl_core_init& init);
-}
+// Numeric id of the loaded map, -1 while none: the client's s_mapId (Map.cpp), which CMap::Load
+// writes. The first member of wxl_core_init, and the one every version of it has carried.
+WXL_BINDING(map_id, int32_t, (void), (), -1)

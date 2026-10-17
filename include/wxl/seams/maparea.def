@@ -1,0 +1,29 @@
+// The MapArea domain: seams on CMapArea, a loaded terrain tile.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including maparea.def"
+#endif
+
+// Builds one chunk of a tile: allocates the CMapChunk, links it to the tile, sets its indices
+// and creates it from the tile's file buffer, then returns it. The one caller is CMapArea::Update,
+// for each chunk of the rectangle coming into view. Before raises TerrainChunkBuild with the
+// map, the tile's index (CMapArea::m_index) and the chunk's indices, before the chunk's data is
+// read. After takes the chunk the function returns and raises nothing.
+WXL_SEAM(MapArea, PrepareChunk, "CMapArea::PrepareChunk", void*, thiscall, (void* self, int32_t chunk_x, int32_t chunk_y))
+WXL_SEAM_RAISES(MapArea, PrepareChunk, TerrainChunkBuild)

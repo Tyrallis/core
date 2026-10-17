@@ -123,7 +123,9 @@ thread, and says so in the log.
 The client builds this directory as a subdirectory of its own tree (`-DWXL_CORE_DIR` when it is
 not beside it), links the DLL and calls `WarcraftXLInit` from
 [`include/wxl/core/init.h`](include/wxl/core/init.h), handing over the accessors of
-`wxl_core_init` (today the map id). Its functions call the seams' `Before` and `After` from
+`wxl_core_init`: one per row of [`include/wxl/core/binding.def`](include/wxl/core/binding.def), the
+client binding, which `client/WarcraftXL/Binding.cpp` defines against the client's own classes.
+Its functions call the seams' `Before` and `After` from
 [`include/wxl/seams/seams.h`](include/wxl/seams/seams.h). Mods are read from `Mods/` beside the
 executable, with `bin/x64/` binaries.
 
@@ -200,7 +202,7 @@ tools/offsets/, tools/layouts/   regenerate the tables from the decompiled clien
 | `refused … requires service …` | the mod needs something this build does not publish; see the table above |
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
 | `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
-| `the client handed no map_id accessor` (x64) | the client was built against an older `init.h`; world events carry map `-1` until it passes one |
+| `the client handed no <row> accessor; what reads it answers absent` (x64) | the client was built against an older `init.h` than this runtime; the row of `binding.def` it names answers its absent value (map `-1`, no position, ...) until the client passes one |
 
 ## 📄 License
 

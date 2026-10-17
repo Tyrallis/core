@@ -1,0 +1,112 @@
+// The client binding: every fact the runtime reads out of the client, one row per fact.
+//
+// A row is realised three times from this one table:
+//   - as a member of wxl_core_init (wxl/core/init.h): the accessor the recompiled client hands
+//     over at WarcraftXLInit, in table order, appended and never reordered;
+//   - as wxl::core::binding::<name>, the function the seam bodies and wxl.object call, which on
+//     x64 forwards to that accessor (src/binding/BindingTable.cpp) and on x86 reads the client's
+//     memory at an offset of layouts.def (src/binding/BindingX86.cpp);
+//   - on the client's side, as the function the fork assigns to the accessor
+//     (client/WarcraftXL/Binding.cpp), which the fork's own compiler checks against the member.
+//
+// Row shapes. `name` is the accessor's name on every side. `ret` is the C type answered.
+// `absent` is what the function answers when the client handed no accessor (x64) or the
+// executable is not the client (x86).
+//
+//   WXL_BINDING(name, ret, params, args, absent)
+//       a fact read by a call: params is the parenthesised parameter list, args the same names
+//       in parentheses, as the x64 forwarder passes them. The x86 body is written by hand in
+//       BindingX86.cpp; a row without one fails to link.
+//
+//   WXL_BINDING_FIELD(name, ret, Type, member, absent)
+//       ret name(const void* object): the member of the object, read at
+//       WXL_FIELD(#Type, member) on x86. Type is the id of a layouts.def type, member its
+//       designator as a string.
+//
+//   WXL_BINDING_FIELD_VIA(name, ret, Type, via, ViaType, member, absent)
+//       ret name(const void* object): the object's `via` member is a pointer to a ViaType block
+//       (a descriptor), and the fact is that block's `member`. Absent when the pointer is null.
+//
+//   WXL_BINDING_FIELD_VIA_INDEX(name, ret, Type, via, ViaType, member)
+//       wxl_bool name(const void* object, uint32_t index, ret* out): element `index` of the
+//       array `member` of ret, bounded by sizeof(member) as layouts.def measured it. False past
+//       the bound; the value goes to *out.
+//
+//   WXL_BINDING_FIELD_VIA_AT(name, ret, Type, via, ViaType, member, Elem, elem_member)
+//       the same for an array of Elem structs, reading each element's `elem_member`.
+//
+// A consumer defines WXL_BINDING and, when it realises field reads differently, the field
+// shapes; the ones it leaves undefined collapse onto WXL_BINDING with the signatures above.
+// One domain per file under binding/, in the order below; a new fact is one row there.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including binding.def"
+#endif
+
+#ifndef WXL_BINDING_FIELD
+    #define WXL_BINDING_FIELD(name, ret, Type, member, absent) \
+        WXL_BINDING(name, ret, (const void* object), (object), absent)
+    #define WXL_BINDING_FIELD_DEFAULTED
+#endif
+
+#ifndef WXL_BINDING_FIELD_VIA
+    #define WXL_BINDING_FIELD_VIA(name, ret, Type, via, ViaType, member, absent) \
+        WXL_BINDING(name, ret, (const void* object), (object), absent)
+    #define WXL_BINDING_FIELD_VIA_DEFAULTED
+#endif
+
+#ifndef WXL_BINDING_FIELD_VIA_INDEX
+    #define WXL_BINDING_FIELD_VIA_INDEX(name, ret, Type, via, ViaType, member) \
+        WXL_BINDING(name, wxl_bool, (const void* object, uint32_t index, ret* out), (object, index, out), WXL_FALSE)
+    #define WXL_BINDING_FIELD_VIA_INDEX_DEFAULTED
+#endif
+
+#ifndef WXL_BINDING_FIELD_VIA_AT
+    #define WXL_BINDING_FIELD_VIA_AT(name, ret, Type, via, ViaType, member, Elem, elem_member) \
+        WXL_BINDING(name, wxl_bool, (const void* object, uint32_t index, ret* out), (object, index, out), WXL_FALSE)
+    #define WXL_BINDING_FIELD_VIA_AT_DEFAULTED
+#endif
+
+#include "wxl/core/binding/world.def"
+#include "wxl/core/binding/objectmgr.def"
+#include "wxl/core/binding/object.def"
+#include "wxl/core/binding/unit.def"
+#include "wxl/core/binding/player.def"
+#include "wxl/core/binding/item.def"
+#include "wxl/core/binding/container.def"
+#include "wxl/core/binding/gameobject.def"
+#include "wxl/core/binding/dynamicobject.def"
+#include "wxl/core/binding/corpse.def"
+#include "wxl/core/binding/gameui.def"
+#include "wxl/core/binding/maparea.def"
+
+#ifdef WXL_BINDING_FIELD_DEFAULTED
+    #undef WXL_BINDING_FIELD
+    #undef WXL_BINDING_FIELD_DEFAULTED
+#endif
+#ifdef WXL_BINDING_FIELD_VIA_DEFAULTED
+    #undef WXL_BINDING_FIELD_VIA
+    #undef WXL_BINDING_FIELD_VIA_DEFAULTED
+#endif
+#ifdef WXL_BINDING_FIELD_VIA_INDEX_DEFAULTED
+    #undef WXL_BINDING_FIELD_VIA_INDEX
+    #undef WXL_BINDING_FIELD_VIA_INDEX_DEFAULTED
+#endif
+#ifdef WXL_BINDING_FIELD_VIA_AT_DEFAULTED
+    #undef WXL_BINDING_FIELD_VIA_AT
+    #undef WXL_BINDING_FIELD_VIA_AT_DEFAULTED
+#endif

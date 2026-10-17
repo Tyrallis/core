@@ -1,0 +1,46 @@
+// The ObjectMgr domain: seams on the object manager, where objects enter and leave the client.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including objectmgr.def"
+#endif
+
+// Constructs the client object of the kind the update named, in storage the manager allocated
+// and filled: a placement-new of CGItem_C, CGUnit_C, CGPlayer_C, ... from the update's
+// CClientObjCreate, then AddWorldObject for the kinds that have a place in the world. A static
+// of ObjectMgrClient.cpp with one caller, CreateObject, which links the object into the visible
+// list right after it returns; an object the client already held comes back through Reenable
+// and never reaches here. After tracks the object and raises ObjectCreate with its handle.
+WXL_SEAM(ObjectMgr, InitObject, "InitObject", void, cdecl, (void* object, const void* create, uint32_t time))
+WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
+
+// Removes an object from the manager: out of the guid table and the visible list, into the
+// lazy-cleanup set it is freed from later. Reached by every path that lets an object go while
+// in the world (SMSG_DESTROY_OBJECT, out of range, unlock), each after Disable. Before raises
+// ObjectDestroy while the object is still resident and its handle still resolves, then
+// untracks it: the handle a mod kept reads as absent from here on.
+WXL_SEAM(ObjectMgr, ObjDelete, "ObjDelete", void, cdecl, (void* object))
+WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
+
+// Destroys and frees an object: the destructor, then the heap or SMemFree for the active
+// player's. Reached from ExpireOldObjects for what ObjDelete set aside, which is already
+// untracked, and from DestroyAllObjects on the way out of the world, which bypasses ObjDelete.
+// Before raises ObjectDestroy and untracks only an object still tracked, so each object is
+// announced once whichever way it leaves.
+WXL_SEAM(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, cdecl, (void* object))
+WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)

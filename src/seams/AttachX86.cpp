@@ -19,6 +19,7 @@
 #include "common/Log.hpp"
 #include "hook/Engine.hpp"
 #include "runtime/Core.hpp"
+#include "seams/Detour.hpp"
 
 #include "wxl/offsets/site.hpp"
 #include "wxl/seams/seams.h"
@@ -28,34 +29,11 @@
 
 namespace
 {
-    /// Builds, for a seam's signature, the detour that runs Before, the original, then After.
-    /// The row's parameter list is read as a function type; its arguments are forwarded by
-    /// value, which is what the C boundary passes anyway.
-    template <class Signature>
-    struct Seam;
-
-    template <class... Args>
-    struct Seam<void(Args...)>
-    {
-        using Fn = void(__cdecl*)(Args...);
-
-        template <void(WXL_CALL* Before)(Args...), void(WXL_CALL* After)(Args...)>
-        struct Link
-        {
-            static inline Fn original = nullptr;
-
-            static void __cdecl Detour(Args... args)
-            {
-                Before(args...);
-                original(args...);
-                After(args...);
-            }
-        };
-    };
-
-#define WXL_SEAM(domain, name, symbol, params)                                          \
-    using domain##_##name = Seam<void params>::Link<&::wxl::seam::domain::name::Before, \
-                                                     &::wxl::seam::domain::name::After>;
+    // One Link per row: the detour in the row's convention, with the row's Before and After.
+#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                  \
+    using domain##_##name = ::wxl::core::seams::DetourOf<::wxl::seam::detail::conv_##conv,     \
+                                                     ret params>::Link<                    \
+        &::wxl::seam::domain::name::Before, &::wxl::seam::domain::name::After>;
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM
 
@@ -68,7 +46,7 @@ namespace
     };
 
     const Row kRows[] = {
-#define WXL_SEAM(domain, name, symbol, params)                                                   \
+#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                       \
     { #domain "." #name, WXL_SITE(symbol, 0), reinterpret_cast<void*>(&domain##_##name::Detour), \
       reinterpret_cast<void**>(&domain##_##name::original) },
 #include "wxl/seams/seams.def"

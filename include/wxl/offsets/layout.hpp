@@ -68,6 +68,16 @@ namespace wxl::offsets::layout_detail
 #undef WXL_LAYOUT_SIZE
     };
 
+    inline constexpr FieldRow kSizes[] = {
+#define WXL_LAYOUT_TYPE(id, type, size, file, line)
+#define WXL_LAYOUT_FIELD(id, member, offset, file, line)
+#define WXL_LAYOUT_SIZE(id, member, size, file, line) { #id, member, size },
+#include "generated/layouts.def"
+#undef WXL_LAYOUT_TYPE
+#undef WXL_LAYOUT_FIELD
+#undef WXL_LAYOUT_SIZE
+    };
+
     constexpr bool Equal(const char* a, const char* b)
     {
         for (;; ++a, ++b) {
@@ -86,6 +96,17 @@ namespace wxl::offsets::layout_detail
     {
         Match m;
         for (const FieldRow& r : kFields) {
+            if (!Equal(r.type, type) || !Equal(r.member, member)) continue;
+            ++m.found;
+            m.value = r.offset;
+        }
+        return m;
+    }
+
+    constexpr Match FindSize(const char* type, const char* member)
+    {
+        Match m;
+        for (const FieldRow& r : kSizes) {
             if (!Equal(r.type, type) || !Equal(r.member, member)) continue;
             ++m.found;
             m.value = r.offset;
@@ -114,6 +135,15 @@ namespace wxl::offsets::layout_detail
             ::wxl::offsets::layout_detail::FindField(type, member); \
         static_assert(m.found != 0, "WXL_FIELD: no member " member " of " type " in layouts.def"); \
         static_assert(m.found < 2, "WXL_FIELD: " type "::" member " is measured twice"); \
+        return static_cast<std::size_t>(m.value); \
+    }())
+
+#define WXL_MEMBER_SIZE(type, member) \
+    ([]() consteval -> std::size_t { \
+        constexpr ::wxl::offsets::layout_detail::Match m = \
+            ::wxl::offsets::layout_detail::FindSize(type, member); \
+        static_assert(m.found != 0, "WXL_MEMBER_SIZE: no sizeof(" member ") of " type " in layouts.def"); \
+        static_assert(m.found < 2, "WXL_MEMBER_SIZE: sizeof(" type "::" member ") is measured twice"); \
         return static_cast<std::size_t>(m.value); \
     }())
 

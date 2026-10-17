@@ -1,0 +1,46 @@
+// The client binding as functions: one per row of wxl/core/binding.def, the same on both builds.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#pragma once
+
+#include "wxl/abi.h"
+#include "wxl/core/init.h"
+
+#include <cstdint>
+#include <vector>
+
+namespace wxl::core::binding
+{
+    // Every row of binding.def as a function. A seam body or an object read calls these and
+    // nothing else to learn about the client. Who defines them is the attachment: BindingX86.cpp
+    // reads the client's memory at measured offsets, BindingTable.cpp forwards to the accessors
+    // of a wxl_core_init (the x64 client's, or the harness's).
+#define WXL_BINDING(name, ret, params, args, absent) ret name params;
+#include "wxl/core/binding.def"
+#undef WXL_BINDING
+
+    /**
+     * @brief Keeps the accessors of a wxl_core_init, as far as its struct_size reaches.
+     *
+     * Table-filled builds only (BindingTable.cpp): on x64 WarcraftXLInit calls it with what the
+     * client handed over, in the harness the test calls it with its fakes. A row the table did
+     * not reach, or left null, answers its absent value.
+     */
+    void Bind(const wxl_core_init& init);
+
+    /// The rows the bound table left null, by name; empty when every fact is readable.
+    std::vector<const char*> Unbound();
+}

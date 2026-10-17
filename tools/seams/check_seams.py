@@ -35,16 +35,29 @@ RAISE_CALL = re.compile(r"\bRaise\s*\(\s*WXL_EV_(\w+)")
 INCLUDE_DEF = re.compile(r'^\s*#\s*include\s+"wxl/seams/([A-Za-z0-9_]+\.def)"', re.MULTILINE)
 
 
+CONVENTIONS = ("cdecl", "thiscall", "stdcall")
+
+
 class Seam:
     """One WXL_SEAM row: where it was declared, and what it promises the fork calls."""
 
-    def __init__(self, domain, name, symbol, params, origin):
+    def __init__(self, domain, name, symbol, returns, convention, params, origin):
         self.domain = domain
         self.name = name
         self.symbol = symbol
-        self.params = params  # list of parameter names, in order
-        self.origin = origin  # "<file>:<line>" of the row
-        self.raises = []      # event names, without the WXL_EV_ prefix
+        self.returns = returns        # the return type, as written; "void" for none
+        self.convention = convention  # cdecl, thiscall or stdcall
+        self.params = params          # list of parameter names, in order
+        self.origin = origin          # "<file>:<line>" of the row
+        self.raises = []              # event names, without the WXL_EV_ prefix
+
+    @property
+    def returns_value(self):
+        return self.returns != "void"
+
+    def arity(self, half):
+        """How many arguments a call to Before or After passes: After takes the result first."""
+        return len(self.params) + (1 if half == "After" and self.returns_value else 0)
 
     @property
     def point(self):
@@ -125,19 +138,32 @@ def read_table(seams_dir, problems):
             columns = split_top_level(text[open_at + 1:close - 1])
             line = text.count("\n", 0, match.start()) + 1
             origin = "%s:%d" % (path.name, line)
-            if len(columns) != 4:
-                problems.append("%s: a WXL_SEAM row has %d columns, expected 4 "
-                                "(domain, name, symbol, params)" % (origin, len(columns)))
+            if len(columns) != 6:
+                problems.append("%s: a WXL_SEAM row has %d columns, expected 6 "
+                                "(domain, name, symbol, ret, conv, params)" % (origin, len(columns)))
                 continue
-            domain, name, symbol, params = columns
+            domain, name, symbol, returns, convention, params = columns
             symbol = symbol.strip().strip('"')
+            if not returns:
+                problems.append("%s: the ret column of %s.%s is empty; write void for none"
+                                % (origin, domain, name))
+                continue
+            if convention not in CONVENTIONS:
+                problems.append("%s: the conv column of %s.%s is `%s`; it must be one of %s"
+                                % (origin, domain, name, convention, ", ".join(CONVENTIONS)))
+                continue
             if not (params.startswith("(") and params.endswith(")")):
                 problems.append("%s: the params column of %s.%s is not parenthesised"
                                 % (origin, domain, name))
                 continue
             inner = params[1:-1].strip()
-            names = [] if not inner else [parameter_name(p) for p in split_top_level(inner)]
-            seams.append(Seam(domain, name, symbol, names, origin))
+            decls = [] if not inner else split_top_level(inner)
+            names = [parameter_name(p) for p in decls]
+            if convention == "thiscall" and (not decls or "*" not in decls[0]):
+                problems.append("%s: %s.%s is thiscall but its first parameter is not `this` "
+                                "as a pointer" % (origin, domain, name))
+                continue
+            seams.append(Seam(domain, name, symbol, returns, convention, names, origin))
 
         by_point = {s.point: s for s in seams}
         for match in RAISES_ROW.finditer(text):
@@ -456,17 +482,28 @@ def check(seams, calls, problems):
                                     % (call.where, seam.qualified, half,
                                        call.enclosing or "no function the tool could identify",
                                        seam.symbol))
-                if len(call.args) != len(seam.params):
+                expected = seam.arity(half)
+                if len(call.args) != expected:
+                    declared = ", ".join(seam.params) or "none"
+                    if half == "After" and seam.returns_value:
+                        declared = "the %s result, then %s" % (seam.returns, declared)
                     problems.append("%s: %s::%s is passed %d argument(s); the row declares %d (%s)"
                                     % (call.where, seam.qualified, half, len(call.args),
-                                       len(seam.params), ", ".join(seam.params) or "none"))
+                                       expected, declared))
                     continue
-                for index, (arg, param) in enumerate(zip(call.args, seam.params)):
-                    if param and normalise(param) not in normalise(arg):
-                        problems.append("%s: %s::%s argument %d is `%s`, which does not carry the "
-                                        "row's parameter `%s`"
-                                        % (call.where, seam.qualified, half, index + 1,
-                                           " ".join(arg.split()), param))
+                # After's first argument is the result when the row returns one: any expression.
+                args = call.args[1:] if half == "After" and seam.returns_value else call.args
+                for index, (arg, param) in enumerate(zip(args, seam.params)):
+                    offset = index + 1 + (1 if args is not call.args else 0)
+                    if not param or normalise(param) in normalise(arg):
+                        continue
+                    # A thiscall row's first parameter is `this`, whatever the row names it.
+                    if seam.convention == "thiscall" and index == 0 and normalise(arg) == "this":
+                        continue
+                    problems.append("%s: %s::%s argument %d is `%s`, which does not carry the "
+                                    "row's parameter `%s`"
+                                    % (call.where, seam.qualified, half, offset,
+                                       " ".join(arg.split()), param))
 
 
 def main():
@@ -503,8 +540,9 @@ def main():
     if args.verbose:
         for seam in seams:
             mine = [c for c in calls if c.point == seam.point]
-            print("%-28s %-40s %-22s %s"
-                  % (seam.point, seam.symbol, ",".join(seam.raises) or "-",
+            print("%-32s %-40s %-9s %-9s %-22s %s"
+                  % (seam.point, seam.symbol, seam.returns, seam.convention,
+                     ",".join(seam.raises) or "-",
                      ", ".join("%s %s" % (c.half, c.where) for c in mine) or "NOT WIRED"))
 
     if problems:

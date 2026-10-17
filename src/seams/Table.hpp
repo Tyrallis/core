@@ -26,9 +26,11 @@ namespace wxl::core::seams
     /// One row of seams.def, without its address: the same on both builds.
     struct Seam
     {
-        const char* name;      ///< "<domain>.<name>": the point's name
-        const char* symbol;    ///< the client function, as the recompiled client spells it
-        const char* signature; ///< the C signature of Before, After and the x86 detour, as text
+        const char* name;       ///< "<domain>.<name>": the point's name
+        const char* symbol;     ///< the client function, as the recompiled client spells it
+        const char* returns;    ///< the row's return type, as text; "void" for none
+        const char* convention; ///< the row's x86 calling convention: cdecl, thiscall or stdcall
+        const char* params;     ///< the row's parameter list, as text, parentheses included
     };
 
     /// Every seam, in table order.

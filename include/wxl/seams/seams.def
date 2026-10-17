@@ -5,8 +5,9 @@
 // x64 the recompiled client's own source calls Before where the function starts and After where
 // it returns. The body of each is written once, in src/seams/<Domain>.cpp.
 //
-// Include this with WXL_SEAM(domain, name, symbol, params) defined. This file holds nothing but
-// the domain tables, in the order below; the row shape and its columns are described in each.
+// Include this with WXL_SEAM(domain, name, symbol, ret, conv, params) defined. This file holds
+// nothing but the domain tables, in the order below; the row shape and its columns are
+// described in world.def.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -23,7 +24,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, params) before including seams.def"
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
 
 // A second row shape, WXL_SEAM_RAISES(domain, name, event), says which events of the contract a
@@ -37,6 +38,11 @@
 
 #include "wxl/seams/world.def"
 #include "wxl/seams/event.def"
+#include "wxl/seams/objectmgr.def"
+#include "wxl/seams/unit.def"
+#include "wxl/seams/player.def"
+#include "wxl/seams/gameui.def"
+#include "wxl/seams/maparea.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

@@ -1,0 +1,30 @@
+// The Player domain: seams on CGPlayer_C, the client's player characters.
+//
+// Row shape and columns: see world.def, which documents them. Every row is a non-static member:
+// thiscall, `self` first.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including player.def"
+#endif
+
+// The mirror handler of PLAYER_VISIBLE_ITEM_n: runs after the server wrote a visible equipment
+// slot, with the slot and the field's previous value. Returns early when only the enchant
+// changed; otherwise refreshes the character's components and, for the local player, the
+// action bar. Before compares the old and the new item id; After raises EquipmentChanged when
+// they differ, with the new id (0 for a cleared slot) and the player's handle.
+WXL_SEAM(Player, UpdateInventoryComponent, "CGPlayer_C::UpdateInventoryComponent", void, thiscall, (void* self, int32_t slot, const void* old_item))
+WXL_SEAM_RAISES(Player, UpdateInventoryComponent, EquipmentChanged)
