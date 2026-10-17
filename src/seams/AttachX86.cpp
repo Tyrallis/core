@@ -43,12 +43,13 @@ namespace
         uintptr_t   address; ///< the function's address in Wow.exe build 12340
         void*       detour;
         void**      original;
+        bool        attachable; ///< false for a regparm row: declared, never detoured
     };
 
     const Row kRows[] = {
 #define WXL_SEAM(domain, name, symbol, ret, conv, params)                                       \
     { #domain "." #name, WXL_SITE(symbol, 0), reinterpret_cast<void*>(&domain##_##name::Detour), \
-      reinterpret_cast<void**>(&domain##_##name::original) },
+      reinterpret_cast<void**>(&domain##_##name::original), domain##_##name::kAttachable },
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM
     };
@@ -61,6 +62,15 @@ namespace wxl::core::seams
         bool all = true;
         for (const Row& row : kRows)
         {
+            if (!row.attachable)
+            {
+                WLOG_WARN(kTag, "seam %s not attached at 0x%08zX: the function takes its arguments "
+                                "in registers, so no detour can read them; the seam is live on the "
+                                "recompiled client only",
+                          row.name, static_cast<size_t>(row.address));
+                continue;
+            }
+
             const wxl::hook::Id id = wxl::hook::Attach(
                 row.name, reinterpret_cast<void*>(row.address), row.detour, row.original);
             if (id == wxl::hook::kNone)

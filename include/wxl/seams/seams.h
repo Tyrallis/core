@@ -53,6 +53,11 @@ namespace wxl::seam::detail
     struct conv_stdcall
     {
     };
+    /// A function the compiler gave a private register convention: the x86 build declares the seam
+    /// and never attaches it, because no detour signature can describe how the arguments arrive.
+    struct conv_regparm
+    {
+    };
 
     /// The types of Before and After for a row's signature: After takes a non-void result first.
     template <class Signature>

@@ -35,7 +35,7 @@ RAISE_CALL = re.compile(r"\bRaise\s*\(\s*WXL_EV_(\w+)")
 INCLUDE_DEF = re.compile(r'^\s*#\s*include\s+"wxl/seams/([A-Za-z0-9_]+\.def)"', re.MULTILINE)
 
 
-CONVENTIONS = ("cdecl", "thiscall", "stdcall")
+CONVENTIONS = ("cdecl", "thiscall", "stdcall", "regparm")
 
 
 class Seam:
@@ -46,7 +46,7 @@ class Seam:
         self.name = name
         self.symbol = symbol
         self.returns = returns        # the return type, as written; "void" for none
-        self.convention = convention  # cdecl, thiscall or stdcall
+        self.convention = convention  # cdecl, thiscall, stdcall or regparm
         self.params = params          # list of parameter names, in order
         self.origin = origin          # "<file>:<line>" of the row
         self.raises = []              # event names, without the WXL_EV_ prefix

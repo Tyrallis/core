@@ -26,7 +26,10 @@
 // of ObjectMgrClient.cpp with one caller, CreateObject, which links the object into the visible
 // list right after it returns; an object the client already held comes back through Reenable
 // and never reaches here. After tracks the object and raises ObjectCreate with its handle.
-WXL_SEAM(ObjectMgr, InitObject, "InitObject", void, cdecl, (void* object, const void* create, uint32_t time))
+// Static with one caller: MSVC passes the object in ESI and the create block in EAX, so the x86
+// build declares this seam and does not attach it. Verified at 0x004D3FF0 (mov edx,[esi+0x14] with
+// no prologue) and at its caller 0x004D6D5D (lea eax,[ebp-0x2EC] before the call).
+WXL_SEAM(ObjectMgr, InitObject, "InitObject", void, regparm, (void* object, const void* create, uint32_t time))
 WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 
 // Removes an object from the manager: out of the guid table and the visible list, into the
@@ -42,5 +45,6 @@ WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 // untracked, and from DestroyAllObjects on the way out of the world, which bypasses ObjDelete.
 // Before raises ObjectDestroy and untracks only an object still tracked, so each object is
 // announced once whichever way it leaves.
-WXL_SEAM(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, cdecl, (void* object))
+// Same: the object arrives in ESI. Verified at 0x004D4090 (mov ecx,[esi+8], no prologue).
+WXL_SEAM(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)

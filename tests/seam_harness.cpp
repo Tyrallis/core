@@ -243,7 +243,8 @@ namespace
         {
             const bool known = strcmp(seam.convention, "cdecl") == 0 ||
                                strcmp(seam.convention, "thiscall") == 0 ||
-                               strcmp(seam.convention, "stdcall") == 0;
+                               strcmp(seam.convention, "stdcall") == 0 ||
+                               strcmp(seam.convention, "regparm") == 0;
             char what[160];
             snprintf(what, sizeof what, "%s declares %s %s %s", seam.name, seam.returns,
                      seam.convention, seam.params);

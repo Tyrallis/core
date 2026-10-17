@@ -46,6 +46,8 @@ namespace wxl::core::seams
         template <auto Before, auto After>
         struct Link
         {
+            static constexpr bool kAttachable = true;
+
             static inline Fn original = nullptr;
 
             static R __cdecl Detour(A... args)
@@ -74,6 +76,8 @@ namespace wxl::core::seams
         template <auto Before, auto After>
         struct Link
         {
+            static constexpr bool kAttachable = true;
+
             static inline Fn original = nullptr;
 
             static R __stdcall Detour(A... args)
@@ -106,6 +110,8 @@ namespace wxl::core::seams
         template <auto Before, auto After>
         struct Link
         {
+            static constexpr bool kAttachable = true;
+
             static inline Fn original = nullptr;
 
             static R __fastcall Detour(This self, void*, A... args)
@@ -122,6 +128,33 @@ namespace wxl::core::seams
                     After(result, self, args...);
                     return result;
                 }
+            }
+        };
+    };
+
+    /**
+     * @brief A row the x86 build declares but never attaches.
+     *
+     * The compiler gave the function a private register convention, so no detour signature can
+     * describe how its arguments arrive. Declaring the row keeps the seam, its body and its events
+     * identical on both builds; only the x86 attachment is withheld.
+     */
+    template <class R, class... A>
+    struct DetourOf<::wxl::seam::detail::conv_regparm, R(A...)>
+    {
+        using Fn = R(__cdecl*)(A...);
+
+        template <auto Before, auto After>
+        struct Link
+        {
+            static constexpr bool kAttachable = false;
+
+            static inline Fn original = nullptr;
+
+            static R __cdecl Detour(A... args)
+            {
+                ((void)args, ...);
+                if constexpr (!std::is_void_v<R>) return R{};
             }
         };
     };
