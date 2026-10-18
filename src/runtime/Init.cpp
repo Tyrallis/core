@@ -19,6 +19,7 @@
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Stamp.hpp"
 
 #include <windows.h>
 #include <cstddef>
@@ -62,12 +63,18 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
+    {
         DisableThreadLibraryCalls(module);
         wxl::core::OpenLog();
-        WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (build %s %s), loader thread %lu; "
+        // The DLL's own link stamp, not a compile time: it moves whenever this binary is
+        // relinked, so the line names the file that is running.
+        char linked[wxl::core::stamp::kDescriptionSize];
+        wxl::core::stamp::Describe(linked, sizeof linked);
+        WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (linked %s), loader thread %lu; "
                                    "mods load at WarcraftXLInit",
-                  __DATE__, __TIME__, GetCurrentThreadId());
+                  linked, GetCurrentThreadId());
         break;
+    }
     case DLL_PROCESS_DETACH:
         WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll detaching");
         wxl::log::Close();

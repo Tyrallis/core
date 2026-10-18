@@ -96,6 +96,25 @@ math(EXPR WXL_CORE_VERSION
 
 set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
+# Symbols for the shipped build: a crash in a player's log is an address, and without a PDB
+# beside the binary there is nothing to turn it into a function and a line.
+#
+# /Zi makes the compiler emit debug information; /DEBUG makes the linker write the PDB. /DEBUG
+# also turns the linker's own defaults for /OPT:REF and /OPT:ICF off, which would leave
+# unreferenced code and duplicate COMDATs in the image that ships, so both are named back
+# explicitly: named that way they reproduce the image the linker builds on its own defaults.
+#
+# On the targets that also ask for whole-program optimisation, /DEBUG still costs the image a
+# little: the link-time code generator pads .text differently when it has debug information to
+# carry, 16 bytes of it on x86 and 448 on x64, which shifts most functions by 16 or 32 bytes
+# and so rewrites every relative call. The link map holds the same 2734 .text symbols either
+# way -- nothing is kept that /OPT:REF would have dropped. wxl-core-patcher, which has no
+# whole-program optimisation, keeps its .text size exactly.
+function(wxl_core_release_symbols target)
+    target_compile_options(${target} PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_link_options(${target} PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+endfunction()
+
 # --- WarcraftXL.dll --------------------------------------------------------------------------------
 # What both architectures share: the log, the start-up, the mod host behind it, the bodies of
 # the seams (one file per domain of include/wxl/seams/), the leaf reads of wxl.object (one
@@ -116,6 +135,7 @@ file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/ob
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
     src/runtime/Stages.cpp
+    src/runtime/Stamp.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp
@@ -129,6 +149,7 @@ set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 # see through any of them. Release only: it costs link time and makes a debug build harder to
 # follow, and neither matters to what ships.
 set_property(TARGET wxl-core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+wxl_core_release_symbols(wxl-core)
 target_include_directories(wxl-core PRIVATE src include)
 target_link_libraries(wxl-core PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core PRIVATE
@@ -198,6 +219,7 @@ if(WXL_CORE_X86)
         src/patcher/PatchScript.cpp
         src/common/Log.cpp)
     set_target_properties(wxl-core-patcher PROPERTIES OUTPUT_NAME "wxl-core-patcher")
+    wxl_core_release_symbols(wxl-core-patcher)
     target_include_directories(wxl-core-patcher PRIVATE src)
     target_compile_definitions(wxl-core-patcher PRIVATE ${WXL_CORE_DEFS})
 

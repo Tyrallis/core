@@ -18,6 +18,7 @@
 
 #include "common/Log.hpp"
 #include "runtime/Image.hpp"
+#include "runtime/Stamp.hpp"
 
 #include <windows.h>
 
@@ -73,8 +74,12 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(module);
         wxl::core::OpenLog();
-        WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (build %s %s), loader thread %lu",
-                  __DATE__, __TIME__, GetCurrentThreadId());
+        // The DLL's own link stamp, not a compile time: it moves whenever this binary is
+        // relinked, so the line names the file that is running.
+        char linked[wxl::core::stamp::kDescriptionSize];
+        wxl::core::stamp::Describe(linked, sizeof linked);
+        WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll starting (linked %s), loader thread %lu",
+                  linked, GetCurrentThreadId());
 
         if (wxl::core::image::HasEntryTrampoline())
         {
