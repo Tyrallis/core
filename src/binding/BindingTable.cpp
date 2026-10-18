@@ -17,6 +17,8 @@
 #include "binding/Binding.hpp"
 
 #include <cstddef>
+#include <cstdio>
+#include <cstring>
 
 namespace
 {
@@ -29,6 +31,37 @@ namespace
 
 namespace wxl::core::binding
 {
+    bool Agrees(const wxl_core_init& init, char* why, size_t capacity)
+    {
+        if (init.struct_size < offsetof(wxl_core_init, rows) + sizeof(init.rows) || !init.rows)
+        {
+            std::snprintf(why, capacity, "the client hands over no rows: it was built against an "
+                                         "older wxl/core/init.h");
+            return false;
+        }
+
+        const uint32_t mine   = WXL_CORE_INIT_ROW_COUNT;
+        const uint32_t shared = init.row_count < mine ? init.row_count : mine;
+        for (uint32_t i = 0; i < shared; ++i)
+        {
+            const char* theirs = init.rows[i] ? init.rows[i] : "(null)";
+            if (std::strcmp(theirs, wxl_core_init_rows[i]) == 0) continue;
+            std::snprintf(why, capacity, "row %u differs: the client has \"%s\", the runtime \"%s\"",
+                          static_cast<unsigned>(i), theirs, wxl_core_init_rows[i]);
+            return false;
+        }
+
+        // The accessors must be where the rows say: one pointer per row after the header.
+        const size_t covered = (init.struct_size - offsetof(wxl_core_init, map_id)) / sizeof(void*);
+        if (covered < init.row_count)
+        {
+            std::snprintf(why, capacity, "the client names %u rows but its struct_size holds %u",
+                          static_cast<unsigned>(init.row_count), static_cast<unsigned>(covered));
+            return false;
+        }
+        return true;
+    }
+
     void Bind(const wxl_core_init& init)
     {
         g_init = wxl_core_init{};

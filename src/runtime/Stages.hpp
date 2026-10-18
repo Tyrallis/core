@@ -23,15 +23,11 @@ namespace wxl::core::stages
     /**
      * @brief Says the client has reached a stage, and tells the mods once.
      *
-     * Nothing outside the runtime knows when the client has finished mounting its archives or
-     * built its script context; the seams on those very functions do, and this is where they
-     * say so. Both builds call it from the same seam bodies, so a mod is told the same thing on
-     * either client.
-     *
-     * A stage is announced at most once, and never after a later one: the contract says stages
-     * run in order. Gaps are left as gaps -- a stage this runtime cannot recognise is simply
-     * never reported, which the contract allows and which is the honest answer. Announcing
-     * WXL_STAGE_GRAPHICS because WXL_STAGE_SCRIPT arrived would be a lie a mod would act on.
+     * Called by the seams on the functions that bring each subsystem up, the same on both
+     * builds. A stage is announced at most once and never after a later one, in the order the
+     * contract lists them; a stage this runtime cannot recognise is never reported. Mods are
+     * told on the main thread: a call from another thread is ignored, and the main thread's
+     * next call announces the stage.
      */
     void Reach(wxl_stage stage);
 

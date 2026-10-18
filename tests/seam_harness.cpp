@@ -36,12 +36,14 @@
     #include "seams/Detour.hpp"
 #endif
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 // --- What Core.cpp and the attachments supply in the DLL -------------------------------------
@@ -614,6 +616,46 @@ namespace
 
         stages::Restart();
         Check(stages::Reached() == WXL_STAGE_EARLY, "a runtime that starts over starts over");
+
+        stages::Reach(WXL_STAGE_EARLY);
+        std::thread([] { stages::Reach(WXL_STAGE_STORAGE); }).join();
+        Check(stages::Reached() == WXL_STAGE_EARLY,
+              "a stage reached on another thread is not announced there");
+        stages::Reach(WXL_STAGE_STORAGE);
+        Check(stages::Reached() == WXL_STAGE_STORAGE, "the main thread announces it on its next pass");
+        stages::Restart();
+    }
+
+    /// The rows a client hands over decide whether its accessors are called at all.
+    void CheckInitRows()
+    {
+        namespace binding = wxl::core::binding;
+        char why[512] = {};
+
+        wxl_core_init init = FakeInit();
+        init.row_count     = WXL_CORE_INIT_ROW_COUNT;
+        init.rows          = wxl_core_init_rows;
+        Check(binding::Agrees(init, why, sizeof why), "a client built from the same table agrees");
+
+        const wxl_core_init bare = FakeInit();
+        Check(!binding::Agrees(bare, why, sizeof why) && strstr(why, "no rows"),
+              "one that hands over no rows is refused");
+
+        std::vector<const char*> rows(wxl_core_init_rows, wxl_core_init_rows + WXL_CORE_INIT_ROW_COUNT);
+        rows[5]   = "something: else ()";
+        init.rows = rows.data();
+        Check(!binding::Agrees(init, why, sizeof why) && strstr(why, "row 5 differs") &&
+                  strstr(why, wxl_core_init_rows[5]),
+              "one row that differs is refused, naming both sides of it");
+
+        init.rows      = wxl_core_init_rows;
+        init.row_count = WXL_CORE_INIT_ROW_COUNT - 3;
+        Check(binding::Agrees(init, why, sizeof why), "an older client, with fewer rows, agrees");
+
+        init.row_count   = WXL_CORE_INIT_ROW_COUNT;
+        init.struct_size = static_cast<uint32_t>(offsetof(wxl_core_init, map_id) + 8 * sizeof(void*));
+        Check(!binding::Agrees(init, why, sizeof why) && strstr(why, "struct_size"),
+              "rows that its struct_size does not hold are refused");
     }
 
     /// Every event the seam table says some body raises is one the host will let a mod subscribe
@@ -1843,30 +1885,16 @@ void Bench()
         wxl::core::services::data::ServedPath(table, strlen(table), out, sizeof out);
     });
 
-    // What the gate used to do to that same texture path before it knew it did not care: find
-    // the last separator, reserve, and lowercase the basename into a std::string. Measured here
-    // so the suffix-first change is a number rather than a claim.
-    time("the lowercased basename the suffix test now skips", 200000, [&] {
-        size_t start = 0;
-        const size_t size = strlen(texture);
-        for (size_t i = 0; i < size; ++i)
-            if (texture[i] == '\\' || texture[i] == '/') start = i + 1;
-        std::string key;
-        key.reserve(size - start);
-        for (size_t i = start; i < size; ++i)
-            key.push_back(texture[i] >= 'A' && texture[i] <= 'Z'
-                              ? static_cast<char>(texture[i] - 'A' + 'a')
-                              : texture[i]);
-        if (key.empty()) printf("unreachable");
-    });
-
-    wxl_update_args args{};
+    // A bus of its own: the harness's bus carries the recording handlers of the checks.
+    wxl::host::EventBus bus({WXL_EV_Update}, nullptr);
+    wxl_update_args     args{};
     args.delta = 0.016f;
-    time("event bus, no subscriber", 200000, [&] { g_host->Raise(WXL_EV_Update, &args); });
+    time("event bus, no subscriber", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
-    const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
-    time("event bus, one subscriber", 200000, [&] { g_host->Raise(WXL_EV_Update, &args); });
-    g_host->Events().Unsubscribe(sub);
+    bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
+    time("event bus, one subscriber", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
+    bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
+    time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
     wxl::core::services::data::Clear();
 }
@@ -1888,6 +1916,7 @@ int main(int argc, char** argv)
            wxl::core::binding::Unbound().size());
 
     CheckStages();
+    CheckInitRows();
     CheckEveryRaisedEventIsSubscribable();
     CheckEveryRowDeclaresItsAbi();
     CheckEventDispatchUpdate();

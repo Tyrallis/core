@@ -26,9 +26,9 @@
 
 namespace
 {
-    /// The smallest wxl_core_init ever published: struct_size alone. A client built against
-    /// any version of the header from that one on is accepted; the fields it did not have are
-    /// read as absent.
+    /// The header every client hands over: struct_size and its rows. A client built against
+    /// any version of the header from that one on is accepted; the accessors it did not have
+    /// are read as absent.
     constexpr uint32_t kMinInitSize = offsetof(wxl_core_init, map_id);
 }
 
@@ -42,8 +42,18 @@ wxl_result WXL_CALL WarcraftXLInit(const wxl_core_init* init)
         return WXL_E_INVALID;
     }
 
-    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu (struct_size %u of %u)",
-              GetCurrentThreadId(), init->struct_size, static_cast<unsigned>(sizeof(wxl_core_init)));
+    WLOG_INFO(wxl::core::kTag, "WarcraftXLInit on thread %lu (struct_size %u of %u, %u rows of %u)",
+              GetCurrentThreadId(), init->struct_size, static_cast<unsigned>(sizeof(wxl_core_init)),
+              init->row_count, WXL_CORE_INIT_ROW_COUNT);
+
+    char why[512];
+    if (!wxl::core::binding::Agrees(*init, why, sizeof why))
+    {
+        WLOG_ERROR(wxl::core::kTag, "WarcraftXLInit: the client and this runtime were built from "
+                                    "different binding tables, so no mods are loaded: %s. "
+                                    "Rebuild both from one tree.", why);
+        return WXL_E_INVALID;
+    }
     wxl::core::binding::Bind(*init);
     return wxl::core::Start() ? WXL_OK : WXL_E_FAILED;
 }

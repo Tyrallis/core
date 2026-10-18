@@ -21,12 +21,25 @@
 
 #include "wxl/host/mod_host.hpp"
 
+#include <atomic>
+
 namespace
 {
-    /// The furthest stage announced. Stages are announced from the client's own thread, in the
-    /// order the client reaches them, so there is nothing here to guard.
-    wxl_stage g_reached = WXL_STAGE_EARLY;
-    bool      g_started = false;
+    /// Where a stage falls in the boot: the order the contract lists them in, which a stage
+    /// appended later need not follow with its number. -1 for a value outside the contract.
+    int Ordinal(wxl_stage stage)
+    {
+        switch (stage)
+        {
+        case WXL_STAGE_EARLY:    return 0;
+        case WXL_STAGE_STORAGE:  return 1;
+        case WXL_STAGE_GRAPHICS: return 2;
+        case WXL_STAGE_SCRIPT:   return 3;
+        case WXL_STAGE_READY:    return 4;
+        case WXL_STAGE_SHUTDOWN: return 5;
+        }
+        return -1;
+    }
 
     const char* Name(wxl_stage stage)
     {
@@ -41,28 +54,38 @@ namespace
         }
         return "?";
     }
+
+    /// The ordinal of the furthest stage announced, -1 before the first. Written on the main
+    /// thread only; read from any thread, since the file seam runs on several.
+    std::atomic<int>       g_reached{-1};
+    std::atomic<wxl_stage> g_reachedStage{WXL_STAGE_EARLY};
 }
 
 namespace wxl::core::stages
 {
     void Reach(wxl_stage stage)
     {
-        if (g_started && stage <= g_reached) return;
+        const int ordinal = Ordinal(stage);
+        if (ordinal <= g_reached.load(std::memory_order_acquire)) return;
 
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host) return;
 
-        g_started = true;
-        g_reached = stage;
+        // Mods are told on the main thread. A seam that reaches a stage on another thread
+        // leaves it to the main thread's next pass through a seam that reaches it.
+        if (!host->OnMainThread()) return;
+
+        g_reached.store(ordinal, std::memory_order_release);
+        g_reachedStage.store(stage, std::memory_order_relaxed);
         WLOG_INFO(kTag, "stage %s", Name(stage));
         host->Stage(stage);
     }
 
-    wxl_stage Reached() { return g_reached; }
+    wxl_stage Reached() { return g_reachedStage.load(std::memory_order_relaxed); }
 
     void Restart()
     {
-        g_reached = WXL_STAGE_EARLY;
-        g_started = false;
+        g_reached.store(-1);
+        g_reachedStage.store(WXL_STAGE_EARLY);
     }
 }
