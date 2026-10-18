@@ -116,6 +116,7 @@ add_library(wxl-core SHARED
     src/runtime/Stages.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
+    src/services/StorageService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
@@ -136,6 +137,7 @@ add_executable(wxl-core-seam-harness
     src/runtime/Stages.cpp
     src/binding/BindingTable.cpp
     src/services/ScriptService.cpp
+    src/services/StorageService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 target_include_directories(wxl-core-seam-harness PRIVATE src include)

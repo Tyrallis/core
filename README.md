@@ -141,7 +141,8 @@ What a mod can reach **today**, by build:
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
 | `wxl.object` (world objects) | yes | yes |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
-| `wxl.storage`, `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
+| `wxl.storage` | yes: exists, size, read, open/read_at/close, mount_archive | the same |
+| `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY`, `STORAGE`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
 

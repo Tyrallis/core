@@ -27,11 +27,13 @@
 #include "services/HookService.hpp"
 #include "services/PatchService.hpp"
 #include "services/ScriptService.hpp"
+#include "services/StorageService.hpp"
 
 #include "wxl/services/hook.h"
 #include "wxl/services/object.h"
 #include "wxl/services/patch.h"
 #include "wxl/services/script.h"
+#include "wxl/services/storage.h"
 
 namespace wxl::core::attachment
 {
@@ -57,6 +59,7 @@ namespace wxl::core::attachment
             { WXL_PATCH_SERVICE, WXL_PATCH_SERVICE_VERSION, &services::PatchApi() },
             { WXL_OBJECT_SERVICE, WXL_OBJECT_SERVICE_VERSION, objects::Api() },
             { WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &services::ScriptApi() },
+            { WXL_STORAGE_SERVICE, WXL_STORAGE_SERVICE_VERSION, &services::StorageApi() },
         };
     }
 

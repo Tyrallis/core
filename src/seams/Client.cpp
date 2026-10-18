@@ -20,6 +20,7 @@
 #include "runtime/Attachment.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
+#include "services/StorageService.hpp"
 
 #include "wxl/host/mod_host.hpp"
 
@@ -35,9 +36,11 @@ namespace wxl::seam::Client::Destroy
         // other libraries may already be gone, and nothing a mod did would be safe.
         wxl::core::stages::Reach(WXL_STAGE_SHUTDOWN);
 
-        // Whatever a mod did not detach itself. This has to happen between the stage, where a
-        // mod may still want its hooks, and the unload, which frees the code they jump to.
+        // Whatever a mod did not give back itself. This has to happen between the stage,
+        // where a mod may still want its hooks and its files, and the unload, which frees the
+        // code those hooks jump to.
         wxl::core::attachment::ReleaseAll();
+        wxl::core::services::storage::CloseEverything();
 
         host->UnloadAll();
         WLOG_INFO(wxl::core::kTag, "mods unloaded; the client is on its own from here");

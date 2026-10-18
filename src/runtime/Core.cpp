@@ -21,6 +21,7 @@
 #include "common/Log.hpp"
 #include "runtime/Attachment.hpp"
 #include "services/ScriptService.hpp"
+#include "services/StorageService.hpp"
 
 #include "wxl/host/mod_host.hpp"
 
@@ -97,8 +98,10 @@ namespace
     void OnModDisabled(void*, wxl::host::ModHost::ModToken token, const char*)
     {
         wxl::core::services::script::OnModDisabled(token);
-        // Its code is not trusted to run again, so neither is anything that jumps into it.
+        // Its code is not trusted to run again, so neither is anything that jumps into it,
+        // and nothing it was holding is going to be given back by it.
         wxl::core::attachment::Release(token);
+        wxl::core::services::storage::CloseFilesOf(token);
     }
 
     // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam

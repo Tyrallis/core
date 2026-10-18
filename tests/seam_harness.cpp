@@ -20,11 +20,13 @@
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/ScriptService.hpp"
+#include "services/StorageService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
 #include "wxl/services/script.h"
+#include "wxl/services/storage.h"
 
 #if defined(_M_IX86)
     #include "seams/Detour.hpp"
@@ -335,6 +337,73 @@ namespace
         return store ? static_cast<const FakeStore*>(store)->read : 0u;
     }
 
+    /// One file the fake client holds, and the cursor a reader is at.
+    struct FakeFile
+    {
+        std::string name;
+        std::string bytes;
+        uint64_t    at    = 0;
+        bool        open  = false;
+    };
+
+    std::vector<FakeFile> g_files;
+    int                   g_opens  = 0;
+    int                   g_closes = 0;
+
+    FakeFile* FileNamed(const char* name)
+    {
+        for (FakeFile& file : g_files)
+            if (file.name == name) return &file;
+        return nullptr;
+    }
+
+    wxl_bool WXL_CALL FakeFileExists(const char* path)
+    {
+        return path && FileNamed(path) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    void* WXL_CALL FakeFileOpen(const char* path)
+    {
+        FakeFile* file = path ? FileNamed(path) : nullptr;
+        if (!file) return nullptr;
+        file->at   = 0;
+        file->open = true;
+        ++g_opens;
+        return file;
+    }
+
+    uint64_t WXL_CALL FakeFileSize(void* file)
+    {
+        return file ? static_cast<const FakeFile*>(file)->bytes.size() : 0u;
+    }
+
+    wxl_bool WXL_CALL FakeFileSeek(void* file, uint64_t offset)
+    {
+        if (!file) return WXL_FALSE;
+        static_cast<FakeFile*>(file)->at = offset;
+        return WXL_TRUE;
+    }
+
+    uint32_t WXL_CALL FakeFileRead(void* handle, void* buffer, uint32_t count)
+    {
+        FakeFile* file = static_cast<FakeFile*>(handle);
+        if (!file || !buffer || file->at >= file->bytes.size()) return 0;
+        const uint64_t left = file->bytes.size() - file->at;
+        const uint32_t got  = left < count ? static_cast<uint32_t>(left) : count;
+        memcpy(buffer, file->bytes.data() + file->at, got);
+        file->at += got;
+        return got;
+    }
+
+    void WXL_CALL FakeFileClose(void* file)
+    {
+        if (!file) return;
+        static_cast<FakeFile*>(file)->open = false;
+        ++g_closes;
+    }
+
+    wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -376,6 +445,13 @@ namespace
         init.message_data           = &FakeMessageData;
         init.message_size           = &FakeMessageSize;
         init.message_read           = &FakeMessageRead;
+        init.file_exists            = &FakeFileExists;
+        init.file_open              = &FakeFileOpen;
+        init.file_size              = &FakeFileSize;
+        init.file_seek              = &FakeFileSeek;
+        init.file_read              = &FakeFileRead;
+        init.file_close             = &FakeFileClose;
+        init.archive_mount          = &FakeArchiveMount;
         return init;
     }
 }
@@ -1349,6 +1425,68 @@ namespace
         Check(Count(WXL_EV_Disconnected) == 1, "and only once");
     }
 
+    // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
+
+    void CheckStorageService()
+    {
+        g_files.clear();
+        g_files.push_back(FakeFile{"World\\Maps\\Azeroth\\Azeroth.wdt", "MVER....hello", 0, false});
+        g_opens  = 0;
+        g_closes = 0;
+
+        const wxl_storage_api& api = wxl::core::services::StorageApi();
+        const wxl_str          path{g_files[0].name.c_str(),
+                                    static_cast<uint32_t>(g_files[0].name.size())};
+        const wxl_str          missing = Str("World\\Maps\\Nowhere.wdt");
+
+        Check(api.exists(path) == WXL_TRUE && api.exists(missing) == WXL_FALSE,
+              "wxl.storage answers for a name the client has and one it does not");
+
+        uint64_t size = 0;
+        Check(api.size(path, &size) == WXL_OK && size == g_files[0].bytes.size(),
+              "the length of a file is its length");
+        Check(api.size(missing, &size) == WXL_E_NOT_FOUND,
+              "and a file that is not there is not found, rather than empty");
+
+        // A buffer too small answers what it would have taken, which is how the facade sizes.
+        char     small[4] = {};
+        uint64_t needed   = 0;
+        Check(api.read(path, small, sizeof small, &needed) == WXL_E_INVALID
+                  && needed == g_files[0].bytes.size(),
+              "a buffer too small is refused, and says what would have fitted");
+
+        std::vector<char> whole(static_cast<size_t>(size));
+        uint64_t          read = 0;
+        Check(api.read(path, whole.data(), whole.size(), &read) == WXL_OK && read == size
+                  && std::string(whole.begin(), whole.end()) == g_files[0].bytes,
+              "and a buffer the right size gets the whole file");
+
+        // Streaming: a handle, a read at an offset, a close.
+        const wxl_handle file = api.open(path);
+        Check(file != WXL_HANDLE_NONE, "a file opens");
+
+        char     part[5] = {};
+        uint64_t got     = 0;
+        Check(api.read_at(file, 8, part, 5, &got) == WXL_OK && got == 5
+                  && std::string(part, 5) == "hello",
+              "and reads where it is asked to, not where it last was");
+
+        api.close(file);
+        Check(g_closes == g_opens, "a closed file is closed on the client's side too");
+        Check(api.read_at(file, 0, part, 1, &got) == WXL_E_NOT_FOUND,
+              "a handle kept past its close answers gone, not whatever took its place");
+
+        // What a mod leaves open is closed for it.
+        const wxl_handle leaked = api.open(path);
+        Check(leaked != WXL_HANDLE_NONE, "a mod opens a file and forgets it");
+        wxl::core::services::storage::CloseEverything();
+        Check(g_closes == g_opens, "and the runtime closes it on the way out");
+        Check(api.read_at(leaked, 0, part, 1, &got) == WXL_E_NOT_FOUND,
+              "its handle stops resolving with it");
+
+        g_files.clear();
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -1473,6 +1611,7 @@ int main()
     CheckInput();
     CheckStorage();
     CheckSound();
+    CheckStorageService();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();

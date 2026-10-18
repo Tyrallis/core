@@ -22,9 +22,11 @@
 #include "runtime/Core.hpp"
 #include "seams/Table.hpp"
 #include "services/ScriptService.hpp"
+#include "services/StorageService.hpp"
 
 #include "wxl/services/object.h"
 #include "wxl/services/script.h"
+#include "wxl/services/storage.h"
 
 namespace wxl::core::attachment
 {
@@ -42,6 +44,7 @@ namespace wxl::core::attachment
         return {
             { WXL_OBJECT_SERVICE, WXL_OBJECT_SERVICE_VERSION, objects::Api() },
             { WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &services::ScriptApi() },
+            { WXL_STORAGE_SERVICE, WXL_STORAGE_SERVICE_VERSION, &services::StorageApi() },
         };
     }
 

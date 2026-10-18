@@ -113,6 +113,19 @@ namespace
     using ScriptCreateEvts = void(__cdecl*)(const char** names, uint32_t count);
     using ScriptSignal     = void(__cdecl*)(uint32_t index, void* L, int32_t arg_count);
 
+    // The client's file layer. STORMAPI is __stdcall, and every one of these has external
+    // linkage, so the convention they are declared with is the convention they carry.
+    using FileExists   = int32_t(__stdcall*)(const char* name);
+    using FileOpen     = int32_t(__stdcall*)(const char* name, void** file);
+    using FileSize     = uint32_t(__stdcall*)(void* file, uint32_t* high);
+    using FileRead     = int32_t(__stdcall*)(void* file, void* buffer, uint32_t count,
+                                             uint32_t* read, void* overlapped, uint32_t unused);
+    using FileSeek     = int32_t(__stdcall*)(void* file, int32_t distance, int32_t* high,
+                                             uint32_t method);
+    using FileClose    = int32_t(__stdcall*)(void* file);
+    using ArchiveOpen  = int32_t(__stdcall*)(const char* path, int32_t priority, uint32_t flags,
+                                             void** archive);
+
     LuaGetTop       LuaGetTopAt() { return reinterpret_cast<LuaGetTop>(WXL_SITE("lua_gettop", 0)); }
     LuaSetTop       LuaSetTopAt() { return reinterpret_cast<LuaSetTop>(WXL_SITE("lua_settop", 0)); }
     LuaType         LuaTypeAt() { return reinterpret_cast<LuaType>(WXL_SITE("lua_type", 0)); }
@@ -344,6 +357,64 @@ namespace wxl::core::binding
     void script_signal_event(uint32_t index, void* state, int32_t arg_count)
     {
         if (IsClient() && state) ScriptSignalEventAt()(index, state, arg_count);
+    }
+
+    wxl_bool file_exists(const char* path)
+    {
+        if (!IsClient() || !path) return WXL_FALSE;
+        const FileExists call = reinterpret_cast<FileExists>(WXL_SITE("SFile::FileExists", 0));
+        return call(path) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    void* file_open(const char* path)
+    {
+        if (!IsClient() || !path) return nullptr;
+        const FileOpen call = reinterpret_cast<FileOpen>(WXL_SITE("SFileOpenFile", 0));
+        void*          file = nullptr;
+        return call(path, &file) ? file : nullptr;
+    }
+
+    uint64_t file_size(void* file)
+    {
+        if (!IsClient() || !file) return 0;
+        const FileSize call = reinterpret_cast<FileSize>(WXL_SITE("SFileGetFileSize", 0));
+        uint32_t       high = 0;
+        const uint32_t low  = call(file, &high);
+        return (static_cast<uint64_t>(high) << 32) | low;
+    }
+
+    wxl_bool file_seek(void* file, uint64_t offset)
+    {
+        if (!IsClient() || !file) return WXL_FALSE;
+        const FileSeek call = reinterpret_cast<FileSeek>(WXL_SITE("SFile::SetFilePointer", 0));
+        int32_t        high = static_cast<int32_t>(offset >> 32);
+        // Method 0 is FILE_BEGIN: the offset is absolute, which is what read_at means.
+        return call(file, static_cast<int32_t>(offset & 0xFFFFFFFFu), &high, 0) ? WXL_TRUE
+                                                                                : WXL_FALSE;
+    }
+
+    uint32_t file_read(void* file, void* buffer, uint32_t count)
+    {
+        if (!IsClient() || !file || !buffer || !count) return 0;
+        const FileRead call = reinterpret_cast<FileRead>(WXL_SITE("SFileReadFile", 0));
+        uint32_t       read = 0;
+        call(file, buffer, count, &read, nullptr, 0);
+        return read;
+    }
+
+    void file_close(void* file)
+    {
+        if (!IsClient() || !file) return;
+        reinterpret_cast<FileClose>(WXL_SITE("SFileCloseFile", 0))(file);
+    }
+
+    wxl_bool archive_mount(const char* path, int32_t priority)
+    {
+        if (!IsClient() || !path) return WXL_FALSE;
+        const ArchiveOpen call =
+            reinterpret_cast<ArchiveOpen>(WXL_SITE("SFile::OpenArchive", 0));
+        void* archive = nullptr;
+        return call(path, priority, 0, &archive) ? WXL_TRUE : WXL_FALSE;
     }
 
     wxl_bool object_position(const void* object, wxl_vec3* out)
