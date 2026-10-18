@@ -56,15 +56,6 @@ namespace
         return host ? host->CurrentMod() : 0u;
     }
 
-    Open* Find(wxl_handle handle)
-    {
-        void* file = g_handles.Resolve(handle);
-        if (!file) return nullptr;
-        for (Open& open : g_open)
-            if (open.file == file) return &open;
-        return nullptr;
-    }
-
     void Forget(void* file)
     {
         g_handles.Untrack(file);
@@ -159,12 +150,14 @@ namespace
         if (!out_read) return WXL_E_INVALID;
         *out_read = 0;
 
-        const Open* open = Find(handle);
-        if (!open) return WXL_E_NOT_FOUND;
+        // The handle table answers with the client's file pointer, which is everything a read
+        // needs; the mod that opened it only matters when its files are closed for it.
+        void* file = g_handles.Resolve(handle);
+        if (!file) return WXL_E_NOT_FOUND;
         if (!buffer && size) return WXL_E_INVALID;
         if (!size) return WXL_OK;
 
-        if (!wxl::core::binding::file_seek(open->file, offset)) return WXL_E_FAILED;
+        if (!wxl::core::binding::file_seek(file, offset)) return WXL_E_FAILED;
 
         uint64_t read = 0;
         while (read < size)
@@ -172,7 +165,7 @@ namespace
             const uint64_t left = size - read;
             const uint32_t want = left > 0x10000000u ? 0x10000000u : static_cast<uint32_t>(left);
             const uint32_t got  = wxl::core::binding::file_read(
-                open->file, static_cast<char*>(buffer) + read, want);
+                file, static_cast<char*>(buffer) + read, want);
             if (!got) break;
             read += got;
         }
@@ -183,9 +176,8 @@ namespace
 
     void WXL_CALL Close(wxl_handle handle)
     {
-        const Open* open = Find(handle);
-        if (!open) return;
-        void* file = open->file;
+        void* file = g_handles.Resolve(handle);
+        if (!file) return;
         wxl::core::binding::file_close(file);
         Forget(file);
     }

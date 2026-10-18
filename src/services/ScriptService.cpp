@@ -144,14 +144,23 @@ namespace
     // --- The native side of a registered function -------------------------------------------
 
     /// One call into a mod's function as the guard runs it: the C call, with C++ exceptions
-    /// caught here and logged, since nothing may leave towards Lua.
+    /// caught here and logged, since nothing may leave towards Lua. The slot rather than the
+    /// name, so that the call itself copies no string; only the paths below read the name.
     struct ModCall
     {
         wxl_script_call* call;
         wxl_script_fn    fn;
         void*            user;
-        const char*      name;
+        uint32_t         slot;
     };
+
+    /// The name a slot is registered under, for a message. Checks the slot again: the call that
+    /// is being reported on may have registered or withdrawn functions in between.
+    const char* SlotName(uint32_t slot)
+    {
+        if (slot == 0 || slot > g_functions.size()) return "(gone)";
+        return g_functions[slot - 1].name.c_str();
+    }
 
     void InvokeMod(void* context)
     {
@@ -162,12 +171,12 @@ namespace
         }
         catch (const std::exception& e)
         {
-            WLOG_ERROR(kTag, "script function %s threw: %s", mod->name, e.what());
+            WLOG_ERROR(kTag, "script function %s threw: %s", SlotName(mod->slot), e.what());
         }
         catch (...)
         {
             WLOG_ERROR(kTag, "script function %s threw something that is not a std::exception",
-                       mod->name);
+                       SlotName(mod->slot));
         }
     }
 
@@ -184,19 +193,18 @@ namespace
             return 0;
         }
 
-        // Copied out: the function may register another and move the vector.
+        // Copied out: the function may register another and move the vector. The name is not,
+        // since only the fault paths below need it and SlotName reads it back there.
         const wxl_script_fn fn    = g_functions[slot - 1].fn;
         void* const         user  = g_functions[slot - 1].user;
         const uint32_t      owner = g_functions[slot - 1].owner;
-        char                name[128];
-        std::snprintf(name, sizeof name, "%s", g_functions[slot - 1].name.c_str());
 
         wxl_script_call call{};
         call.state     = state;
         call.arg_count = binding::script_top(state);
         call.open      = true;
 
-        ModCall             mod{&call, fn, user, name};
+        ModCall             mod{&call, fn, user, slot};
         wxl::host::ModHost* host     = wxl::core::Host();
         const uint32_t      previous = host ? host->SwapCurrentMod(owner) : 0;
         wxl::host::Fault    fault;
@@ -208,14 +216,15 @@ namespace
         {
             char what[96];
             wxl::host::DescribeFault(fault, what, sizeof what);
-            WLOG_ERROR(kTag, "script function %s of mod %s faulted: %s", name, ModName(owner), what);
+            WLOG_ERROR(kTag, "script function %s of mod %s faulted: %s", SlotName(slot),
+                       ModName(owner), what);
             if (host && owner != 0)
-                host->Disable(owner, std::string("in its script function ") + name);
+                host->Disable(owner, std::string("in its script function ") + SlotName(slot));
             else
                 Withdraw(slot);
             std::snprintf(call.message, sizeof call.message,
-                          "WarcraftXL: %s faulted (%s); the mod providing it is disabled", name,
-                          what);
+                          "WarcraftXL: %s faulted (%s); the mod providing it is disabled",
+                          SlotName(slot), what);
             binding::script_error(state, call.message);
             return 0;
         }
