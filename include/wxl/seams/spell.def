@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
+// The Spell domain: seams on the client's spell casting, Spell_C.cpp -- what the server tells
+// the client about casts, and what the local player asks for.
+//
+// The packet handlers are the seams for what the server says. The two PendingSpellCast
+// members behind them, OnSpellStartPacket and OnSpellGo, take an argument in EAX (0x00806700
+// `mov edi,eax` and 0x0080E1B0 `mov esi,eax` before anything else), while the handlers that
+// call them keep the stack convention the handler table requires; so the handlers are hooked,
+// and each body reads the message it was handed without moving its cursor.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including spell.def"
+#endif
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including spell.def"
+#endif
+
+// The handler of SMSG_SPELL_START and SMSG_SPELL_GO, which share a header: the cast item and
+// the caster as packed guids, the cast count, the spell id and the cast flags, then what each
+// message adds. Finds or makes the pending cast and hands the rest of the message to
+// OnSpellStartPacket or OnSpellGo. Reached only through the handler table, with the four
+// arguments every handler takes on the stack: cdecl, the message read at [ebp+0x14]
+// (0x0080FEEB) and a bare `ret` (0x00810029). Before reads the message from its cursor
+// and raises SpellCastStart or SpellCastGo by the opcode, with the caster, the object target
+// when the target flags name one, and the cast time or the hit and miss counts.
+WXL_SEAM_BEFORE(Spell, Packet_Group_30, "Packet_Group_30", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_Group_30, SpellCastStart)
+WXL_SEAM_RAISES(Spell, Packet_Group_30, SpellCastGo)
+
+// The handler of SMSG_SPELL_FAILURE: the caster as a packed guid, the cast count, the spell id
+// and the reason, for a cast in progress the server stopped, on any caster in view. Plays the
+// fizzle, clears the unit's cast state and signals the interface. Reached only through the
+// handler table: cdecl, the message read at [ebp+0x14] (0x00809C7A) and a bare `ret`
+// (0x00809E2B). Before reads the message
+// from its cursor and raises SpellCastInterrupted.
+WXL_SEAM_BEFORE(Spell, Packet_SMSG_SPELL_FAILURE, "Packet_SMSG_SPELL_FAILURE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_SMSG_SPELL_FAILURE, SpellCastInterrupted)
+
+// Fails a cast of the local player's: shows the error, clears the pending cast and its
+// targeting, resets the cooldown when asked. Reached from SMSG_CAST_FAILED with what the
+// server sent, and from every check the client makes before it asks (range, power, state,
+// ...), so it is where a cast of the player's is refused whoever refused it. A free function
+// with 98 callers, its first argument read at [ebp+8] (0x00808209), a bare `ret` (0x00808715)
+// and the callers cleaning the six dwords (0x0052153E `add esp,0x18`): cdecl. Before raises
+// SpellCastFailed with the cast's caster, spell and count, the reason, and the custom error
+// and argument as the caller passed them (-1 for none).
+WXL_SEAM_BEFORE(Spell, SpellFailed, "Spell_C_SpellFailed", void, cdecl, (void* cast, const void* spell, int32_t reason, int32_t misc1, int32_t misc2, uint8_t reset_cooldown))
+WXL_SEAM_RAISES(Spell, SpellFailed, SpellCastFailed)
+
+// The one request to cast: by a unit the player controls, of a spell, from an item or not,
+// at a target or not, either fresh (no pending cast) or the client's own second ask once a
+// target was picked or a dialog confirmed. Everything the interface can do to cast ends here
+// (CastSpellByID, CastSpellByName, the spell book, the action bar, UseItem). Answers whether
+// the cast was taken. A free function with 7 callers, cdecl: the caster at [ebp+8] and the
+// spell id at [ebp+0xC] (0x0080CD1F, 0x0080CCF4), the guid two dwords, a bare `ret`
+// (0x0080CD9B) and the callers cleaning the seven (0x0053E29A `add esp,0x1C`). Gate raises
+// SpellCastRequest and takes the call when a handler refused it, answering false, which is
+// what the client answers for a spell it cannot cast.
+WXL_SEAM_GATE(Spell, CastSpell, "Spell_C_CastSpell", uint8_t, cdecl, (void* caster, int32_t spell_id, const void* item, uint64_t target, void* cast, uint8_t confirmed))
+WXL_SEAM_RAISES(Spell, CastSpell, SpellCastRequest)

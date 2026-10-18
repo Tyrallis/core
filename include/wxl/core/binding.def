@@ -81,6 +81,7 @@
 #include "wxl/core/binding/netclient.def"
 #include "wxl/core/binding/storage.def"
 #include "wxl/core/binding/gx.def"
+#include "wxl/core/binding/spell.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

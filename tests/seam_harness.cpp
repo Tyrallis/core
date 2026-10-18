@@ -26,6 +26,7 @@
     #include "seams/RegparmX86.hpp"
 #endif
 
+#include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -210,6 +211,16 @@ namespace
     {
         const FakeValue* value = At(state, index);
         if (!value) return nullptr;
+        // A number reads as its text, as lua_tolstring converts one in place.
+        if (value->type == WXL_VALUE_NUMBER)
+        {
+            static std::string rendered;
+            char               text[32];
+            snprintf(text, sizeof text, "%.14g", value->number);
+            rendered = text;
+            if (length) *length = static_cast<uint32_t>(rendered.size());
+            return rendered.c_str();
+        }
         if (length) *length = static_cast<uint32_t>(value->string.size());
         return value->string.c_str();
     }
@@ -331,6 +342,29 @@ namespace
     uint32_t WXL_CALL FakeMessageRead(const void* store)
     {
         return store ? static_cast<const FakeStore*>(store)->read : 0u;
+    }
+
+    /// A pending cast, as the spell rows read one.
+    struct FakePendingCast
+    {
+        uint64_t caster  = 0;
+        uint32_t spellId = 0;
+        uint8_t  count   = 0;
+    };
+
+    uint64_t WXL_CALL FakePendingCaster(const void* cast)
+    {
+        return static_cast<const FakePendingCast*>(cast)->caster;
+    }
+
+    uint32_t WXL_CALL FakePendingSpellId(const void* cast)
+    {
+        return static_cast<const FakePendingCast*>(cast)->spellId;
+    }
+
+    uint8_t WXL_CALL FakePendingCount(const void* cast)
+    {
+        return static_cast<const FakePendingCast*>(cast)->count;
     }
 
     /// One file the fake client holds, and the cursor a reader is at.
@@ -471,6 +505,9 @@ namespace
         init.gx_has_context         = &FakeGxHasContext;
         init.gx_window_visible      = &FakeGxWindowVisible;
         init.gx_window_size         = &FakeGxWindowSize;
+        init.pending_cast_caster    = &FakePendingCaster;
+        init.pending_cast_spell_id  = &FakePendingSpellId;
+        init.pending_cast_count     = &FakePendingCount;
         return init;
     }
 }
@@ -1689,6 +1726,370 @@ namespace
         g_files.clear();
     }
 
+    // --- Spell: casts read off the server's messages, and the two requests a mod can refuse ---
+
+    /// A message body, built byte by byte the way the server writes one.
+    struct Body
+    {
+        std::vector<uint8_t> bytes;
+
+        Body& U8(uint8_t value)
+        {
+            bytes.push_back(value);
+            return *this;
+        }
+
+        Body& U32(uint32_t value)
+        {
+            for (int i = 0; i < 4; ++i) bytes.push_back(static_cast<uint8_t>(value >> (i * 8)));
+            return *this;
+        }
+
+        Body& U64(uint64_t value)
+        {
+            for (int i = 0; i < 8; ++i) bytes.push_back(static_cast<uint8_t>(value >> (i * 8)));
+            return *this;
+        }
+
+        /// A guid packed as the server packs it: the mask, then the non-zero bytes.
+        Body& Packed(uint64_t guid)
+        {
+            uint8_t mask = 0;
+            for (int i = 0; i < 8; ++i)
+                if ((guid >> (i * 8)) & 0xFF) mask |= static_cast<uint8_t>(1 << i);
+            bytes.push_back(mask);
+            for (int i = 0; i < 8; ++i)
+                if (mask & (1 << i)) bytes.push_back(static_cast<uint8_t>(guid >> (i * 8)));
+            return *this;
+        }
+
+        FakeStore Store() const { return FakeStore{ bytes.data(), static_cast<uint32_t>(bytes.size()), 0 }; }
+    };
+
+    constexpr uint32_t kMsgSpellStart   = 0x131;
+    constexpr uint32_t kMsgSpellGo      = 0x132;
+    constexpr uint32_t kMsgSpellFailure = 0x133;
+
+    void CheckSpell()
+    {
+        FakeObject mage;
+        mage.guid   = 0x0000000000000ABCull;
+        mage.typeId = WXL_OBJECT_PLAYER;
+        FakeObject boar;
+        boar.guid   = 0xF130000000000123ull;
+        boar.typeId = WXL_OBJECT_UNIT;
+        wxl::seam::ObjectMgr::InitObject::After(&mage, nullptr, 3000u);
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 3001u);
+        const wxl_handle mageHandle = wxl::core::objects::HandleOf(&mage);
+        const wxl_handle boarHandle = wxl::core::objects::HandleOf(&boar);
+        const uint64_t   stranger   = 0xF13000000000FFFFull;
+
+        // SMSG_SPELL_START: the shared header, the cast time, then a unit target.
+        Body start;
+        start.Packed(0).Packed(mage.guid).U8(7).U32(133).U32(0x2).U32(1500).U32(0x2).Packed(boar.guid);
+        FakeStore store = start.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_Group_30::Before(nullptr, kMsgSpellStart, 0, &store);
+        const Received* started = Only(WXL_EV_SpellCastStart);
+        Check(started != nullptr && Count(WXL_EV_SpellCastGo) == 0,
+              "Spell.Packet_Group_30 raises SpellCastStart once for SMSG_SPELL_START");
+        if (started)
+        {
+            const wxl_spell_cast_args args = started->As<wxl_spell_cast_args>();
+            Check(args.caster == mageHandle && args.caster_guid == mage.guid,
+                  "with the caster's handle and guid read off the packed guid");
+            Check(args.target == boarHandle && args.target_guid == boar.guid && args.target_flags == 0x2,
+                  "the object target the target flags name");
+            Check(args.spell_id == 133 && args.cast_count == 7 && args.cast_flags == 0x2 &&
+                      args.cast_time == 1500 && args.cast_item == 0,
+                  "the spell, the count, the flags, the cast time, and no cast item");
+            Check(args.hit_count == 0 && args.miss_count == 0, "and no hits or misses on a start");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        // SMSG_SPELL_GO: the header, the server's time, one hit, one reflected miss, no target.
+        Body go;
+        go.Packed(0x4000000000000042ull).Packed(stranger).U8(2).U32(5176).U32(0x800).U32(9999)
+            .U8(1).U64(boar.guid).U8(1).U64(mage.guid).U8(11).U8(0).U32(0);
+        store = go.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_Group_30::Before(nullptr, kMsgSpellGo, 0, &store);
+        const Received* went = Only(WXL_EV_SpellCastGo);
+        Check(went != nullptr && Count(WXL_EV_SpellCastStart) == 0,
+              "Spell.Packet_Group_30 raises SpellCastGo once for SMSG_SPELL_GO");
+        if (went)
+        {
+            const wxl_spell_cast_args args = went->As<wxl_spell_cast_args>();
+            Check(args.caster == WXL_HANDLE_NONE && args.caster_guid == stranger,
+                  "a caster the client does not hold has no handle but keeps its guid");
+            Check(args.hit_count == 1 && args.miss_count == 1 && args.target_guid == 0 &&
+                      args.target == WXL_HANDLE_NONE && args.cast_item == 0x4000000000000042ull,
+                  "the hits and misses are counted past a reflect result, and no target is none");
+            Check(args.spell_id == 5176 && args.cast_time == 0, "and a go carries no cast time");
+        }
+
+        // What raises nothing: another opcode, a message cut short.
+        g_received.clear();
+        store = start.Store();
+        wxl::seam::Spell::Packet_Group_30::Before(nullptr, kMsgSpellFailure, 0, &store);
+        FakeStore cut{ start.bytes.data(), 6, 0 };
+        wxl::seam::Spell::Packet_Group_30::Before(nullptr, kMsgSpellStart, 0, &cut);
+        Check(g_received.empty(), "an opcode the handler does not serve, or a truncated message, raises nothing");
+
+        // SMSG_SPELL_FAILURE: the caster, the count, the spell, the reason.
+        Body failure;
+        failure.Packed(boar.guid).U8(3).U32(8921).U8(24);
+        store = failure.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_SPELL_FAILURE::Before(nullptr, kMsgSpellFailure, 0, &store);
+        const Received* interrupted = Only(WXL_EV_SpellCastInterrupted);
+        Check(interrupted != nullptr, "Spell.Packet_SMSG_SPELL_FAILURE raises SpellCastInterrupted once");
+        if (interrupted)
+        {
+            const wxl_spell_fail_args args = interrupted->As<wxl_spell_fail_args>();
+            Check(args.caster == boarHandle && args.caster_guid == boar.guid && args.spell_id == 8921 &&
+                      args.cast_count == 3 && args.reason == 24,
+                  "with the caster, the spell, the count and the reason");
+            Check(args.custom_error == -1 && args.custom_arg == -1, "and no custom error");
+        }
+
+        // Spell_C_SpellFailed: the pending cast, read through the binding.
+        FakePendingCast pending;
+        pending.caster  = mage.guid;
+        pending.spellId = 116;
+        pending.count   = 9;
+        g_received.clear();
+        wxl::seam::Spell::SpellFailed::Before(&pending, nullptr, 67, 30, 1, 1);
+        const Received* failed = Only(WXL_EV_SpellCastFailed);
+        Check(failed != nullptr, "Spell.SpellFailed raises SpellCastFailed once");
+        if (failed)
+        {
+            const wxl_spell_fail_args args = failed->As<wxl_spell_fail_args>();
+            Check(args.caster == mageHandle && args.caster_guid == mage.guid && args.spell_id == 116 &&
+                      args.cast_count == 9 && args.reason == 67,
+                  "with the cast's caster, spell and count, and the reason");
+            Check(args.custom_error == 30 && args.custom_arg == 1, "and the custom error as passed");
+        }
+        g_received.clear();
+        wxl::seam::Spell::SpellFailed::Before(nullptr, nullptr, 67, -1, -1, 0);
+        Check(g_received.empty(), "a null cast raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&mage);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    bool g_refuse = false;
+    int  g_requests = 0;
+    wxl_spell_request_args g_lastSpellRequest{};
+    wxl_item_use_args      g_lastItemUse{};
+
+    void WXL_CALL OnSpellRequest(void*, const void* args)
+    {
+        const wxl_spell_request_args& request = *static_cast<const wxl_spell_request_args*>(args);
+        ++g_requests;
+        g_lastSpellRequest = request;
+        if (g_refuse && request.refused) *request.refused = WXL_TRUE;
+    }
+
+    void WXL_CALL OnItemUse(void*, const void* args)
+    {
+        const wxl_item_use_args& use = *static_cast<const wxl_item_use_args*>(args);
+        ++g_requests;
+        g_lastItemUse = use;
+        if (g_refuse && use.refused) *use.refused = WXL_TRUE;
+    }
+
+    void CheckSpellRequest()
+    {
+        const wxl_subscription sub =
+            g_host->Events().Subscribe(WXL_EV_SpellCastRequest, &OnSpellRequest, nullptr, 0);
+
+        FakeObject player;
+        player.guid   = 0x0000000000000ABCull;
+        player.typeId = WXL_OBJECT_PLAYER;
+        FakeObject potion;
+        potion.guid   = 0x4000000000000042ull;
+        potion.typeId = WXL_OBJECT_ITEM;
+        wxl::seam::ObjectMgr::InitObject::After(&player, nullptr, 4000u);
+        wxl::seam::ObjectMgr::InitObject::After(&potion, nullptr, 4001u);
+
+        uint8_t     answer    = 1;
+        void*       caster    = &player;
+        int32_t     spellId   = 133;
+        const void* item      = &potion;
+        uint64_t    target    = 0xF130000000000123ull;
+        void*       cast      = nullptr;
+        uint8_t     confirmed = 0;
+
+        g_refuse   = false;
+        g_requests = 0;
+        Check(!wxl::seam::Spell::CastSpell::Gate(&answer, &caster, &spellId, &item, &target, &cast,
+                                                 &confirmed),
+              "a cast nobody refuses is left to the client");
+        Check(g_requests == 1 && g_lastSpellRequest.caster == wxl::core::objects::HandleOf(&player) &&
+                  g_lastSpellRequest.spell_id == 133 &&
+                  g_lastSpellRequest.item == wxl::core::objects::HandleOf(&potion) &&
+                  g_lastSpellRequest.target_guid == target && g_lastSpellRequest.confirmed == WXL_FALSE,
+              "and the handler is told the caster, the spell, the item and the target");
+
+        g_refuse  = true;
+        confirmed = 1;
+        item      = nullptr;
+        Check(wxl::seam::Spell::CastSpell::Gate(&answer, &caster, &spellId, &item, &target, &cast,
+                                                &confirmed),
+              "a handler that refuses it takes the call");
+        Check(answer == 0 && g_lastSpellRequest.item == WXL_HANDLE_NONE &&
+                  g_lastSpellRequest.confirmed == WXL_TRUE,
+              "the client is answered false; no item is no handle, and the second ask says so");
+
+        g_host->Events().Unsubscribe(sub);
+
+        // CGItem_C::UseItem: the item itself is `this`, the target comes by address.
+        const wxl_subscription use =
+            g_host->Events().Subscribe(WXL_EV_ItemUseRequest, &OnItemUse, nullptr, 0);
+        int32_t         result     = 1;
+        void*           self       = &potion;
+        const uint64_t* targetPtr  = &target;
+        int32_t         confirmed2 = 0;
+
+        g_refuse   = false;
+        g_requests = 0;
+        Check(!wxl::seam::Item::UseItem::Gate(&result, &self, &targetPtr, &confirmed2),
+              "an item use nobody refuses is left to the client");
+        Check(g_requests == 1 && g_lastItemUse.item == wxl::core::objects::HandleOf(&potion) &&
+                  g_lastItemUse.item_guid == potion.guid && g_lastItemUse.target_guid == target &&
+                  g_lastItemUse.confirmed == WXL_FALSE,
+              "and the handler is told the item, its guid and the target");
+
+        g_refuse  = true;
+        targetPtr = nullptr;
+        Check(wxl::seam::Item::UseItem::Gate(&result, &self, &targetPtr, &confirmed2),
+              "a handler that refuses it takes the call");
+        Check(result == 0 && g_lastItemUse.target_guid == 0,
+              "the client is answered 0, and no target address is no target");
+
+        g_host->Events().Unsubscribe(use);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&player);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&potion);
+    }
+
+    // --- FrameScript: the UI events the client fires, and the errors its Lua raises --------
+
+    /// What the UI event handler below saw, copied out while the args were valid.
+    struct UiWatch
+    {
+        int         calls = 0;
+        uint32_t    index = 0;
+        std::string name;
+        std::string format;
+        std::string values;
+        uint32_t    count = 0;
+    };
+
+    void WXL_CALL OnUiEvent(void* user, const void* args)
+    {
+        UiWatch&                 watch = *static_cast<UiWatch*>(user);
+        const wxl_ui_event_args& event = *static_cast<const wxl_ui_event_args*>(args);
+        ++watch.calls;
+        watch.index  = event.index;
+        watch.name   = std::string(event.name.data, event.name.size);
+        watch.format = std::string(event.format.data ? event.format.data : "", event.format.size);
+        watch.values = std::string(static_cast<const char*>(event.values ? event.values : ""),
+                                   event.values_size);
+        watch.count  = event.value_count;
+    }
+
+    /// Fires an event the way the client's variadic wrapper does: through a va_list.
+    void Fire(uint32_t index, const char* format, ...)
+    {
+        va_list args;
+        va_start(args, format);
+        wxl::seam::FrameScript::vSignalEvent::Before(index, format, args);
+        va_end(args);
+    }
+
+    void CheckUiEvent()
+    {
+        // A game context with the client's event table installed.
+        g_vm.live       = true;
+        g_uiLoggingIn   = 1;
+        g_uiInitialized = 0;
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        static const char* names[] = { "PLAYER_LOGIN", "CHAT_MSG_SAY", "UNIT_HEALTH" };
+        wxl::seam::FrameScript::CreateEvents::After(names, 3);
+
+        UiWatch                watch;
+        const wxl_subscription sub =
+            g_host->Events().Subscribe(WXL_EV_UiEvent, &OnUiEvent, &watch, 0);
+
+        Fire(1, "%s%d%f%b%u%s", "hello", -5, 2.5, 1, 7u, static_cast<const char*>(nullptr));
+        Check(watch.calls == 1 && watch.index == 1 && watch.name == "CHAT_MSG_SAY",
+              "FrameScript.vSignalEvent raises UiEvent once, naming the event at the index");
+        const std::string expected("shello\0d-5\0f2.5\0b1\0u7\0n\0", 24);
+        Check(watch.format == "%s%d%f%b%u%s" && watch.count == 6 && watch.values == expected,
+              "with the format and every argument rendered by its kind, a null string as nil");
+
+        Fire(0, nullptr);
+        Check(watch.calls == 2 && watch.name == "PLAYER_LOGIN" && watch.count == 0 &&
+                  watch.values.empty() && watch.format.empty(),
+              "an event without arguments carries none");
+
+        Fire(2, "%x%d", 3);
+        Check(watch.calls == 3 && watch.count == 1 && watch.values == std::string("d3\0", 3),
+              "a letter the client does not read reads nothing here either");
+
+        Fire(9, "%d", 1);
+        Check(watch.calls == 3, "an index outside the installed table raises nothing");
+
+        g_host->Events().Unsubscribe(sub);
+        wxl::seam::FrameScript::Destroy::Before();
+        g_vm.live = false;
+    }
+
+    void CheckScriptError()
+    {
+        g_vm.live       = true;
+        g_uiLoggingIn   = 0;
+        g_uiInitialized = 0;
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+
+        g_vm.stack.clear();
+        g_vm.stack.push_back(String("Interface\\FrameXML\\Boom.lua:12: attempt to call nil"));
+        g_received.clear();
+        wxl::seam::FrameScript::HandleError::Before(&g_vm);
+        const Received* error = Only(WXL_EV_ScriptError);
+        Check(error != nullptr, "FrameScript.HandleError raises ScriptError once");
+        if (error)
+        {
+            const wxl_script_error_args args = error->As<wxl_script_error_args>();
+            Check(args.context == WXL_SCRIPT_CONTEXT_GLUE, "naming the live context");
+            Check(std::string(args.message.data, args.message.size) ==
+                      "Interface\\FrameXML\\Boom.lua:12: attempt to call nil",
+                  "and carrying the message on top of the stack");
+        }
+
+        g_vm.stack.clear();
+        g_vm.stack.push_back(Number(42));
+        g_received.clear();
+        wxl::seam::FrameScript::HandleError::Before(&g_vm);
+        Check(Only(WXL_EV_ScriptError) != nullptr &&
+                  std::string(Only(WXL_EV_ScriptError)->As<wxl_script_error_args>().message.data) == "42",
+              "a number reads as its text");
+
+        g_vm.stack.clear();
+        g_vm.stack.push_back(FakeValue{});
+        g_received.clear();
+        wxl::seam::FrameScript::HandleError::Before(&g_vm);
+        Check(Only(WXL_EV_ScriptError) != nullptr &&
+                  std::string(Only(WXL_EV_ScriptError)->As<wxl_script_error_args>().message.data) ==
+                      "UNKNOWN ERROR",
+              "anything else is what the client will report it as");
+
+        g_vm.stack.clear();
+        wxl::seam::FrameScript::Destroy::Before();
+        g_vm.live = false;
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -2064,6 +2465,10 @@ int main(int argc, char** argv)
     CheckStorageService();
     CheckDataService();
     CheckRender();
+    CheckSpell();
+    CheckSpellRequest();
+    CheckUiEvent();
+    CheckScriptError();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckOneSidedShim();

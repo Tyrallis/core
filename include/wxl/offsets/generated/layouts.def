@@ -12,7 +12,7 @@
 // Rows are sorted by id, then TYPE, then FIELD by offset and member, then SIZE by member, so the
 // file diffs cleanly after an upstream pull.
 //
-// 121 types, 746 field offsets, 7 member sizes.
+// 122 types, 750 field offsets, 7 member sizes.
 WXL_LAYOUT_TYPE(C3Vector, "C3Vector", 0xC, "Engine/Source/Tempest/C3Vector.h", 11)
 WXL_LAYOUT_TYPE(C44Matrix, "C44Matrix", 0x40, "Engine/Source/Tempest/C44Matrix.h", 13)
 WXL_LAYOUT_TYPE(CACHEENTRY, "CACHEENTRY", 0xB4, "WoW/Common/TextureCache.h", 13)
@@ -816,6 +816,11 @@ WXL_LAYOUT_FIELD(M2Vertex, "m_position", 0x0, "Engine/Source/Model2/M2Data.h", 1
 WXL_LAYOUT_FIELD(M2Vertex, "m_weights", 0xC, "Engine/Source/Model2/M2Data.h", 119)
 WXL_LAYOUT_FIELD(M2Vertex, "m_indices", 0x10, "Engine/Source/Model2/M2Data.h", 119)
 WXL_LAYOUT_TYPE(MD5_CTX, "MD5_CTX", 0x58, "Engine/Source/Storm/Source/MD5.h", 6)
+WXL_LAYOUT_TYPE(PendingSpellCast, "PendingSpellCast", 0x148, "WoW/Source/Magic/MagicClient/Spell_C.h", 31)
+WXL_LAYOUT_FIELD(PendingSpellCast, "m_data", 0x8, "WoW/Source/Magic/MagicClient/Spell_C.h", 31)
+WXL_LAYOUT_FIELD(PendingSpellCast, "m_data.m_caster", 0x10, "WoW/Source/Magic/MagicClient/Spell_C.h", 31)
+WXL_LAYOUT_FIELD(PendingSpellCast, "m_data.m_spellId", 0x20, "WoW/Source/Magic/MagicClient/Spell_C.h", 31)
+WXL_LAYOUT_FIELD(PendingSpellCast, "m_data.m_castCount", 0x24, "WoW/Source/Magic/MagicClient/Spell_C.h", 31)
 WXL_LAYOUT_TYPE(SMChunk, "SMChunk", 0x80, "WoW/Source/WorldClient/MapChunk.h", 161)
 WXL_LAYOUT_FIELD(SMChunk, "m_nLayers", 0xC, "WoW/Source/WorldClient/MapChunk.h", 161)
 WXL_LAYOUT_TYPE(SMDoodadDef, "SMDoodadDef", 0x24, "WoW/Source/WorldClient/Map.h", 66)

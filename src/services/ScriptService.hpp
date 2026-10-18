@@ -32,6 +32,10 @@ namespace wxl::core::services
         /// True while the service itself is installing the event table.
         bool Reissuing();
 
+        /// The name at an index of the installed table -- the client's events, then the ones
+        /// mods declared behind them -- or null for an index outside it.
+        const char* EventName(uint32_t index);
+
         /// Withdraws every function a mod registered: the host's disable handler.
         void OnModDisabled(uint32_t token);
 

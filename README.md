@@ -6,7 +6,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.3-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.4-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -248,6 +248,13 @@ source. Everything else observes.
 | `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
 | `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
 | `Gx.NotifyOnDeviceRestored` | `CGxDevice::NotifyOnDeviceRestored()` | `SwapchainRestored` before, with the size the device came back at |
+| `Spell.Packet_Group_30` | `Packet_Group_30(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_SPELL_START` and `SMSG_SPELL_GO` | `SpellCastStart` or `SpellCastGo` before, by the opcode, read off the message before the client parses it: the caster, the object target, the cast time or the hit and miss counts |
+| `Spell.Packet_SMSG_SPELL_FAILURE` | `Packet_SMSG_SPELL_FAILURE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellCastInterrupted` before, for any caster in view, with the reason the server sent |
+| `Spell.SpellFailed` | `Spell_C_SpellFailed(PendingSpellCast* cast, const SpellRec* spell, int32_t reason, int32_t misc1, int32_t misc2, bool reset_cooldown)` | `SpellCastFailed` before: the local player's cast refused by the server or by the client's own checks |
+| `Spell.CastSpell` (gated) | `Spell_C_CastSpell(CGUnit_C* caster, int32_t spell_id, const CGItem_C* item, uint64_t target, PendingSpellCast* cast, bool confirmed)` | `SpellCastRequest` at the gate; refusing it answers false and nothing is sent |
+| `Item.UseItem` (gated) | `CGItem_C::UseItem(const uint64_t* target, int32_t confirmed)` | `ItemUseRequest` at the gate; refusing it answers 0 and the item's spell is never asked for |
+| `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%` |
+| `FrameScript.HandleError` | `FrameScript_HandleError(lua_State* state)`, the error handler of every protected call | `ScriptError` before, with the error value as the VM left it |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:

@@ -1220,3 +1220,14 @@ skip engine/Addon:kSignatureCtxBlobSize :: the window buffer size SSignatureData
 # =============================================================================================
 
 skip engine/Sound:kOffGroupMasterVolume :: a field of the sound-group record behind SE2's group array; the fork has no type for it (FMOD internals)
+
+# =============================================================================================
+# Magic: a pending cast, read by the Spell seams through the binding (binding/spell.def)
+# =============================================================================================
+
+type PendingSpellCast WoW/Source/Magic/MagicClient/Spell_C.h PendingSpellCast
+  sizeof                                  -
+  m_data                                  -                                            # the PendingSpellCastData embedded in the record
+  m_data.m_caster                         -                                            # binding pending_cast_caster
+  m_data.m_spellId                        -                                            # binding pending_cast_spell_id
+  m_data.m_castCount                      -                                            # binding pending_cast_count

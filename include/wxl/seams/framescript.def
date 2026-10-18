@@ -39,3 +39,25 @@ WXL_SEAM_RAISES(FrameScript, Destroy, ScriptVmClosing)
 // the game's), both arguments on the stack: cdecl. After hands the installed list to wxl.script,
 // which installs it again with the events mods declared appended behind it; Before raises nothing.
 WXL_SEAM_AFTER(FrameScript, CreateEvents, "FrameScript_CreateEvents", void, cdecl, (const char** names, uint32_t count))
+
+// Fires one event to the interface: pushes the event's name, then one Lua value per `%` of
+// the format string read from the va_list (b, d, f, s, u), and signals every listener. Every
+// event the client fires reaches it: the variadic FrameScript_SignalEvent is a wrapper that
+// does nothing but build the va_list (0x0081B530), and the one other caller passes its own.
+// The index is read at [ebp+8] (0x0081ACA8), the three arguments on the stack, a bare `ret`
+// (0x0081AE4E) and the other caller cleaning them (0x005326E8 `add esp,0xC`): cdecl. Before
+// raises UiEvent with the event's name, the format, and the values rendered as text, when a
+// mod listens; the client's own listeners are not consulted, so an event nothing in the
+// interface registered for is raised all the same.
+WXL_SEAM_BEFORE(FrameScript, vSignalEvent, "vFrameScript_SignalEvent", void, cdecl, (uint32_t index, const char* format, void* args))
+WXL_SEAM_RAISES(FrameScript, vSignalEvent, UiEvent)
+
+// The error handler the client installs on every protected call of interface code: makes the
+// error value a string, names the object that raised it, and hands it to the handler the
+// interface set with seterrorhandler. A static whose address is the only reference to it
+// (0x00819BFE, in FrameScript_Initialize), called by the VM as a lua_CFunction with the state
+// at [ebp+8] (0x00819735) and a bare `ret` (0x0081980B): cdecl. Before raises ScriptError
+// with the error value as the VM
+// left it on top of the stack, before the client rewrites it.
+WXL_SEAM_BEFORE(FrameScript, HandleError, "FrameScript_HandleError", int32_t, cdecl, (void* state))
+WXL_SEAM_RAISES(FrameScript, HandleError, ScriptError)

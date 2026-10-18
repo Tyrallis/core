@@ -14,7 +14,11 @@
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
 
 namespace
 {
@@ -36,6 +40,59 @@ namespace
     const char* ContextName(uint32_t context)
     {
         return context == WXL_SCRIPT_CONTEXT_GAME ? "game" : "glue";
+    }
+
+    /// Appends one entry of wxl_ui_event_args::values: the kind, the text, a NUL.
+    void Entry(std::vector<char>& out, char kind, const char* text)
+    {
+        out.push_back(kind);
+        if (text) out.insert(out.end(), text, text + std::strlen(text));
+        out.push_back('\0');
+    }
+
+    /**
+     * @brief Renders the arguments of a UI event the way the client reads them.
+     *
+     * Walks the format as vFrameScript_SignalEvent does: every `%` is looked at, the letter
+     * after it decides what one va_arg is and how it is pushed, any other letter reads nothing.
+     * The list is a copy, so the client's own walk starts where it did.
+     * @return how many entries were written.
+     */
+    uint32_t Render(std::vector<char>& out, const char* format, void* list)
+    {
+        if (!format) return 0;
+        va_list  args  = static_cast<va_list>(list);
+        uint32_t count = 0;
+        char     text[32];
+        for (; *format; ++format)
+        {
+            if (*format != '%') continue;
+            switch (format[1])
+            {
+            case 'b':
+                Entry(out, 'b', va_arg(args, int32_t) ? "1" : "0");
+                break;
+            case 'd':
+                std::snprintf(text, sizeof text, "%d", va_arg(args, int32_t));
+                Entry(out, 'd', text);
+                break;
+            case 'f':
+                std::snprintf(text, sizeof text, "%.17g", va_arg(args, double));
+                Entry(out, 'f', text);
+                break;
+            case 's':
+                if (const char* string = va_arg(args, const char*)) Entry(out, 's', string);
+                else Entry(out, 'n', nullptr);
+                break;
+            case 'u':
+                std::snprintf(text, sizeof text, "%u", va_arg(args, uint32_t));
+                Entry(out, 'u', text);
+                break;
+            default: continue;
+            }
+            ++count;
+        }
+        return count;
     }
 }
 
@@ -89,5 +146,68 @@ namespace wxl::seam::FrameScript::CreateEvents
         // call reaches this seam too, and is not a new list.
         if (wxl::core::services::script::Reissuing()) return;
         wxl::core::services::script::OnClientEventsInstalled(names, count);
+    }
+}
+
+namespace wxl::seam::FrameScript::vSignalEvent
+{
+    void WXL_CALL Before(uint32_t index, const char* format, void* args)
+    {
+        // The client fires events all the time; the arguments are rendered only for a mod
+        // that listens, and the name comes from the table the service was handed, so an
+        // index outside it is an event nothing can be told about.
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || host->Events().LiveCount(WXL_EV_UiEvent) == 0) return;
+        const char* name = wxl::core::services::script::EventName(index);
+        if (!name) return;
+
+        // One buffer per call: a handler may fire an event of its own, which reaches here
+        // again before this raise is over.
+        std::vector<char> values;
+        const uint32_t    count = Render(values, format, args);
+
+        wxl_ui_event_args event{};
+        event.index       = index;
+        event.name        = wxl_str{name, static_cast<uint32_t>(std::strlen(name))};
+        event.format      = wxl_str{format, format ? static_cast<uint32_t>(std::strlen(format)) : 0u};
+        event.values      = values.empty() ? nullptr : values.data();
+        event.values_size = static_cast<uint32_t>(values.size());
+        event.value_count = count;
+        host->Raise(WXL_EV_UiEvent, &event);
+    }
+}
+
+namespace wxl::seam::FrameScript::HandleError
+{
+    void WXL_CALL Before(void* state)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !state) return;
+
+        // The error value is on top of the stack. A string or a number reads as text, which
+        // is the conversion the client itself makes next; anything else is what the client
+        // will report it as.
+        const char*   message = "UNKNOWN ERROR";
+        uint32_t      length  = static_cast<uint32_t>(std::strlen(message));
+        const int32_t top     = wxl::core::binding::script_top(state);
+        if (top > 0)
+        {
+            const uint32_t type = wxl::core::binding::script_value_type(state, top);
+            if (type == WXL_VALUE_STRING || type == WXL_VALUE_NUMBER)
+            {
+                uint32_t    size = 0;
+                const char* text = wxl::core::binding::script_to_string(state, top, &size);
+                if (text)
+                {
+                    message = text;
+                    length  = size;
+                }
+            }
+        }
+
+        wxl_script_error_args args{};
+        args.context = g_live ? g_context : ContextNow();
+        args.message = wxl_str{message, length};
+        host->Raise(WXL_EV_ScriptError, &args);
     }
 }

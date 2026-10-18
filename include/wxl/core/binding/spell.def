@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
+// The Spell domain of the client binding: a pending cast, as the Spell seams read it.
+//
+// `object` is the PendingSpellCast* a seam was handed: the client's record of one cast, with
+// its PendingSpellCastData embedded at m_data. Every row reads a member of that block.
+
+#ifndef WXL_BINDING_FIELD
+#error "define WXL_BINDING_FIELD(name, ret, Type, member, absent) before including spell.def"
+#endif
+
+// The caster's guid: the player, or the pet or charmed unit it casts through.
+WXL_BINDING_FIELD(pending_cast_caster, uint64_t, PendingSpellCast, m_data.m_caster, 0)
+
+// The spell, and the caster's count of the cast, which the server echoes back.
+WXL_BINDING_FIELD(pending_cast_spell_id, uint32_t, PendingSpellCast, m_data.m_spellId, 0)
+WXL_BINDING_FIELD(pending_cast_count, uint8_t, PendingSpellCast, m_data.m_castCount, 0)

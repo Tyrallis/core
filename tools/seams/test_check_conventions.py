@@ -385,6 +385,19 @@ GROUND_TRUTH = {
     # Reads its title alone; the two flags are pushed and cleaned by its one caller
     # (0x00406B28 `push 1; push 1; push eax; call; add esp, 0xc`).
     "ConsoleDevice.Initialize":        ("0x0076AB80", "cdecl", [], 1),
+    # The Spell, Item and UI rows. The two packet handlers are reached only through the handler
+    # table and read their message at [ebp+0x14]; Spell_C_SpellFailed reads its cast at [ebp+8]
+    # and its last argument at [ebp+0x1C]; Spell_C_CastSpell its caster at [ebp+8], the guid
+    # two dwords, `confirmed` at [ebp+0x20]. UseItem takes `this` in ECX (0x00708C2A) and two
+    # on the stack. vFrameScript_SignalEvent reads its index at [ebp+8] and the va_list at
+    # [ebp+0x10]; FrameScript_HandleError is a lua_CFunction, the state at [ebp+8].
+    "Spell.Packet_Group_30":           ("0x0080FEE0", "cdecl", [], 4),
+    "Spell.Packet_SMSG_SPELL_FAILURE": ("0x00809C70", "cdecl", [], 4),
+    "Spell.SpellFailed":               ("0x00808200", "cdecl", [], 6),
+    "Spell.CastSpell":                 ("0x0080CCE0", "cdecl", [], 7),
+    "Item.UseItem":                    ("0x00708C20", "thiscall", ["ecx"], 2),
+    "FrameScript.vSignalEvent":        ("0x0081AC90", "cdecl", [], 3),
+    "FrameScript.HandleError":         ("0x00819730", "cdecl", [], 1),
 }
 
 REAL_MCP = "http://127.0.0.1:8077/mcp"

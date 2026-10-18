@@ -94,7 +94,8 @@ of each table lists its shapes and columns.
 
 ### A new mod
 
-Start from `sdk/template/` and follow `sdk/docs/your-first-mod.md`.
+Start from `sdk/template/` and follow `sdk/docs/your-first-mod.md`. A Lua mod is a folder with an
+`init.lua`, run by `wxl.lua` (`sdk/lua/`): see `sdk/examples/lua-hello/`.
 
 ## Rules that hold everywhere
 
@@ -117,7 +118,7 @@ Start from `sdk/template/` and follow `sdk/docs/your-first-mod.md`.
 | Command | What it proves |
 |---|---|
 | `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks |
-| `ctest` in `sdk/build` | the contract, the field table against the args structs, the mod host, the shared `wxl.object`, and that the docs quote the example as it is |
+| `ctest` in `sdk/build` | the contract, the field table against the args structs, the mod host, the shared `wxl.object`, `wxl.lua` against the host and its editor definitions against the tables, and that the docs quote the examples as they are |
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
 | `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Needs the dawnlight-rag MCP |
 

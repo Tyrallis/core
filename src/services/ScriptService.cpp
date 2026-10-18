@@ -433,6 +433,13 @@ namespace wxl::core::services
 
         bool Reissuing() { return g_reissuing; }
 
+        const char* EventName(uint32_t index)
+        {
+            if (index < g_clientCount) return g_clientNames ? g_clientNames[index] : nullptr;
+            index -= g_clientCount;
+            return index < g_events.size() ? g_events[index].c_str() : nullptr;
+        }
+
         void OnModDisabled(uint32_t token)
         {
             if (token == 0) return;

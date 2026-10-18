@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
+// The Item domain: seams on CGItem_C, the client's items.
+//
+// Every row is a non-static member: thiscall, `self` first.
+
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including item.def"
+#endif
+
+// The one request to use an item: from the action bar, the bags, the character sheet, the
+// script. Checks what the client can check itself (a container, a locked item, the override
+// bar, cooldowns, the lockout, bind-on-use with its dialog, ...) and then casts the item's
+// spell through Spell_C::CastSpell. Answers whether the use was taken. `target` is the guid
+// the interface aimed at, by address, null for none. thiscall: `this` in ECX (0x00708C2A
+// `mov edi,ecx`), the two arguments on the stack and popped by `ret 8` (0x00708C77), its
+// eight callers pushing two and cleaning nothing. Gate raises ItemUseRequest and takes the
+// call when a handler refused it, answering 0, which is what the client answers for an item
+// it cannot use; the spell cast the use would make is then never asked for.
+WXL_SEAM_GATE(Item, UseItem, "CGItem_C::UseItem", int32_t, thiscall, (void* self, const uint64_t* target, int32_t confirmed))
+WXL_SEAM_RAISES(Item, UseItem, ItemUseRequest)
