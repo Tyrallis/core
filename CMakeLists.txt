@@ -135,6 +135,7 @@ file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/ob
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
     src/runtime/Stages.cpp
+    src/runtime/Frame.cpp
     src/runtime/Stamp.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
@@ -165,6 +166,7 @@ add_executable(wxl-core-seam-harness
     tests/seam_harness.cpp
     src/common/Log.cpp
     src/runtime/Stages.cpp
+    src/runtime/Frame.cpp
     src/binding/BindingTable.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp

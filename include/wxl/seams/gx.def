@@ -1,0 +1,49 @@
+// The Gx domain: seams on the graphics device -- the present, and the device's loss and return.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including gx.def"
+#endif
+
+// Flushes the last draw list and hands the back buffer to the device to show. Five callers: the
+// three ends of Scrn.OnPaint, and two in the loading screen, which draws and presents its own
+// frames outside the paint. Before raises FrameEnd, for the frame Scrn.OnPaint opened and only
+// for that one: a present with no frame open -- the loading screen's, or the paint that found
+// nothing to draw into -- raises nothing, so a mod never sees an end without its begin.
+WXL_SEAM(Gx, ScenePresent, "GxScenePresent", void, cdecl, ())
+WXL_SEAM_RAISES(Gx, ScenePresent, FrameEnd)
+
+// Releases everything the D3D9 device made that a Reset would invalidate: textures to recreate,
+// shaders, the vertex and index pools. Three callers. Two are the device's resets, each
+// immediately before IDirect3DDevice9::Reset: the scene finding the device lost
+// (CGxDeviceD3d::ISceneBegin, 0x006A337F) and a resize (CGxDeviceD3d::DeviceWM, 0x0069029D). The
+// third is the device being destroyed (CGxDeviceD3d::IDestroyD3d, 0x0069040B), which no
+// SwapchainRestored follows. Before raises SwapchainLost, with the size about to go away, all
+// three times: what a mod derived from the device has to go in every one of them. It is the D3D9
+// device's own: a client run on another device does not reach it.
+WXL_SEAM(Gx, ReleaseD3dResources, "CGxDeviceD3d::IReleaseD3dResources", void, thiscall, (void* self, int32_t free_textures))
+WXL_SEAM_RAISES(Gx, ReleaseD3dResources, SwapchainLost)
+
+// Runs the callbacks registered for a device that has come back. Both resets call it right after
+// IDirect3DDevice9::Reset succeeds, and only then. Declared virtual on CGxDevice, and nothing
+// calls it directly: it is reached through the four device vtables (0x00A2DDD4, 0x00A2E1AC,
+// 0x00A2E72C, 0x00A2F514), every one of which holds this body -- no device overrides it, so a
+// detour on it sees every call. Before raises SwapchainRestored with the size the device came
+// back at, ahead of the client's own callbacks.
+WXL_SEAM(Gx, NotifyOnDeviceRestored, "CGxDevice::NotifyOnDeviceRestored", void, thiscall, (void* self))
+WXL_SEAM_RAISES(Gx, NotifyOnDeviceRestored, SwapchainRestored)

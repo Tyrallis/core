@@ -76,6 +76,11 @@
 #include "wxl/seams/storage.def"
 #include "wxl/seams/client.def"
 #include "wxl/seams/sound.def"
+#include "wxl/seams/scrn.def"
+#include "wxl/seams/gx.def"
+#include "wxl/seams/simpletop.def"
+#include "wxl/seams/worldframe.def"
+#include "wxl/seams/consoledevice.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

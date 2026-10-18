@@ -233,6 +233,18 @@ source. Everything else observes.
 | `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate; a path written into `redirect` is what the client opens instead. `FileOpened` is not raised: it carries the result, and this function has a dozen returns |
 | `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
+| `ConsoleDevice.Initialize` | `ConsoleDeviceInitialize(const char* title, bool, bool)` | nothing, but its return is `WXL_STAGE_GRAPHICS`: the device is made after the first database is read and before the script context exists, which is the order the stages promise |
+| `Scrn.OnPaint` | `OnPaint(const void* data, void* param)`, the paint handler | `FrameBegin` before, only when the device has a context and the window can be seen -- the test the paint makes itself |
+| `Gx.ScenePresent` | `GxScenePresent()` | `FrameEnd` before, for the frame `Scrn.OnPaint` opened and only for it: the loading screen presents frames of its own, which raise nothing. The last draw list is flushed after it |
+| `SimpleTop.OnLayerRender` | `CSimpleTop::OnLayerRender()` | `UiRenderEnd` after: every stratum of the interface is drawn, the world inside it |
+| `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
+| `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
+| `Gx.NotifyOnDeviceRestored` | `CGxDevice::NotifyOnDeviceRestored()` | `SwapchainRestored` before, with the size the device came back at |
+
+The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
+frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:
+the client presents more often than it paints a frame, so the runtime keeps the pairing rather
+than trusting the client to.
 
 A seam is named after the function it attaches to, never after what it means; the name is part of
 the ABI and is appended, never renamed or dropped.

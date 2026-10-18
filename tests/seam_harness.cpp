@@ -17,6 +17,7 @@
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
@@ -407,6 +408,25 @@ namespace
 
     wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
 
+    // The graphics device, as the paint and the device's resets see it.
+    bool     g_gxContext = true;
+    bool     g_gxVisible = true;
+    bool     g_gxDevice  = true;
+    uint32_t g_gxWidth   = 1920;
+    uint32_t g_gxHeight  = 1080;
+
+    wxl_bool WXL_CALL FakeGxDeviceExists() { return g_gxDevice ? WXL_TRUE : WXL_FALSE; }
+    wxl_bool WXL_CALL FakeGxHasContext() { return g_gxDevice && g_gxContext ? WXL_TRUE : WXL_FALSE; }
+    wxl_bool WXL_CALL FakeGxWindowVisible() { return g_gxDevice && g_gxVisible ? WXL_TRUE : WXL_FALSE; }
+
+    wxl_bool WXL_CALL FakeGxWindowSize(uint32_t* width, uint32_t* height)
+    {
+        if (!g_gxDevice || !width || !height) return WXL_FALSE;
+        *width  = g_gxWidth;
+        *height = g_gxHeight;
+        return WXL_TRUE;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -455,6 +475,10 @@ namespace
         init.file_read              = &FakeFileRead;
         init.file_close             = &FakeFileClose;
         init.archive_mount          = &FakeArchiveMount;
+        init.gx_device_exists       = &FakeGxDeviceExists;
+        init.gx_has_context         = &FakeGxHasContext;
+        init.gx_window_visible      = &FakeGxWindowVisible;
+        init.gx_window_size         = &FakeGxWindowSize;
         return init;
     }
 }
@@ -504,6 +528,13 @@ namespace
         case WXL_EV_Input:             return sizeof(wxl_input_args);
         case WXL_EV_SoundPlay:         return sizeof(wxl_sound_args);
         case WXL_EV_FileOpen:          return sizeof(wxl_file_open_args);
+        case WXL_EV_FrameBegin:
+        case WXL_EV_FrameEnd:
+        case WXL_EV_WorldRenderBegin:
+        case WXL_EV_WorldRenderEnd:
+        case WXL_EV_UiRenderEnd:       return sizeof(wxl_frame_args);
+        case WXL_EV_SwapchainLost:
+        case WXL_EV_SwapchainRestored: return sizeof(wxl_swapchain_args);
         default:                       return 0;
         }
     }
@@ -578,8 +609,8 @@ namespace
 
         stages::Reach(WXL_STAGE_SCRIPT);
         Check(stages::Reached() == WXL_STAGE_SCRIPT,
-              "a stage this runtime cannot recognise is skipped, not invented: graphics never "
-              "arrives and script follows storage");
+              "a stage that was never reached is skipped, not invented: with no device brought "
+              "up, script follows storage and graphics is a gap");
 
         stages::Restart();
         Check(stages::Reached() == WXL_STAGE_EARLY, "a runtime that starts over starts over");
@@ -1444,6 +1475,149 @@ namespace
 
     /// Client.Destroy: the last thing a mod is told, and the point at which what a mod left
     /// jumping into its own code is taken away before that code is freed.
+    // --- Render: the slots of a frame --------------------------------------------------------
+    //
+    // FrameBegin and FrameEnd come from two seams, and the client presents more often than it paints
+    // a frame: its loading screen presents frames of its own, and a paint with nothing to draw into
+    // presents anyway. What a mod is promised is pairs, in the client's order, and nothing outside
+    // a frame. Each way the client can break that is driven here.
+
+    void CheckRender()
+    {
+        wxl::core::frame::Reset();
+        int top   = 0; // CSimpleTop's `this`; the seam does not read it
+        int world = 0; // the world frame the world pass is handed
+
+        auto paint = [] { wxl::seam::Scrn::OnPaint::Before(nullptr, nullptr); };
+        auto present = []
+        {
+            wxl::seam::Gx::ScenePresent::Before();
+            wxl::seam::Gx::ScenePresent::After();
+        };
+
+        g_gxContext = false;
+        g_received.clear();
+        paint();
+        present();
+        Check(g_received.empty(), "a paint with no device context opens no frame, and ends none");
+
+        g_gxContext = true;
+        g_gxVisible = false;
+        g_received.clear();
+        paint();
+        present();
+        Check(g_received.empty(), "nor does one whose window is minimised");
+        g_gxVisible = true;
+
+        g_received.clear();
+        present();
+        Check(g_received.empty(), "a present no paint opened a frame for, as the loading screen's, "
+                                  "raises nothing");
+
+        g_received.clear();
+        wxl::seam::WorldFrame::RenderWorld::Before(&world);
+        wxl::seam::WorldFrame::RenderWorld::After(&world);
+        wxl::seam::SimpleTop::OnLayerRender::After(&top);
+        Check(g_received.empty(), "the world pass and the interface's end raise nothing outside a frame");
+
+        // A frame in the client's own order: the paint, the interface drawing with the world inside
+        // it, the present. A frame announces no stage: by the time the client paints one, the
+        // script context already exists, so the graphics stage is the device's to announce.
+        wxl::core::stages::Restart();
+        wxl::core::stages::Reach(WXL_STAGE_STORAGE);
+        g_received.clear();
+        paint();
+        Check(wxl::core::stages::Reached() == WXL_STAGE_STORAGE, "a frame announces no stage");
+        wxl::seam::SimpleTop::OnLayerRender::Before(&top);
+        wxl::seam::WorldFrame::RenderWorld::Before(&world);
+        wxl::seam::WorldFrame::RenderWorld::After(&world);
+        wxl::seam::SimpleTop::OnLayerRender::After(&top);
+        present();
+        wxl::seam::Scrn::OnPaint::After(1, nullptr, nullptr);
+
+        const wxl_event order[] = {WXL_EV_FrameBegin, WXL_EV_WorldRenderBegin, WXL_EV_WorldRenderEnd,
+                                   WXL_EV_UiRenderEnd, WXL_EV_FrameEnd};
+        bool inOrder = g_received.size() == 5;
+        for (size_t i = 0; inOrder && i < 5; ++i) inOrder = g_received[i].event == order[i];
+        Check(inOrder, "a frame raises FrameBegin, the world pass, the interface's end and "
+                       "FrameEnd, in that order");
+
+        uint64_t first = 0;
+        if (inOrder)
+        {
+            first     = g_received[0].As<wxl_frame_args>().index;
+            bool same = first != 0;
+            for (const Received& received : g_received)
+                same = same && received.As<wxl_frame_args>().index == first;
+            Check(same, "and every slot of it carries that frame's index");
+        }
+
+        g_received.clear();
+        present();
+        Check(g_received.empty(), "a frame ends once: a second present after it raises nothing");
+
+        g_received.clear();
+        paint();
+        paint();
+        Check(Count(WXL_EV_FrameBegin) == 1, "a paint reached again with its frame still open "
+                                             "opens no second one");
+        present();
+        Check(Count(WXL_EV_FrameEnd) == 1, "and that frame closes once");
+        const Received* next = Only(WXL_EV_FrameBegin);
+        Check(next && next->As<wxl_frame_args>().index == first + 1, "the next frame counts up by one");
+
+        // The device going and coming back carries the size it renders at.
+        g_gxWidth  = 1280;
+        g_gxHeight = 720;
+        g_received.clear();
+        wxl::seam::Gx::ReleaseD3dResources::Before(&top, 0);
+        wxl::seam::Gx::ReleaseD3dResources::After(&top, 0);
+        const Received* lost = Only(WXL_EV_SwapchainLost);
+        Check(lost && lost->As<wxl_swapchain_args>().width == 1280
+                  && lost->As<wxl_swapchain_args>().height == 720,
+              "SwapchainLost carries the size that is about to go away");
+
+        g_gxWidth  = 2560;
+        g_gxHeight = 1440;
+        g_received.clear();
+        wxl::seam::Gx::NotifyOnDeviceRestored::Before(&top);
+        wxl::seam::Gx::NotifyOnDeviceRestored::After(&top);
+        const Received* back = Only(WXL_EV_SwapchainRestored);
+        Check(back && back->As<wxl_swapchain_args>().width == 2560
+                  && back->As<wxl_swapchain_args>().height == 1440,
+              "and SwapchainRestored the size it came back at");
+
+        // With no device at all there is no size to report, and none is made up.
+        g_gxDevice = false;
+        g_received.clear();
+        wxl::seam::Gx::ReleaseD3dResources::Before(&top, 0);
+        const Received* gone = Only(WXL_EV_SwapchainLost);
+        Check(gone && gone->As<wxl_swapchain_args>().width == 0
+                  && gone->As<wxl_swapchain_args>().height == 0,
+              "a device torn down reports no size rather than an invented one");
+        g_gxDevice = true;
+        g_gxWidth  = 1920;
+        g_gxHeight = 1080;
+        wxl::core::frame::Reset();
+
+        // The graphics stage belongs to the device being made, between storage and script, which
+        // is the order InitializeGlobal and InitializeClient bring them up in.
+        wxl::core::stages::Restart();
+        wxl::core::stages::Reach(WXL_STAGE_STORAGE);
+        g_gxDevice = false;
+        wxl::seam::ConsoleDevice::Initialize::Before("World of Warcraft", true, true);
+        wxl::seam::ConsoleDevice::Initialize::After("World of Warcraft", true, true);
+        Check(wxl::core::stages::Reached() == WXL_STAGE_STORAGE,
+              "a device bring-up that left no device announces no graphics stage");
+        g_gxDevice = true;
+        wxl::seam::ConsoleDevice::Initialize::Before("World of Warcraft", true, true);
+        wxl::seam::ConsoleDevice::Initialize::After("World of Warcraft", true, true);
+        Check(wxl::core::stages::Reached() == WXL_STAGE_GRAPHICS,
+              "one that left a device announces the graphics stage");
+        wxl::core::stages::Reach(WXL_STAGE_SCRIPT);
+        Check(wxl::core::stages::Reached() == WXL_STAGE_SCRIPT, "and script still follows it");
+    }
+
     void CheckClientDestroy()
     {
         namespace stages = wxl::core::stages;
@@ -1732,6 +1906,7 @@ int main(int argc, char** argv)
     CheckSound();
     CheckStorageService();
     CheckDataService();
+    CheckRender();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();

@@ -126,6 +126,15 @@ namespace
     using ArchiveOpen  = int32_t(__stdcall*)(const char* path, int32_t priority, uint32_t flags,
                                              void** archive);
 
+    // The graphics device's queries. Each is a free function with external linkage and no
+    // argument -- or one, for the size -- that reads g_theGxDevicePtr and asks the device, so
+    // the convention they are declared with, cdecl, is the one they carry.
+    using GxFlag       = int32_t(__cdecl*)();
+    using GxWindowSize = void(__cdecl*)(float* rect); ///< a CRect: minY, minX, maxY, maxX
+
+    /// The device the client draws with, or null before it is made and after it is torn down.
+    const void* GxDevice() { return *reinterpret_cast<void* const*>(WXL_STATIC("g_theGxDevicePtr")); }
+
     LuaGetTop       LuaGetTopAt() { return reinterpret_cast<LuaGetTop>(WXL_SITE("lua_gettop", 0)); }
     LuaSetTop       LuaSetTopAt() { return reinterpret_cast<LuaSetTop>(WXL_SITE("lua_settop", 0)); }
     LuaType         LuaTypeAt() { return reinterpret_cast<LuaType>(WXL_SITE("lua_type", 0)); }
@@ -415,6 +424,42 @@ namespace wxl::core::binding
             reinterpret_cast<ArchiveOpen>(WXL_SITE("SFile::OpenArchive", 0));
         void* archive = nullptr;
         return call(path, priority, 0, &archive) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool gx_device_exists()
+    {
+        return IsClient() && GxDevice() ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool gx_has_context()
+    {
+        // GxHasContext tests the device pointer itself, so it is safe to call without one.
+        if (!IsClient()) return WXL_FALSE;
+        const GxFlag call = reinterpret_cast<GxFlag>(WXL_SITE("GxHasContext", 0));
+        return call() ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool gx_window_visible()
+    {
+        if (!IsClient()) return WXL_FALSE;
+        const GxFlag call = reinterpret_cast<GxFlag>(WXL_SITE("GxIsWindowVisible", 0));
+        return call() ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool gx_window_size(uint32_t* width, uint32_t* height)
+    {
+        // GxCapsWindowSizeInScreenCoords dereferences g_theGxDevicePtr without testing it
+        // (0x00493BF3 `mov ecx,[g_theGxDevicePtr]` then `mov eax,[ecx]`), so the test is here.
+        if (!IsClient() || !width || !height || !GxDevice()) return WXL_FALSE;
+        const GxWindowSize call =
+            reinterpret_cast<GxWindowSize>(WXL_SITE("GxCapsWindowSizeInScreenCoords", 0));
+        float rect[4] = {};
+        call(rect);
+        const float w = rect[3] - rect[1];
+        const float h = rect[2] - rect[0];
+        *width  = w > 0.0f ? static_cast<uint32_t>(w + 0.5f) : 0u;
+        *height = h > 0.0f ? static_cast<uint32_t>(h + 0.5f) : 0u;
+        return WXL_TRUE;
     }
 
     wxl_bool object_position(const void* object, wxl_vec3* out)

@@ -381,6 +381,21 @@ GROUND_TRUTH = {
     "Storage.OpenFile":                ("0x00424B50", "stdcall", [], 4),
     "Client.Destroy":                  ("0x00402910", "cdecl", [], 0),
     "Sound.PlaySoundKit":              ("0x004C6A40", "cdecl", [], 8),
+    # The Render family, read by hand before it went in. OnPaint reads none of its two: they are
+    # pushed and cleaned by its caller (0x004A8BA0 `push 0; push 0; call; add esp, 8`), which is
+    # why its row declares them and the binary reports none. GxScenePresent reads no [ebp+N].
+    # IReleaseD3dResources takes `this` in ECX and one at [ebp+8], and ends in `ret 4`.
+    # NotifyOnDeviceRestored and OnLayerRender read ECX before writing it and nothing on the
+    # stack. RenderWorld reads its one at 0x004FB02C and ends in a bare `ret` at 0x004FB078.
+    "Scrn.OnPaint":                    ("0x004A8720", "cdecl", [], 0),
+    "Gx.ScenePresent":                 ("0x00682A00", "cdecl", [], 0),
+    "Gx.ReleaseD3dResources":          ("0x00690150", "thiscall", ["ecx"], 1),
+    "Gx.NotifyOnDeviceRestored":       ("0x006843B0", "thiscall", ["ecx"], 0),
+    "SimpleTop.OnLayerRender":         ("0x00495410", "thiscall", ["ecx"], 0),
+    "WorldFrame.RenderWorld":          ("0x004FAF90", "cdecl", [], 1),
+    # Reads its title alone; the two flags are pushed and cleaned by its one caller
+    # (0x00406B28 `push 1; push 1; push eax; call; add esp, 0xc`).
+    "ConsoleDevice.Initialize":        ("0x0076AB80", "cdecl", [], 1),
 }
 
 REAL_MCP = "http://127.0.0.1:8077/mcp"

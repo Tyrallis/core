@@ -1,0 +1,30 @@
+// The SimpleTop domain: seams on the interface's root, which draws every frame of the UI.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including simpletop.def"
+#endif
+
+// Draws the interface: builds and renders the batches of every frame stratum, from the bottom to
+// the tooltips at the top. The interface's screen layer calls it from its paint (PaintScreen),
+// once per frame Scrn.OnPaint draws. The world is drawn inside it, when the batches reach the
+// world frame, so by the time it returns the world and the whole interface over it are drawn.
+// After raises UiRenderEnd, the overlay slot. A layer above the interface -- the console, when it
+// is open -- still draws after it.
+WXL_SEAM(SimpleTop, OnLayerRender, "CSimpleTop::OnLayerRender", void, thiscall, (void* self))
+WXL_SEAM_RAISES(SimpleTop, OnLayerRender, UiRenderEnd)
