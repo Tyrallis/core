@@ -10,8 +10,6 @@
 
 namespace wxl::seam::ConsoleDevice::Initialize
 {
-    void WXL_CALL Before(const char*, bool, bool) {}
-
     void WXL_CALL After(const char*, bool, bool)
     {
         // The function returns only with a device -- each failure ends the process -- but the

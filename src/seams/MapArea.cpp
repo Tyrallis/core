@@ -28,6 +28,4 @@ namespace wxl::seam::MapArea::PrepareChunk
         args.chunk_y = chunk_y;
         host->Raise(WXL_EV_TerrainChunkBuild, &args);
     }
-
-    void WXL_CALL After(void*, void*, int32_t, int32_t) {}
 }

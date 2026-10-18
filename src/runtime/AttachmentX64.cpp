@@ -19,6 +19,22 @@
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
+namespace
+{
+    /// What the fork's source makes of a seam of this shape, for the log.
+    const char* Calls(wxl::core::seams::Shape shape)
+    {
+        switch (shape)
+        {
+            case wxl::core::seams::Shape::Before: return "Before is a call at the head of";
+            case wxl::core::seams::Shape::After: return "After is a call at every return of";
+            case wxl::core::seams::Shape::Gate: return "Gate is a test at the head of";
+            case wxl::core::seams::Shape::Observe: break;
+        }
+        return "Before and After are calls";
+    }
+}
+
 namespace wxl::core::attachment
 {
     void Prepare() {}
@@ -48,13 +64,10 @@ namespace wxl::core::attachment
 
     void Install()
     {
-        // Nothing to attach: the client's source calls Before and After itself. What is checked
+        // Nothing to attach: the client's source calls the entry points itself. What is checked
         // is what it handed over, since a seam's body reads the client through it.
         for (const seams::Seam& seam : seams::Table())
-            WLOG_INFO(kTag, "seam %s: %s %s makes", seam.name,
-                      seam.gated ? "Gate is a test at the head of"
-                                 : "Before and After are calls",
-                      seam.symbol);
+            WLOG_INFO(kTag, "seam %s: %s %s makes", seam.name, Calls(seam.shape), seam.symbol);
         for (const char* name : binding::Unbound())
             WLOG_WARN(kTag, "the client handed no %s accessor; what reads it answers absent", name);
     }

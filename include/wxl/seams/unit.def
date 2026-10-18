@@ -5,23 +5,23 @@
 //
 // Every row is a non-static member: thiscall, `self` first.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including unit.def"
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including unit.def"
 #endif
 
 // Runs when the unit's health reaches zero: the player's own OnDeath for a player, the attack
 // state cleared, the death animation, the target dropped, the interact icon removed. After
 // raises UnitDeath with the unit's handle, once the client has done all of that.
-WXL_SEAM(Unit, OnDeath, "CGUnit_C::OnDeath", void, thiscall, (void* self))
+WXL_SEAM_AFTER(Unit, OnDeath, "CGUnit_C::OnDeath", void, thiscall, (void* self))
 WXL_SEAM_RAISES(Unit, OnDeath, UnitDeath)
 
 // Runs when an aura is added to the unit's aura slots: looks the spell up, adds its effect,
 // logs it, and for the local player refreshes the action bar and the tracking and shapeshift
 // state. `a3` is the flags byte the client passes along to the combat log. After raises
 // UnitAuraChanged with removed clear.
-WXL_SEAM(Unit, OnAuraAdded, "CGUnit_C::OnAuraAdded", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
+WXL_SEAM_AFTER(Unit, OnAuraAdded, "CGUnit_C::OnAuraAdded", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
 WXL_SEAM_RAISES(Unit, OnAuraAdded, UnitAuraChanged)
 
 // The counterpart: the aura left the unit's slots. After raises UnitAuraChanged with removed set.
-WXL_SEAM(Unit, OnAuraRemoved, "CGUnit_C::OnAuraRemoved", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
+WXL_SEAM_AFTER(Unit, OnAuraRemoved, "CGUnit_C::OnAuraRemoved", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
 WXL_SEAM_RAISES(Unit, OnAuraRemoved, UnitAuraChanged)

@@ -28,10 +28,4 @@ namespace wxl::seam::Event::DispatchUpdate
         args.delta = elapsed_sec;
         host->Raise(WXL_EV_Update, &args);
     }
-
-    void WXL_CALL After(void*, uint32_t, float)
-    {
-        // The tick's fact is that it started; the dispatch below this seam is the client's own
-        // handlers, which a mod does not observe.
-    }
 }

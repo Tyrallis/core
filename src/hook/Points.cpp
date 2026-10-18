@@ -20,9 +20,13 @@ namespace wxl::hook
         const Point kPoints[] = {
 #define WXL_SEAM(domain, name, symbol, ret, conv, params) \
     { #domain "." #name, WXL_SEAM_SITE(symbol, 0), #ret " __" #conv " " #params },
+#define WXL_SEAM_BEFORE WXL_SEAM
+#define WXL_SEAM_AFTER WXL_SEAM
 #define WXL_SEAM_GATE WXL_SEAM
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_GATE
+#undef WXL_SEAM_AFTER
+#undef WXL_SEAM_BEFORE
 #undef WXL_SEAM
 #define WXL_HOOK_POINT(name, address, signature) { name, address, signature },
 #include "hook/Points.def"

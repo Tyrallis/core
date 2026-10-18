@@ -11,9 +11,10 @@
 //
 // Every thunk has the same shape. Save the register arguments into the frame before anything can
 // touch them -- EAX and ECX are scratch, so the first C++ call would lose them. Call the seam's
-// Before with them. Put them back exactly as they came. Run the original. Call After. Return the
-// stack as the function's own convention leaves it: these four clean nothing, so the two that
-// take stack arguments leave them to the caller, as the callers' `add esp` shows they expect.
+// Before with them, if the row declares one. Put them back exactly as they came. Run the
+// original. Call After, if the row declares one. Return the stack as the function's own
+// convention leaves it: these four clean nothing, so the two that take stack arguments leave
+// them to the caller, as the callers' `add esp` shows they expect.
 //
 // The thunks are naked because there is no way to say "this argument arrives in EDI" in C++, and
 // no prologue the compiler writes could be trusted to leave the registers alone. That costs
@@ -34,24 +35,18 @@
 
 static void(__cdecl* g_updateBefore)(void*, uint32_t, float) =
     &wxl::seam::Event::DispatchUpdate::Before;
-static void(__cdecl* g_updateAfter)(void*, uint32_t, float) =
-    &wxl::seam::Event::DispatchUpdate::After;
 static void* g_updateOriginal = nullptr;
 
-static void(__cdecl* g_initBefore)(void*, const void*, uint32_t) =
-    &wxl::seam::ObjectMgr::InitObject::Before;
 static void(__cdecl* g_initAfter)(void*, const void*, uint32_t) =
     &wxl::seam::ObjectMgr::InitObject::After;
 static void* g_initOriginal = nullptr;
 
 static void(__cdecl* g_deleteBefore)(void*) = &wxl::seam::ObjectMgr::ObjDelete::Before;
-static void(__cdecl* g_deleteAfter)(void*)  = &wxl::seam::ObjectMgr::ObjDelete::After;
 static void* g_deleteOriginal               = nullptr;
 
 static void(__cdecl* g_destroyBefore)(void*) =
     &wxl::seam::ObjectMgr::DestroyRemovedObject::Before;
-static void(__cdecl* g_destroyAfter)(void*) = &wxl::seam::ObjectMgr::DestroyRemovedObject::After;
-static void* g_destroyOriginal              = nullptr;
+static void* g_destroyOriginal = nullptr;
 
 // --- Event.DispatchUpdate -----------------------------------------------------------------
 // IEvtDispatchUpdate @0x0047DB70: the context arrives in EDI and nothing else does. Its body
@@ -80,12 +75,6 @@ __declspec(naked) static void UpdateThunk()
         call dword ptr [g_updateOriginal]
         add  esp, 08h
 
-        push dword ptr [ebp+0Ch]
-        push dword ptr [ebp+08h]
-        push dword ptr [ebp-04h]
-        call dword ptr [g_updateAfter]
-        add  esp, 0Ch
-
         pop  ebx
         pop  esi
         pop  edi
@@ -109,12 +98,6 @@ __declspec(naked) static void InitThunk()
         push ecx                        // [ebp-0Ch]: time
         push edi
         push ebx
-
-        push dword ptr [ebp-0Ch]
-        push dword ptr [ebp-08h]
-        push dword ptr [ebp-04h]
-        call dword ptr [g_initBefore]
-        add  esp, 0Ch
 
         mov  esi, dword ptr [ebp-04h]
         mov  eax, dword ptr [ebp-08h]
@@ -158,10 +141,6 @@ __declspec(naked) static void DeleteThunk()
         mov  eax, dword ptr [ebp-04h]
         call dword ptr [g_deleteOriginal]
 
-        push dword ptr [ebp-04h]
-        call dword ptr [g_deleteAfter]
-        add  esp, 04h
-
         pop  ebx
         pop  edi
         pop  esi
@@ -190,10 +169,6 @@ __declspec(naked) static void DestroyThunk()
 
         mov  esi, dword ptr [ebp-04h]
         call dword ptr [g_destroyOriginal]
-
-        push dword ptr [ebp-04h]
-        call dword ptr [g_destroyAfter]
-        add  esp, 04h
 
         pop  ebx
         pop  edi

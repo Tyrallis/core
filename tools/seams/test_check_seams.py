@@ -33,6 +33,7 @@ WXL_SEAM(Demo, Count, "Thing::Count", int32_t, thiscall, (void* self, int32_t fl
 WXL_SEAM_RAISES(Demo, Count, Closed)
 WXL_SEAM_GATE(Demo, Open, "Thing::Open@0x00401000", int32_t, cdecl, (const char* path, uint32_t mode))
 WXL_SEAM_RAISES(Demo, Open, Opened)
+WXL_SEAM_AFTER(Demo, Close, "Thing::Close", void, cdecl, (int32_t flags))
 '''
 
 CONTRACT = '''// A synthetic event table.
@@ -87,6 +88,15 @@ int32_t Thing::Open(const char* path, uint32_t mode) {
     }
     return helper(mode);
 }
+
+void Thing::Close(int32_t flags) {
+    if (!flags) {
+        wxl::seam::Demo::Close::After(flags);
+        return;
+    }
+    helper(flags + 1);
+    wxl::seam::Demo::Close::After(flags);
+}
 '''
 
 # (label, Thing.cpp, Demo.cpp body, demo.def extra rows, exit code, text expected)
@@ -135,11 +145,18 @@ CASES = [
      GOOD.replace("    return helper(mode);",
                   "    answer = helper(mode);\n"
                   "    wxl::seam::Demo::Open::After(answer, &path, &mode);\n    return answer;"),
-     1, "Demo.Open is a gated seam, whose entry points are Gate"),
+     1, "Demo.Open is a WXL_SEAM_GATE row, which declares Gate only"),
     ("a Gate called on an observing seam",
      GOOD.replace("wxl::seam::Demo::Count::Before(this, flags);",
                   "wxl::seam::Demo::Count::Gate(this, flags);"),
-     1, "Demo.Count is an observing seam, whose entry points are Before and After"),
+     1, "Demo.Count is a WXL_SEAM row, which declares Before and After only"),
+    ("a Before called on an After-only seam",
+     GOOD.replace("void Thing::Close(int32_t flags) {\n",
+                  "void Thing::Close(int32_t flags) {\n    wxl::seam::Demo::Close::Before(flags);\n"),
+     1, "Demo.Close is a WXL_SEAM_AFTER row, which declares After only"),
+    ("the only side of a one-sided seam deleted",
+     GOOD.replace("wxl::seam::Demo::Close::After(flags);", "(void)flags;"),
+     1, "the fork never calls wxl::seam::Demo::Close::After"),
     ("the result pointer dropped from a gated seam's Gate",
      GOOD.replace("Open::Gate(&answer, &path, &mode)", "Open::Gate(&path, &mode)"),
      1, "is passed 2 argument(s); the row declares 3 "

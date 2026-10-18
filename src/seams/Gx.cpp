@@ -38,8 +38,6 @@ namespace wxl::seam::Gx::ScenePresent
         if (!host) return;
         host->Raise(WXL_EV_FrameEnd, &args);
     }
-
-    void WXL_CALL After() {}
 }
 
 namespace wxl::seam::Gx::ReleaseD3dResources
@@ -53,8 +51,6 @@ namespace wxl::seam::Gx::ReleaseD3dResources
         const wxl_swapchain_args args = Size();
         host->Raise(WXL_EV_SwapchainLost, &args);
     }
-
-    void WXL_CALL After(void*, int32_t) {}
 }
 
 namespace wxl::seam::Gx::NotifyOnDeviceRestored
@@ -68,6 +64,4 @@ namespace wxl::seam::Gx::NotifyOnDeviceRestored
         const wxl_swapchain_args args = Size();
         host->Raise(WXL_EV_SwapchainRestored, &args);
     }
-
-    void WXL_CALL After(void*) {}
 }

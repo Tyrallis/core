@@ -6,8 +6,8 @@
 // Both rows are static members: cdecl, no `this`. A WOWGUID is passed by value as its eight
 // bytes, which a uint64_t carries.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including gameui.def"
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including gameui.def"
 #endif
 
 // The player's target is CGGameUI::m_lockedTarget, written in two places: CGGameUI::Target sets
@@ -19,12 +19,12 @@
 // Sends the selection to the server. Also called by the summon-friend script with a guid that
 // is not the target and the static unchanged, which announces nothing. After raises
 // TargetChanged when the static moved since the last announcement.
-WXL_SEAM(GameUI, SendTarget, "CGGameUI::SendTarget", void, cdecl, (uint64_t guid))
+WXL_SEAM_AFTER(GameUI, SendTarget, "CGGameUI::SendTarget", void, cdecl, (uint64_t guid))
 WXL_SEAM_RAISES(GameUI, SendTarget, TargetChanged)
 
 // Clears the target when guid is it (or zero), with a2 set to send the selection and signal the
 // interface. Target calls it with a2 clear as its own first step before setting the new guid,
 // so After announces only when a2 is set: a clear on its own. The change Target makes is
 // announced once, by SendTarget, as previous to current.
-WXL_SEAM(GameUI, ClearTarget, "CGGameUI::ClearTarget", void, cdecl, (uint64_t guid, int32_t a2))
+WXL_SEAM_AFTER(GameUI, ClearTarget, "CGGameUI::ClearTarget", void, cdecl, (uint64_t guid, int32_t a2))
 WXL_SEAM_RAISES(GameUI, ClearTarget, TargetChanged)

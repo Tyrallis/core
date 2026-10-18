@@ -3,8 +3,8 @@
 //
 // The SimpleTop domain: seams on the interface's root, which draws every frame of the UI.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including simpletop.def"
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including simpletop.def"
 #endif
 
 // Draws the interface: builds and renders the batches of every frame stratum, from the bottom to
@@ -13,5 +13,5 @@
 // world frame, so by the time it returns the world and the whole interface over it are drawn.
 // After raises UiRenderEnd, the overlay slot. A layer above the interface -- the console, when it
 // is open -- still draws after it.
-WXL_SEAM(SimpleTop, OnLayerRender, "CSimpleTop::OnLayerRender", void, thiscall, (void* self))
+WXL_SEAM_AFTER(SimpleTop, OnLayerRender, "CSimpleTop::OnLayerRender", void, thiscall, (void* self))
 WXL_SEAM_RAISES(SimpleTop, OnLayerRender, UiRenderEnd)

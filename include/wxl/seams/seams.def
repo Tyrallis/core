@@ -4,11 +4,15 @@
 // The seam table: every client function the runtime hooks, one domain per file. ARCHITECTURE.md
 // shows what a row generates on each side.
 //
-//   WXL_SEAM(domain, name, symbol, ret, conv, params)       observes the call: Before and After
-//   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)  decides the call: Gate
-//   WXL_SEAM_RAISES(domain, name, event)                    an event the seam's body raises
+//   WXL_SEAM(domain, name, symbol, ret, conv, params)         observes the call: Before and After
+//   WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params)  observes its entry: Before
+//   WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params)   observes its return: After
+//   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)    decides the call: Gate
+//   WXL_SEAM_RAISES(domain, name, event)                      an event the seam's body raises
 //
 // Before runs when the function is entered and After when it returns; neither changes the call.
+// A seam declares only the sides its body uses: on x64 each side is a call the fork's source has
+// to make, an After one at every return of the function.
 // Gate is handed every argument by address and answers whether it took the call: taken, the
 // function does not run and Gate has written its result; not taken, the function runs with the
 // arguments as Gate left them. A gate has no After, because on x64 an After is a call at every
@@ -37,12 +41,18 @@
 // WXL_SEAM_RAISES rows follow their seam and name the event without WXL_EV_. Both runtimes publish
 // their union as the events they raise, and check_seams.py checks each against the seam's body.
 //
-// Include with WXL_SEAM and WXL_SEAM_GATE defined; WXL_SEAM_RAISES defaults to nothing.
+// Include with the four row shapes defined; WXL_SEAM_RAISES defaults to nothing.
 
+// No defaults: a consumer that skips a shape says so by defining it to nothing.
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
-// No default: a consumer that skips the gates says so by defining it to nothing.
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including seams.def"
+#endif
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including seams.def"
+#endif
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif

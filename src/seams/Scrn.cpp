@@ -30,9 +30,4 @@ namespace wxl::seam::Scrn::OnPaint
         if (!host) return;
         host->Raise(WXL_EV_FrameBegin, &args);
     }
-
-    void WXL_CALL After(int32_t, const void*, void*)
-    {
-        // Nothing: the frame closes at the present, before the image is shown, not here.
-    }
 }

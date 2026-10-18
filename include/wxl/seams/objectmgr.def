@@ -3,8 +3,11 @@
 //
 // The ObjectMgr domain: seams on the object manager, where objects enter and leave the client.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including objectmgr.def"
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including objectmgr.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including objectmgr.def"
 #endif
 
 // Constructs the client object of the kind the update named, in storage the manager allocated
@@ -17,7 +20,7 @@
 // regparm: the object in ESI, the create block in EAX, the time in ECX, nothing pushed. Evidence:
 // 0x004D3FF0 (mov edx,[esi+0x14], no prologue) and the caller at 0x004D6D5A-63 (mov ecx,[ebp+8];
 // lea eax,[ebp-0x2EC] before the call).
-WXL_SEAM(ObjectMgr, InitObject, "InitObject", void, regparm, (void* object, const void* create, uint32_t time))
+WXL_SEAM_AFTER(ObjectMgr, InitObject, "InitObject", void, regparm, (void* object, const void* create, uint32_t time))
 WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 
 // Removes an object from the manager: out of the guid table and the visible list, into the
@@ -29,7 +32,7 @@ WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 // regparm: the object in EAX. Evidence: 0x004D6FC0 (mov esi,eax before anything else is read)
 // and its three callers, 0x004D737D, 0x004D76C0 and 0x004D786C, each `mov eax,esi` just before
 // the call, nothing pushed.
-WXL_SEAM(ObjectMgr, ObjDelete, "ObjDelete", void, regparm, (void* object))
+WXL_SEAM_BEFORE(ObjectMgr, ObjDelete, "ObjDelete", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 
 // Destroys and frees an object: the destructor, then the heap or SMemFree for the active
@@ -40,5 +43,5 @@ WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 //
 // regparm: the object in ESI. Evidence: 0x004D4090 (mov ecx,[esi+8], no prologue) and its
 // callers, 0x004D4919 among them (mov esi,<object> before the call, nothing pushed).
-WXL_SEAM(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
+WXL_SEAM_BEFORE(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)

@@ -14,6 +14,12 @@
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including netclient.def"
 #endif
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including netclient.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including netclient.def"
+#endif
 
 // Dispatches one message that arrived from the world server to the handler registered for its
 // opcode, and returns what that handler answered, or 0 when the opcode has none. The only
@@ -34,11 +40,11 @@ WXL_SEAM_RAISES(NetClient, Send, MessageSent)
 // Takes the connection to the world server up, on the main thread: the event queue drains
 // it from the client's own loop, not from the socket's thread. After raises Connected, once
 // the client has moved itself into the connected state.
-WXL_SEAM(NetClient, HandleConnect, "NetClient::HandleConnect", int32_t, thiscall, (void* self))
+WXL_SEAM_AFTER(NetClient, HandleConnect, "NetClient::HandleConnect", int32_t, thiscall, (void* self))
 WXL_SEAM_RAISES(NetClient, HandleConnect, Connected)
 
 // Takes it down again, from the same queue. Before raises Disconnected, while the client
 // still believes it is connected, so a handler sees the world as it was rather than as the
 // teardown has already left it.
-WXL_SEAM(NetClient, HandleDisconnect, "NetClient::HandleDisconnect", int32_t, thiscall, (void* self))
+WXL_SEAM_BEFORE(NetClient, HandleDisconnect, "NetClient::HandleDisconnect", int32_t, thiscall, (void* self))
 WXL_SEAM_RAISES(NetClient, HandleDisconnect, Disconnected)

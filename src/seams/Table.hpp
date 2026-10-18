@@ -12,6 +12,15 @@
 
 namespace wxl::core::seams
 {
+    /// Which entry points a row declares: its shape in seams.def.
+    enum class Shape
+    {
+        Observe, ///< WXL_SEAM: Before and After
+        Before,  ///< WXL_SEAM_BEFORE: Before only
+        After,   ///< WXL_SEAM_AFTER: After only
+        Gate,    ///< WXL_SEAM_GATE: Gate, which can take the call
+    };
+
     /// One row of seams.def, without its address: the same on both builds.
     struct Seam
     {
@@ -20,7 +29,7 @@ namespace wxl::core::seams
         const char* returns;    ///< the row's return type, as text; "void" for none
         const char* convention; ///< the row's x86 calling convention: cdecl, thiscall or stdcall
         const char* params;     ///< the row's parameter list, as text, parentheses included
-        bool        gated;      ///< a WXL_SEAM_GATE row: its Gate can take the call
+        Shape       shape;      ///< the entry points the row declares
     };
 
     /// Every seam, in table order.

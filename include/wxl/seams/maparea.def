@@ -3,8 +3,8 @@
 //
 // The MapArea domain: seams on CMapArea, a loaded terrain tile.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including maparea.def"
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including maparea.def"
 #endif
 
 // Builds one chunk of a tile: allocates the CMapChunk, links it to the tile, sets its indices
@@ -12,5 +12,5 @@
 // for each chunk of the rectangle coming into view. Before raises TerrainChunkBuild with the
 // map, the tile's index (CMapArea::m_index) and the chunk's indices, before the chunk's data is
 // read. After takes the chunk the function returns and raises nothing.
-WXL_SEAM(MapArea, PrepareChunk, "CMapArea::PrepareChunk", void*, thiscall, (void* self, int32_t chunk_x, int32_t chunk_y))
+WXL_SEAM_BEFORE(MapArea, PrepareChunk, "CMapArea::PrepareChunk", void*, thiscall, (void* self, int32_t chunk_x, int32_t chunk_y))
 WXL_SEAM_RAISES(MapArea, PrepareChunk, TerrainChunkBuild)

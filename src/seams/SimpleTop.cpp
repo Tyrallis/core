@@ -13,8 +13,6 @@
 
 namespace wxl::seam::SimpleTop::OnLayerRender
 {
-    void WXL_CALL Before(void*) {}
-
     void WXL_CALL After(void* self)
     {
         wxl::host::ModHost* host = wxl::core::Host();

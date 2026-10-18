@@ -47,8 +47,8 @@ the lifecycle, the log.
 - **Seams declared once.** Every function the runtime attaches to is one row in
   `include/wxl/seams/`, whose body is written once: the x86 build generates a detour around the
   function from the row, the x64 build exports the entry points for the recompiled client to
-  call from inside it. A row is observing (`Before`, `After`) or gated (`Gate`, which can stop
-  the call and rewrite its arguments).
+  call from inside it. A row is observing (`Before`, `After`, or only one of them) or gated
+  (`Gate`, which can stop the call and rewrite its arguments).
 - **An unbuffered log.** One write per line, so a crash keeps everything up to it.
 
 How the pieces fit, and which files a new seam, fact or event touches:
@@ -129,7 +129,7 @@ not beside it), links the DLL and calls `WarcraftXLInit` from
 [`include/wxl/core/init.h`](include/wxl/core/init.h), handing over the accessors of
 `wxl_core_init`: one per row of [`include/wxl/core/binding.def`](include/wxl/core/binding.def), the
 client binding, which `client/WarcraftXL/Binding.cpp` defines against the client's own classes.
-Its functions call the seams' `Before` and `After` from
+Its functions call the seams' entry points from
 [`include/wxl/seams/seams.h`](include/wxl/seams/seams.h). Mods are read from `Mods/` beside the
 executable, with `bin/x64/` binaries.
 
@@ -202,12 +202,17 @@ raises; one that needs a detour requires `wxl.hook` or `wxl.hook.raw` and is ref
 ### The seams
 
 One table per domain under [`include/wxl/seams/`](include/wxl/seams/), one row per function.
-A row is one of two shapes:
+A row is one of four shapes:
 
 | Shape | Entry points | What it can do |
 |---|---|---|
-| `WXL_SEAM` | `Before`, `After` | watch the call start and finish |
-| `WXL_SEAM_GATE` | `Gate` | the above, plus stop the call and answer in its place, and rewrite what the function is given |
+| `WXL_SEAM_BEFORE` | `Before` | watch the call start |
+| `WXL_SEAM_AFTER` | `After` | watch the call finish |
+| `WXL_SEAM` | `Before`, `After` | both |
+| `WXL_SEAM_GATE` | `Gate` | watch the call start, stop it and answer in its place, and rewrite what the function is given |
+
+A row declares only the sides its body uses: on the recompiled client each side is a call in the
+function's source, and an `After` is one at every return.
 
 A gated row is used only where a promise of the contract needs it -- suppressing a message,
 redirecting a file -- because it costs the recompiled client a real decision point in its own
@@ -270,7 +275,7 @@ Both read memory before writing: if the bytes are already in the patched state t
 ```
 include/wxl/core/init.h          the 64-bit entry point, for the client to include
 include/wxl/core/binding/        the client binding: the facts read out of the client, one .def per domain
-include/wxl/seams/               the seam table (one .def per domain) and seams.h, their Before/After
+include/wxl/seams/               the seam table (one .def per domain) and seams.h, their entry points
 include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
 src/runtime/                     host bring-up, stages, frames, the per-architecture attachment
 src/binding/                     the binding realised: memory reads (x86), the client's accessors (x64)

@@ -3,8 +3,8 @@
 //
 // The Event domain: seams on the scheduler that drives the client's ticks.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including event.def"
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including event.def"
 #endif
 
 // Dispatches EVENT_ID_UPDATE to the one scheduler context this client creates, once per
@@ -23,5 +23,5 @@
 // regparm: context in EDI, curr_time and elapsed_sec on the stack. The body reads EDI first
 // (`lea esi, [edi+0x10]`, the context's critical section); the one caller sets EDI just before
 // the call and cleans two stack slots after it.
-WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, regparm, (void* context, uint32_t curr_time, float elapsed_sec))
+WXL_SEAM_BEFORE(Event, DispatchUpdate, "IEvtDispatchUpdate", void, regparm, (void* context, uint32_t curr_time, float elapsed_sec))
 WXL_SEAM_RAISES(Event, DispatchUpdate, Update)

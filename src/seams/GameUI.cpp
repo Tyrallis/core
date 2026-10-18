@@ -36,15 +36,11 @@ namespace
 
 namespace wxl::seam::GameUI::SendTarget
 {
-    void WXL_CALL Before(uint64_t) {}
-
     void WXL_CALL After(uint64_t) { Announce(); }
 }
 
 namespace wxl::seam::GameUI::ClearTarget
 {
-    void WXL_CALL Before(uint64_t, int32_t) {}
-
     void WXL_CALL After(uint64_t, int32_t a2)
     {
         if (a2) Announce();

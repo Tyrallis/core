@@ -99,8 +99,6 @@ namespace wxl::seam::NetClient::Send
 
 namespace wxl::seam::NetClient::HandleConnect
 {
-    void WXL_CALL Before(void*) {}
-
     void WXL_CALL After(int32_t, void*)
     {
         // Raised after, so that a handler asking the client about itself is told it is
@@ -124,6 +122,4 @@ namespace wxl::seam::NetClient::HandleDisconnect
             host->Raise(WXL_EV_Disconnected, &args);
         }
     }
-
-    void WXL_CALL After(int32_t, void*) {}
 }

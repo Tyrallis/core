@@ -3,8 +3,8 @@
 //
 // The Scrn domain: seams on the screen's paint, which drives every frame the client draws.
 
-#ifndef WXL_SEAM
-#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including scrn.def"
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including scrn.def"
 #endif
 
 // The EVENT_ID_PAINT handler of Layer.cpp: one call is one frame. When the device has a context
@@ -18,5 +18,5 @@
 // A static of Layer.cpp whose address is taken (it is registered as an event handler), so it
 // keeps its declared convention. It never reads its two parameters; its callers push and clean
 // them (0x004A8BA4 pushes both and cleans eight bytes), so the row declares them.
-WXL_SEAM(Scrn, OnPaint, "OnPaint", int32_t, cdecl, (const void* data, void* param))
+WXL_SEAM_BEFORE(Scrn, OnPaint, "OnPaint", int32_t, cdecl, (const void* data, void* param))
 WXL_SEAM_RAISES(Scrn, OnPaint, FrameBegin)

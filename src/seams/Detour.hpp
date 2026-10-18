@@ -14,6 +14,13 @@
 
 namespace wxl::core::seams
 {
+    /// Calls one side of an observing row; a side the row does not declare is passed as nullptr.
+    template <auto Fn, class... T>
+    inline void Side(T... args)
+    {
+        if constexpr (!std::is_null_pointer_v<decltype(Fn)>) Fn(args...);
+    }
+
     /**
      * @brief The detour of one seam row: Before, the original, After, in the row's convention.
      *
@@ -21,7 +28,7 @@ namespace wxl::core::seams
      * @tparam Signature  the row's `ret params` as a function type.
      *
      * Link<Before, After> carries the trampoline the hook engine fills (`original`) and the
-     * function to attach (`Detour`). Arguments are forwarded by value, which is what the C
+     * function to attach (`Detour`); a one-sided row passes nullptr for the side it lacks. Arguments are forwarded by value, which is what the C
      * boundary passes anyway; a non-void result is handed to After first and returned.
      */
     template <class Conv, class Signature>
@@ -41,16 +48,16 @@ namespace wxl::core::seams
 
             static R __cdecl Detour(A... args)
             {
-                Before(args...);
+                Side<Before>(args...);
                 if constexpr (std::is_void_v<R>)
                 {
                     original(args...);
-                    After(args...);
+                    Side<After>(args...);
                 }
                 else
                 {
                     R result = original(args...);
-                    After(result, args...);
+                    Side<After>(result, args...);
                     return result;
                 }
             }
@@ -71,16 +78,16 @@ namespace wxl::core::seams
 
             static R __stdcall Detour(A... args)
             {
-                Before(args...);
+                Side<Before>(args...);
                 if constexpr (std::is_void_v<R>)
                 {
                     original(args...);
-                    After(args...);
+                    Side<After>(args...);
                 }
                 else
                 {
                     R result = original(args...);
-                    After(result, args...);
+                    Side<After>(result, args...);
                     return result;
                 }
             }
@@ -105,16 +112,16 @@ namespace wxl::core::seams
 
             static R __fastcall Detour(This self, void*, A... args)
             {
-                Before(self, args...);
+                Side<Before>(self, args...);
                 if constexpr (std::is_void_v<R>)
                 {
                     original(self, nullptr, args...);
-                    After(self, args...);
+                    Side<After>(self, args...);
                 }
                 else
                 {
                     R result = original(self, nullptr, args...);
-                    After(result, self, args...);
+                    Side<After>(result, self, args...);
                     return result;
                 }
             }

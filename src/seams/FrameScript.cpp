@@ -41,8 +41,6 @@ namespace
 
 namespace wxl::seam::FrameScript::Initialize
 {
-    void WXL_CALL Before(int32_t) {}
-
     void WXL_CALL After(int32_t, int32_t)
     {
         void* state = wxl::core::binding::script_state();
@@ -81,14 +79,10 @@ namespace wxl::seam::FrameScript::Destroy
         wxl::core::services::script::OnContextClosing();
         g_live = false;
     }
-
-    void WXL_CALL After() {}
 }
 
 namespace wxl::seam::FrameScript::CreateEvents
 {
-    void WXL_CALL Before(const char**, uint32_t) {}
-
     void WXL_CALL After(const char** names, uint32_t count)
     {
         // The service installs the table again with its own events behind the client's; that

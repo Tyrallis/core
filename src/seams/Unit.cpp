@@ -37,8 +37,6 @@ namespace
 
 namespace wxl::seam::Unit::OnDeath
 {
-    void WXL_CALL Before(void*) {}
-
     void WXL_CALL After(void* self)
     {
         wxl::host::ModHost* host = wxl::core::Host();
@@ -57,8 +55,6 @@ namespace wxl::seam::Unit::OnDeath
 
 namespace wxl::seam::Unit::OnAuraAdded
 {
-    void WXL_CALL Before(void*, uint32_t, uint8_t, void*, int32_t) {}
-
     void WXL_CALL After(void* self, uint32_t, uint8_t, void*, int32_t spell_id)
     {
         AuraChanged(self, spell_id, WXL_FALSE);
@@ -67,8 +63,6 @@ namespace wxl::seam::Unit::OnAuraAdded
 
 namespace wxl::seam::Unit::OnAuraRemoved
 {
-    void WXL_CALL Before(void*, uint32_t, uint8_t, void*, int32_t) {}
-
     void WXL_CALL After(void* self, uint32_t, uint8_t, void*, int32_t spell_id)
     {
         AuraChanged(self, spell_id, WXL_TRUE);

@@ -105,7 +105,7 @@ def read_rows(seams_dir, problems):
         text = table.strip_cxx(path.read_text(encoding="utf-8", errors="replace"),
                                keep_strings=True)
         for match in table.SEAM_ROW.finditer(text):
-            gated = match.group(1) is not None
+            gated = match.group(1) == "_GATE"
             open_at = match.end() - 1
             close = table.balanced(text, open_at)
             if close < 0:

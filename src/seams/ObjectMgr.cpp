@@ -41,8 +41,6 @@ namespace
 
 namespace wxl::seam::ObjectMgr::InitObject
 {
-    void WXL_CALL Before(void*, const void*, uint32_t) {}
-
     void WXL_CALL After(void* object, const void*, uint32_t)
     {
         if (!object) return;
@@ -61,13 +59,9 @@ namespace wxl::seam::ObjectMgr::InitObject
 namespace wxl::seam::ObjectMgr::ObjDelete
 {
     void WXL_CALL Before(void* object) { Leave(object); }
-
-    void WXL_CALL After(void*) {}
 }
 
 namespace wxl::seam::ObjectMgr::DestroyRemovedObject
 {
     void WXL_CALL Before(void* object) { Leave(object); }
-
-    void WXL_CALL After(void*) {}
 }

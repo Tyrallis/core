@@ -36,9 +36,4 @@ namespace wxl::seam::Client::Destroy
         host->UnloadAll();
         WLOG_INFO(wxl::core::kTag, "mods unloaded; the client is on its own from here");
     }
-
-    void WXL_CALL After()
-    {
-        // Nothing: no mod's code is left to run, and the host is empty.
-    }
 }

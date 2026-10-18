@@ -21,17 +21,28 @@ namespace
 {
     // One Link per row: the detour in the row's convention, with the row's own entry
     // points. A gated row's Link runs the original only if its Gate lets it through.
-#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                  \
-    using domain##_##name = ::wxl::core::seams::DetourOf<::wxl::seam::detail::conv_##conv, \
-                                                         ret params>::Link<                \
-        &::wxl::seam::domain::name::Before, &::wxl::seam::domain::name::After>;
-#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)                           \
-    using domain##_##name = ::wxl::core::seams::GateOf<::wxl::seam::detail::conv_##conv, \
-                                                       ret params>::Link<                \
-        &::wxl::seam::domain::name::Gate>;
+#define WXL_SEAM_LINK(domain, name, before, after)                                           \
+    using domain##_##name =                                                                  \
+        ::wxl::core::seams::DetourOf<::wxl::seam::domain::name::Convention,                  \
+                                     ::wxl::seam::domain::name::Signature>::Link<before, after>;
+#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                    \
+    WXL_SEAM_LINK(domain, name, &::wxl::seam::domain::name::Before,                          \
+                  &::wxl::seam::domain::name::After)
+#define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params)                             \
+    WXL_SEAM_LINK(domain, name, &::wxl::seam::domain::name::Before, nullptr)
+#define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params)                              \
+    WXL_SEAM_LINK(domain, name, nullptr, &::wxl::seam::domain::name::After)
+#define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)                               \
+    using domain##_##name =                                                                  \
+        ::wxl::core::seams::GateOf<::wxl::seam::domain::name::Convention,                    \
+                                   ::wxl::seam::domain::name::Signature>::Link<              \
+            &::wxl::seam::domain::name::Gate>;
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_GATE
+#undef WXL_SEAM_AFTER
+#undef WXL_SEAM_BEFORE
 #undef WXL_SEAM
+#undef WXL_SEAM_LINK
 
     struct Row
     {
@@ -49,9 +60,13 @@ namespace
       reinterpret_cast<void**>(&domain##_##name::original), domain##_##name::kAttachable,        \
       gated },
 #define WXL_SEAM(domain, name, symbol, ret, conv, params) WXL_SEAM_ROW(domain, name, symbol, false)
+#define WXL_SEAM_BEFORE WXL_SEAM
+#define WXL_SEAM_AFTER WXL_SEAM
 #define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) WXL_SEAM_ROW(domain, name, symbol, true)
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_GATE
+#undef WXL_SEAM_AFTER
+#undef WXL_SEAM_BEFORE
 #undef WXL_SEAM
 #undef WXL_SEAM_ROW
     };

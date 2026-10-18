@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// The seams as functions: Before and After of every row of the seam table.
+// The seams as functions: the entry points of every row of the seam table.
 
 #ifndef WXL_SEAMS_H
 #define WXL_SEAMS_H
 
-// Every seam of seams.def declared as a pair of functions, wxl::seam::<domain>::<name>::Before
-// and ::After, taking the row's parameters. Both builds of the runtime define and export them;
+// Every seam of seams.def declared as its entry points, wxl::seam::<domain>::<name>::Before,
+// ::After or ::Gate, taking the row's parameters. Both builds of the runtime define and export them;
 // what differs is who calls them: on x86 the runtime's own detour at the function's address, on
 // x64 the recompiled client from inside the function, which is why this header is C++ and the
 // client includes it. A seam's body raises the events the call justifies, and nothing else.
@@ -17,7 +17,8 @@
 //   Before takes the row's parameters. After takes them too, and when the row returns a value,
 //   that value first: a row `WXL_SEAM(MapArea, PrepareChunk, ..., void*, thiscall, (void* self,
 //   int32_t x, int32_t y))` declares Before(self, x, y) and After(result, self, x, y). A
-//   thiscall row's first parameter is `this`.
+//   thiscall row's first parameter is `this`. WXL_SEAM_BEFORE declares only Before and
+//   WXL_SEAM_AFTER only After; the fork calls only what is declared.
 //
 // A gated seam, WXL_SEAM_GATE, stands in the doorway and has one entry point:
 //
@@ -147,30 +148,49 @@ namespace wxl::seam::detail
 
 namespace wxl::seam
 {
-#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                       \
-    namespace domain::name                                                                      \
-    {                                                                                           \
-        using Signature  = ret params;                                                          \
-        using Convention = ::wxl::seam::detail::conv_##conv;                                    \
-        static_assert(::wxl::seam::detail::Shape<Convention, Signature>::ok,                    \
-                      "seam " #domain "." #name ": a thiscall row takes `this` first, as a "    \
-                      "pointer, and returns void or a scalar");                                 \
-        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::Before Before;                         \
-        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::After After;                           \
+// What every row's namespace holds before its entry points: the signature, and the check of it
+// against the convention. The convention itself is pasted by each shape: handed on to this macro,
+// a conv column such as `cdecl` would be expanded first, and the Windows headers define it.
+#define WXL_SEAM_HEAD(domain, name, ret, params)                                             \
+    using Signature = ret params;                                                            \
+    static_assert(::wxl::seam::detail::Shape<Convention, Signature>::ok,                     \
+                  "seam " #domain "." #name ": a thiscall row takes `this` first, as a "     \
+                  "pointer, and returns void or a scalar");
+#define WXL_SEAM(domain, name, symbol, ret, conv, params)                                    \
+    namespace domain::name                                                                   \
+    {                                                                                        \
+        using Convention = ::wxl::seam::detail::conv_##conv;                                 \
+        WXL_SEAM_HEAD(domain, name, ret, params)                                             \
+        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::Before Before;                      \
+        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::After After;                        \
+    }
+#define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params)                             \
+    namespace domain::name                                                                   \
+    {                                                                                        \
+        using Convention = ::wxl::seam::detail::conv_##conv;                                 \
+        WXL_SEAM_HEAD(domain, name, ret, params)                                             \
+        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::Before Before;                      \
+    }
+#define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params)                              \
+    namespace domain::name                                                                   \
+    {                                                                                        \
+        using Convention = ::wxl::seam::detail::conv_##conv;                                 \
+        WXL_SEAM_HEAD(domain, name, ret, params)                                             \
+        WXL_CORE_API ::wxl::seam::detail::Fn<Signature>::After After;                        \
     }
 #define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)                               \
     namespace domain::name                                                                   \
     {                                                                                        \
-        using Signature  = ret params;                                                       \
         using Convention = ::wxl::seam::detail::conv_##conv;                                 \
-        static_assert(::wxl::seam::detail::Shape<Convention, Signature>::ok,                 \
-                      "seam " #domain "." #name ": a thiscall row takes `this` first, as a " \
-                      "pointer, and returns void or a scalar");                              \
+        WXL_SEAM_HEAD(domain, name, ret, params)                                             \
         WXL_CORE_API ::wxl::seam::detail::GateFn<Signature>::Gate Gate;                      \
     }
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_GATE
+#undef WXL_SEAM_AFTER
+#undef WXL_SEAM_BEFORE
 #undef WXL_SEAM
+#undef WXL_SEAM_HEAD
 } // namespace wxl::seam
 
 #endif // WXL_SEAMS_H

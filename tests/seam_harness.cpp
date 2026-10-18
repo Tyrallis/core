@@ -501,33 +501,10 @@ namespace
     {
         switch (event)
         {
-        case WXL_EV_Update:            return sizeof(wxl_update_args);
-        case WXL_EV_WorldEnter:
-        case WXL_EV_WorldLeave:        return sizeof(wxl_world_args);
-        case WXL_EV_ObjectCreate:
-        case WXL_EV_ObjectDestroy:     return sizeof(wxl_object_args);
-        case WXL_EV_UnitDeath:         return sizeof(wxl_unit_args);
-        case WXL_EV_UnitAuraChanged:   return sizeof(wxl_unit_aura_args);
-        case WXL_EV_EquipmentChanged:  return sizeof(wxl_equipment_args);
-        case WXL_EV_TargetChanged:     return sizeof(wxl_target_args);
-        case WXL_EV_TerrainChunkBuild: return sizeof(wxl_terrain_chunk_args);
-        case WXL_EV_ScriptVmReady:
-        case WXL_EV_ScriptVmClosing:   return sizeof(wxl_script_vm_args);
-        case WXL_EV_MessageReceived:
-        case WXL_EV_MessageSent:       return sizeof(wxl_message_args);
-        case WXL_EV_Connected:
-        case WXL_EV_Disconnected:      return sizeof(wxl_connection_args);
-        case WXL_EV_Input:             return sizeof(wxl_input_args);
-        case WXL_EV_SoundPlay:         return sizeof(wxl_sound_args);
-        case WXL_EV_FileOpen:          return sizeof(wxl_file_open_args);
-        case WXL_EV_FrameBegin:
-        case WXL_EV_FrameEnd:
-        case WXL_EV_WorldRenderBegin:
-        case WXL_EV_WorldRenderEnd:
-        case WXL_EV_UiRenderEnd:       return sizeof(wxl_frame_args);
-        case WXL_EV_SwapchainLost:
-        case WXL_EV_SwapchainRestored: return sizeof(wxl_swapchain_args);
-        default:                       return 0;
+#define WXL_EVENT(family, name, id, args) case WXL_EV_##name: return sizeof(args);
+#include "wxl/events.def"
+#undef WXL_EVENT
+        default: return 0;
         }
     }
 
@@ -684,7 +661,6 @@ namespace
     {
         g_received.clear();
         wxl::seam::Event::DispatchUpdate::Before(nullptr, 1000u, 0.125f);
-        wxl::seam::Event::DispatchUpdate::After(nullptr, 1000u, 0.125f);
 
         const Received* update = Only(WXL_EV_Update);
         Check(update != nullptr, "Event.DispatchUpdate raises Update exactly once");
@@ -748,7 +724,6 @@ namespace
         boar.health   = 90;
 
         g_received.clear();
-        wxl::seam::ObjectMgr::InitObject::Before(&boar, nullptr, 1000u);
         wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 1000u);
 
         const Received* created = Only(WXL_EV_ObjectCreate);
@@ -788,7 +763,6 @@ namespace
                   "ObjectDestroy carries the handle ObjectCreate did");
             Check(destroyed->As<wxl_object_args>().guid == boar.guid, "and its guid");
         }
-        wxl::seam::ObjectMgr::ObjDelete::After(&boar);
         Check(api->valid(args.object) == WXL_FALSE, "after ObjDelete the handle no longer resolves");
         Check(api->unit_health(args.object, &health) == WXL_E_NOT_FOUND,
               "a read through the stale handle is absent, not the object's last value");
@@ -797,7 +771,6 @@ namespace
         // DestroyRemovedObject on what ObjDelete already let go: nothing.
         g_received.clear();
         wxl::seam::ObjectMgr::DestroyRemovedObject::Before(&boar);
-        wxl::seam::ObjectMgr::DestroyRemovedObject::After(&boar);
         Check(g_received.empty(), "DestroyRemovedObject after ObjDelete raises nothing");
 
         // DestroyRemovedObject on a tracked object (the DestroyAllObjects path): once.
@@ -825,14 +798,12 @@ namespace
         const wxl_handle handle = wxl::core::objects::HandleOf(&wolf);
 
         g_received.clear();
-        wxl::seam::Unit::OnDeath::Before(&wolf);
         wxl::seam::Unit::OnDeath::After(&wolf);
         Check(Only(WXL_EV_UnitDeath) != nullptr &&
                   Only(WXL_EV_UnitDeath)->As<wxl_unit_args>().unit == handle,
               "Unit.OnDeath raises UnitDeath once with the unit's handle");
 
         g_received.clear();
-        wxl::seam::Unit::OnAuraAdded::Before(&wolf, 3u, 0, nullptr, 8921);
         wxl::seam::Unit::OnAuraAdded::After(&wolf, 3u, 0, nullptr, 8921);
         const Received* added = Only(WXL_EV_UnitAuraChanged);
         Check(added != nullptr, "Unit.OnAuraAdded raises UnitAuraChanged once");
@@ -844,7 +815,6 @@ namespace
         }
 
         g_received.clear();
-        wxl::seam::Unit::OnAuraRemoved::Before(&wolf, 3u, 0, nullptr, 8921);
         wxl::seam::Unit::OnAuraRemoved::After(&wolf, 3u, 0, nullptr, 8921);
         const Received* removed = Only(WXL_EV_UnitAuraChanged);
         Check(removed != nullptr && removed->As<wxl_unit_aura_args>().removed == WXL_TRUE,
@@ -920,10 +890,8 @@ namespace
 
         // CGGameUI::Target(rat): ClearTarget(old, 0), the static written, SendTarget(rat).
         g_received.clear();
-        wxl::seam::GameUI::ClearTarget::Before(0, 0);
         wxl::seam::GameUI::ClearTarget::After(0, 0);
         g_targetGuid = rat.guid;
-        wxl::seam::GameUI::SendTarget::Before(rat.guid);
         wxl::seam::GameUI::SendTarget::After(rat.guid);
         const Received* first = Only(WXL_EV_TargetChanged);
         Check(first != nullptr, "targeting from nothing raises TargetChanged once");
@@ -935,11 +903,9 @@ namespace
         // CGGameUI::Target(bat): the internal clear is not announced, the change is, once.
         g_received.clear();
         g_targetGuid = 0;
-        wxl::seam::GameUI::ClearTarget::Before(rat.guid, 0);
         wxl::seam::GameUI::ClearTarget::After(rat.guid, 0);
         Check(g_received.empty(), "Target's own pre-clear (a2 clear) announces nothing");
         g_targetGuid = bat.guid;
-        wxl::seam::GameUI::SendTarget::Before(bat.guid);
         wxl::seam::GameUI::SendTarget::After(bat.guid);
         const Received* second = Only(WXL_EV_TargetChanged);
         Check(second != nullptr, "retargeting raises TargetChanged once");
@@ -950,14 +916,12 @@ namespace
 
         // The summon-friend script: SendTarget with the static unchanged announces nothing.
         g_received.clear();
-        wxl::seam::GameUI::SendTarget::Before(rat.guid);
         wxl::seam::GameUI::SendTarget::After(rat.guid);
         Check(g_received.empty(), "SendTarget without a change of the static announces nothing");
 
         // A standalone ClearTarget (a2 set): announced, to the null handle.
         g_received.clear();
         g_targetGuid = 0;
-        wxl::seam::GameUI::ClearTarget::Before(bat.guid, 1);
         wxl::seam::GameUI::ClearTarget::After(bat.guid, 1);
         const Received* cleared = Only(WXL_EV_TargetChanged);
         Check(cleared != nullptr, "a standalone ClearTarget raises TargetChanged once");
@@ -980,7 +944,6 @@ namespace
 
         g_received.clear();
         wxl::seam::MapArea::PrepareChunk::Before(&area, 3, 9);
-        wxl::seam::MapArea::PrepareChunk::After(nullptr, &area, 3, 9);
         const Received* built = Only(WXL_EV_TerrainChunkBuild);
         Check(built != nullptr, "MapArea.PrepareChunk raises TerrainChunkBuild once");
         if (!built) return;
@@ -1077,7 +1040,6 @@ namespace
         g_uiInitialized = 0;
         g_uiLoggingIn   = 0;
         g_received.clear();
-        wxl::seam::FrameScript::Initialize::Before(0);
         wxl::seam::FrameScript::Initialize::After(1, 0);
         const Received* ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr, "FrameScript.Initialize raises ScriptVmReady once");
@@ -1130,7 +1092,6 @@ namespace
         Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1,
               "declaring it again changes nothing");
         const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
-        wxl::seam::FrameScript::CreateEvents::Before(clientNames, 2);
         wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         Check(g_vm.eventTables.size() == 2 &&
                   g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT"},
@@ -1162,7 +1123,6 @@ namespace
         // Closing: announced with the context Ready named, then nothing is accepted.
         g_received.clear();
         wxl::seam::FrameScript::Destroy::Before();
-        wxl::seam::FrameScript::Destroy::After();
         const Received* closing = Only(WXL_EV_ScriptVmClosing);
         Check(closing != nullptr && closing->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
               "FrameScript.Destroy raises ScriptVmClosing once, naming the context Ready did");
@@ -1182,7 +1142,6 @@ namespace
         }
         g_received.clear();
         wxl::seam::FrameScript::Destroy::Before();
-        wxl::seam::FrameScript::Destroy::After();
         Check(g_received.empty(), "a Destroy with no context announced raises nothing");
 
         // The game context: InitializeFrameXML sets m_loggingIn before it creates the context.
@@ -1190,7 +1149,6 @@ namespace
         g_uiLoggingIn = 1;
         registered    = WXL_E_FAILED;
         g_received.clear();
-        wxl::seam::FrameScript::Initialize::Before(1);
         wxl::seam::FrameScript::Initialize::After(1, 1);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
@@ -1204,12 +1162,10 @@ namespace
 
         // ReloadUI: Flush destroys and recreates with m_initialized still set.
         wxl::seam::FrameScript::Destroy::Before();
-        wxl::seam::FrameScript::Destroy::After();
         g_vm.closures.clear();
         g_uiLoggingIn   = 0;
         g_uiInitialized = 1;
         g_received.clear();
-        wxl::seam::FrameScript::Initialize::Before(0);
         wxl::seam::FrameScript::Initialize::After(1, 0);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
@@ -1217,18 +1173,15 @@ namespace
 
         // Back to the glue: ShutdownGame cleared both flags before the flush.
         wxl::seam::FrameScript::Destroy::Before();
-        wxl::seam::FrameScript::Destroy::After();
         g_vm.closures.clear();
         g_uiInitialized = 0;
         g_received.clear();
-        wxl::seam::FrameScript::Initialize::Before(0);
         wxl::seam::FrameScript::Initialize::After(1, 0);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
               "a context recreated once the game interface is down is the glue's");
 
         wxl::seam::FrameScript::Destroy::Before();
-        wxl::seam::FrameScript::Destroy::After();
         g_vm.live = false;
         g_host->Events().Unsubscribe(onReady);
     }
@@ -1524,7 +1477,6 @@ namespace
         auto present = []
         {
             wxl::seam::Gx::ScenePresent::Before();
-            wxl::seam::Gx::ScenePresent::After();
         };
 
         g_gxContext = false;
@@ -1560,12 +1512,10 @@ namespace
         g_received.clear();
         paint();
         Check(wxl::core::stages::Reached() == WXL_STAGE_STORAGE, "a frame announces no stage");
-        wxl::seam::SimpleTop::OnLayerRender::Before(&top);
         wxl::seam::WorldFrame::RenderWorld::Before(&world);
         wxl::seam::WorldFrame::RenderWorld::After(&world);
         wxl::seam::SimpleTop::OnLayerRender::After(&top);
         present();
-        wxl::seam::Scrn::OnPaint::After(1, nullptr, nullptr);
 
         const wxl_event order[] = {WXL_EV_FrameBegin, WXL_EV_WorldRenderBegin, WXL_EV_WorldRenderEnd,
                                    WXL_EV_UiRenderEnd, WXL_EV_FrameEnd};
@@ -1603,7 +1553,6 @@ namespace
         g_gxHeight = 720;
         g_received.clear();
         wxl::seam::Gx::ReleaseD3dResources::Before(&top, 0);
-        wxl::seam::Gx::ReleaseD3dResources::After(&top, 0);
         const Received* lost = Only(WXL_EV_SwapchainLost);
         Check(lost && lost->As<wxl_swapchain_args>().width == 1280
                   && lost->As<wxl_swapchain_args>().height == 720,
@@ -1613,7 +1562,6 @@ namespace
         g_gxHeight = 1440;
         g_received.clear();
         wxl::seam::Gx::NotifyOnDeviceRestored::Before(&top);
-        wxl::seam::Gx::NotifyOnDeviceRestored::After(&top);
         const Received* back = Only(WXL_EV_SwapchainRestored);
         Check(back && back->As<wxl_swapchain_args>().width == 2560
                   && back->As<wxl_swapchain_args>().height == 1440,
@@ -1637,12 +1585,10 @@ namespace
         wxl::core::stages::Restart();
         wxl::core::stages::Reach(WXL_STAGE_STORAGE);
         g_gxDevice = false;
-        wxl::seam::ConsoleDevice::Initialize::Before("World of Warcraft", true, true);
         wxl::seam::ConsoleDevice::Initialize::After("World of Warcraft", true, true);
         Check(wxl::core::stages::Reached() == WXL_STAGE_STORAGE,
               "a device bring-up that left no device announces no graphics stage");
         g_gxDevice = true;
-        wxl::seam::ConsoleDevice::Initialize::Before("World of Warcraft", true, true);
         wxl::seam::ConsoleDevice::Initialize::After("World of Warcraft", true, true);
         Check(wxl::core::stages::Reached() == WXL_STAGE_GRAPHICS,
               "one that left a device announces the graphics stage");
@@ -1663,7 +1609,6 @@ namespace
         Check(g_released == 1,
               "and takes back every detour a mod left behind, before its binary is freed");
 
-        wxl::seam::Client::Destroy::After();
         stages::Restart();
     }
 
@@ -1672,8 +1617,6 @@ namespace
     void CheckNetConnection()
     {
         g_received.clear();
-        wxl::seam::NetClient::HandleConnect::Before(nullptr);
-        Check(Only(WXL_EV_Connected) == nullptr, "Connected is not raised on the way in");
         wxl::seam::NetClient::HandleConnect::After(1, nullptr);
         Check(Only(WXL_EV_Connected) != nullptr,
               "it is raised once the client has moved itself into the connected state");
@@ -1682,8 +1625,6 @@ namespace
         wxl::seam::NetClient::HandleDisconnect::Before(nullptr);
         Check(Only(WXL_EV_Disconnected) != nullptr,
               "Disconnected is raised before the client tears the connection down");
-        wxl::seam::NetClient::HandleDisconnect::After(1, nullptr);
-        Check(Count(WXL_EV_Disconnected) == 1, "and only once");
     }
 
     // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
@@ -1793,6 +1734,29 @@ namespace
         Check(result == 112, "the thiscall shim returns the original's result (100 + 5 + 7)");
         Check(g_shimSelf == &thing && g_shimBefore == 57, "Before received `this` and the arguments");
         Check(g_shimAfter == 112 + 5 + 7, "After received the result first, then `this` and the arguments");
+    }
+
+    using ShimBeforeLink = ShimSeam::Link<&ShimBefore, nullptr>;
+    using ShimAfterLink  = ShimSeam::Link<nullptr, &ShimAfter>;
+
+    /// The detours of the one-sided shapes: the original runs, and only the declared side does.
+    void CheckOneSidedShim()
+    {
+        Thing thing;
+        auto  member = &Thing::Add;
+        using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
+
+        ShimBeforeLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        g_shimSelf = nullptr, g_shimBefore = 0, g_shimAfter = 0;
+        int32_t result = reinterpret_cast<AsThiscall>(&ShimBeforeLink::Detour)(&thing, 5, 7);
+        Check(result == 112 && g_shimBefore == 57 && g_shimAfter == 0,
+              "a Before-only detour runs Before and the original, and no After");
+
+        ShimAfterLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        g_shimSelf = &thing, g_shimBefore = 0, g_shimAfter = 0;
+        result = reinterpret_cast<AsThiscall>(&ShimAfterLink::Detour)(&thing, 5, 7);
+        Check(result == 112 && g_shimBefore == 0 && g_shimAfter == 112 + 5 + 7,
+              "an After-only detour runs the original and After, and no Before");
     }
 
     int32_t g_gateCalls = 0;
@@ -2102,6 +2066,7 @@ int main(int argc, char** argv)
     CheckRender();
 #if defined(_M_IX86)
     CheckThiscallShim();
+    CheckOneSidedShim();
     CheckThiscallGate();
     CheckRegparmThunks();
 #endif
