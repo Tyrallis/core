@@ -22,9 +22,9 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including corpse.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(corpse_owner, uint64_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldOwner", 0)
-WXL_BINDING_FIELD_VIA(corpse_party, uint64_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldParty", 0)
-WXL_BINDING_FIELD_VIA(corpse_display_id, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldDisplayId", 0)
-WXL_BINDING_FIELD_VIA(corpse_guild, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldGuild", 0)
-WXL_BINDING_FIELD_VIA(corpse_flags, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldFlags", 0)
-WXL_BINDING_FIELD_VIA(corpse_dynamic_flags, uint32_t, CGCorpse_C, "m_corpse", CGCorpseData, "m_corpseFieldDynamicFlags", 0)
+WXL_BINDING_FIELD_VIA(corpse_owner, uint64_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldOwner, 0)
+WXL_BINDING_FIELD_VIA(corpse_party, uint64_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldParty, 0)
+WXL_BINDING_FIELD_VIA(corpse_display_id, uint32_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldDisplayId, 0)
+WXL_BINDING_FIELD_VIA(corpse_guild, uint32_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldGuild, 0)
+WXL_BINDING_FIELD_VIA(corpse_flags, uint32_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldFlags, 0)
+WXL_BINDING_FIELD_VIA(corpse_dynamic_flags, uint32_t, CGCorpse_C, m_corpse, CGCorpseData, m_corpseFieldDynamicFlags, 0)

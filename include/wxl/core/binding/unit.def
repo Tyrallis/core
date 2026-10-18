@@ -21,32 +21,32 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including unit.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(unit_health, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldHealth", 0)
-WXL_BINDING_FIELD_VIA(unit_max_health, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldMaxhealth", 0)
-WXL_BINDING_FIELD_VIA(unit_level, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldLevel", 0)
-WXL_BINDING_FIELD_VIA(unit_target, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldTarget", 0)
+WXL_BINDING_FIELD_VIA(unit_health, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldHealth, 0)
+WXL_BINDING_FIELD_VIA(unit_max_health, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldMaxhealth, 0)
+WXL_BINDING_FIELD_VIA(unit_level, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldLevel, 0)
+WXL_BINDING_FIELD_VIA(unit_target, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldTarget, 0)
 
-WXL_BINDING_FIELD_VIA_INDEX(unit_power, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldPower")
-WXL_BINDING_FIELD_VIA_INDEX(unit_max_power, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldMaxpower")
+WXL_BINDING_FIELD_VIA_INDEX(unit_power, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldPower)
+WXL_BINDING_FIELD_VIA_INDEX(unit_max_power, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldMaxpower)
 
 // UNIT_FIELD_BYTES_0 as one word: race, class, sex, power type, one byte each from the low end.
-WXL_BINDING_FIELD_VIA(unit_bytes0, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldBytes0", 0)
+WXL_BINDING_FIELD_VIA(unit_bytes0, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldBytes0, 0)
 
-WXL_BINDING_FIELD_VIA(unit_display_id, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldDisplayid", 0)
-WXL_BINDING_FIELD_VIA(unit_native_display_id, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldNativedisplayid", 0)
-WXL_BINDING_FIELD_VIA(unit_mount_display_id, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldMountdisplayid", 0)
+WXL_BINDING_FIELD_VIA(unit_display_id, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldDisplayid, 0)
+WXL_BINDING_FIELD_VIA(unit_native_display_id, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldNativedisplayid, 0)
+WXL_BINDING_FIELD_VIA(unit_mount_display_id, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldMountdisplayid, 0)
 
-WXL_BINDING_FIELD_VIA(unit_faction_template, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldFactiontemplate", 0)
-WXL_BINDING_FIELD_VIA(unit_flags, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldFlags", 0)
-WXL_BINDING_FIELD_VIA(unit_flags2, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldFlags2", 0)
-WXL_BINDING_FIELD_VIA(unit_dynamic_flags, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitDynamicFlags", 0)
-WXL_BINDING_FIELD_VIA(unit_npc_flags, uint32_t, CGUnit_C, "m_unit", CGUnitData, "m_unitNpcFlags", 0)
+WXL_BINDING_FIELD_VIA(unit_faction_template, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldFactiontemplate, 0)
+WXL_BINDING_FIELD_VIA(unit_flags, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldFlags, 0)
+WXL_BINDING_FIELD_VIA(unit_flags2, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldFlags2, 0)
+WXL_BINDING_FIELD_VIA(unit_dynamic_flags, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitDynamicFlags, 0)
+WXL_BINDING_FIELD_VIA(unit_npc_flags, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitNpcFlags, 0)
 
-WXL_BINDING_FIELD_VIA(unit_bounding_radius, float, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldBoundingradius", 0.0f)
-WXL_BINDING_FIELD_VIA(unit_combat_reach, float, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldCombatreach", 0.0f)
+WXL_BINDING_FIELD_VIA(unit_bounding_radius, float, CGUnit_C, m_unit, CGUnitData, m_unitFieldBoundingradius, 0.0f)
+WXL_BINDING_FIELD_VIA(unit_combat_reach, float, CGUnit_C, m_unit, CGUnitData, m_unitFieldCombatreach, 0.0f)
 
-WXL_BINDING_FIELD_VIA(unit_charm, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldCharm", 0)
-WXL_BINDING_FIELD_VIA(unit_summon, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldSummon", 0)
-WXL_BINDING_FIELD_VIA(unit_charmed_by, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldCharmedby", 0)
-WXL_BINDING_FIELD_VIA(unit_summoned_by, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldSummonedby", 0)
-WXL_BINDING_FIELD_VIA(unit_created_by, uint64_t, CGUnit_C, "m_unit", CGUnitData, "m_unitFieldCreatedby", 0)
+WXL_BINDING_FIELD_VIA(unit_charm, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldCharm, 0)
+WXL_BINDING_FIELD_VIA(unit_summon, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldSummon, 0)
+WXL_BINDING_FIELD_VIA(unit_charmed_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldCharmedby, 0)
+WXL_BINDING_FIELD_VIA(unit_summoned_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldSummonedby, 0)
+WXL_BINDING_FIELD_VIA(unit_created_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldCreatedby, 0)

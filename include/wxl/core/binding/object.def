@@ -22,12 +22,12 @@
 #endif
 
 // The object descriptor block (CGObjectData) every kind carries, behind CGObject_C::m_obj.
-WXL_BINDING_FIELD_VIA(object_guid, uint64_t, CGObject_C, "m_obj", CGObjectData, "m_guid", 0)
-WXL_BINDING_FIELD_VIA(object_entry, uint32_t, CGObject_C, "m_obj", CGObjectData, "m_entryID", 0)
-WXL_BINDING_FIELD_VIA(object_scale, float, CGObject_C, "m_obj", CGObjectData, "m_scale", 0.0f)
+WXL_BINDING_FIELD_VIA(object_guid, uint64_t, CGObject_C, m_obj, CGObjectData, m_guid, 0)
+WXL_BINDING_FIELD_VIA(object_entry, uint32_t, CGObject_C, m_obj, CGObjectData, m_entryID, 0)
+WXL_BINDING_FIELD_VIA(object_scale, float, CGObject_C, m_obj, CGObjectData, m_scale, 0.0f)
 
 // The client's OBJECT_TYPE_ID of the object, which wxl_object_type numbers identically.
-WXL_BINDING_FIELD(object_type_id, uint32_t, CGObject_C, "m_typeId", 0)
+WXL_BINDING_FIELD(object_type_id, uint32_t, CGObject_C, m_typeId, 0)
 
 // The virtuals every kind overrides. On x64 the client calls them; on x86 the runtime calls the
 // kind's own function (CGUnit_C::GetPosition, CGGameObject_C::GetPosition, ...) at its resolved

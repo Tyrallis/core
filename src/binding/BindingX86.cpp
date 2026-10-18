@@ -179,38 +179,38 @@ namespace wxl::core::binding
 
 #define WXL_BINDING(name, ret, params, args, absent)
 
-#define WXL_BINDING_FIELD(name, ret, Type, member, absent)                                      \
+#define WXL_BINDING_FIELD(name, ret, Type, member, absent)                                       \
     ret name(const void* object)                                                                 \
     {                                                                                            \
-        return object && IsClient() ? Read<ret>(object, WXL_FIELD(#Type, member)) : (absent);    \
+        return object && IsClient() ? Read<ret>(object, WXL_FIELD(#Type, #member)) : (absent);   \
     }
 
-#define WXL_BINDING_FIELD_VIA(name, ret, Type, via, ViaType, member, absent)                    \
+#define WXL_BINDING_FIELD_VIA(name, ret, Type, via, ViaType, member, absent)                     \
     ret name(const void* object)                                                                 \
     {                                                                                            \
-        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, via)) : nullptr;           \
-        return block ? Read<ret>(block, WXL_FIELD(#ViaType, member)) : (absent);                 \
+        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, #via)) : nullptr;          \
+        return block ? Read<ret>(block, WXL_FIELD(#ViaType, #member)) : (absent);                \
     }
 
-#define WXL_BINDING_FIELD_VIA_INDEX(name, ret, Type, via, ViaType, member)                      \
+#define WXL_BINDING_FIELD_VIA_INDEX(name, ret, Type, via, ViaType, member)                       \
     wxl_bool name(const void* object, uint32_t index, ret* out)                                  \
     {                                                                                            \
-        constexpr std::size_t count = WXL_MEMBER_SIZE(#ViaType, member) / sizeof(ret);           \
-        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, via)) : nullptr;           \
+        constexpr std::size_t count = WXL_MEMBER_SIZE(#ViaType, #member) / sizeof(ret);          \
+        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, #via)) : nullptr;          \
         if (!block || !out || index >= count) return WXL_FALSE;                                  \
-        *out = Read<ret>(block, WXL_FIELD(#ViaType, member) + index * sizeof(ret));              \
+        *out = Read<ret>(block, WXL_FIELD(#ViaType, #member) + index * sizeof(ret));             \
         return WXL_TRUE;                                                                         \
     }
 
-#define WXL_BINDING_FIELD_VIA_AT(name, ret, Type, via, ViaType, member, Elem, elem_member)      \
+#define WXL_BINDING_FIELD_VIA_AT(name, ret, Type, via, ViaType, member, Elem, elem_member)       \
     wxl_bool name(const void* object, uint32_t index, ret* out)                                  \
     {                                                                                            \
         constexpr std::size_t stride = WXL_TYPE_SIZE(#Elem);                                     \
-        constexpr std::size_t count  = WXL_MEMBER_SIZE(#ViaType, member) / stride;               \
-        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, via)) : nullptr;           \
+        constexpr std::size_t count  = WXL_MEMBER_SIZE(#ViaType, #member) / stride;              \
+        const void* block = IsClient() ? Via(object, WXL_FIELD(#Type, #via)) : nullptr;          \
         if (!block || !out || index >= count) return WXL_FALSE;                                  \
-        *out = Read<ret>(block, WXL_FIELD(#ViaType, member) + index * stride +                   \
-                                     WXL_FIELD(#Elem, elem_member));                             \
+        *out = Read<ret>(block, WXL_FIELD(#ViaType, #member) + index * stride +                  \
+                                     WXL_FIELD(#Elem, #elem_member));                            \
         return WXL_TRUE;                                                                         \
     }
 

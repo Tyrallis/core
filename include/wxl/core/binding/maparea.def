@@ -22,5 +22,5 @@
 #endif
 
 // The tile's index in the map's 64x64 grid: CMapArea::m_index, which CMap::LoadArea writes.
-WXL_BINDING_FIELD(map_area_tile_x, int32_t, CMapArea, "m_index.x", -1)
-WXL_BINDING_FIELD(map_area_tile_y, int32_t, CMapArea, "m_index.y", -1)
+WXL_BINDING_FIELD(map_area_tile_x, int32_t, CMapArea, m_index.x, -1)
+WXL_BINDING_FIELD(map_area_tile_y, int32_t, CMapArea, m_index.y, -1)

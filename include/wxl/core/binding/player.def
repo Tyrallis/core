@@ -21,14 +21,14 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including player.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(player_flags, uint32_t, CGPlayer_C, "m_player", CGPlayerData, "m_playerFlags", 0)
-WXL_BINDING_FIELD_VIA(player_guild_id, uint32_t, CGPlayer_C, "m_player", CGPlayerData, "m_playerGuildid", 0)
-WXL_BINDING_FIELD_VIA(player_guild_rank, uint32_t, CGPlayer_C, "m_player", CGPlayerData, "m_playerGuildrank", 0)
-WXL_BINDING_FIELD_VIA(player_chosen_title, uint32_t, CGPlayer_C, "m_player", CGPlayerData, "m_playerChosenTitle", 0)
+WXL_BINDING_FIELD_VIA(player_flags, uint32_t, CGPlayer_C, m_player, CGPlayerData, m_playerFlags, 0)
+WXL_BINDING_FIELD_VIA(player_guild_id, uint32_t, CGPlayer_C, m_player, CGPlayerData, m_playerGuildid, 0)
+WXL_BINDING_FIELD_VIA(player_guild_rank, uint32_t, CGPlayer_C, m_player, CGPlayerData, m_playerGuildrank, 0)
+WXL_BINDING_FIELD_VIA(player_chosen_title, uint32_t, CGPlayer_C, m_player, CGPlayerData, m_playerChosenTitle, 0)
 
 // The item id a visible equipment slot shows (PLAYER_VISIBLE_ITEM_n_ENTRYID), signed as the
 // client keeps it: the sign is a display flag, abs() is the id, 0 an empty slot.
-WXL_BINDING_FIELD_VIA_AT(player_visible_item_id, int32_t, CGPlayer_C, "m_player", CGPlayerData, "m_playerVisibleItems", VisibleItem_C, "m_itemId")
+WXL_BINDING_FIELD_VIA_AT(player_visible_item_id, int32_t, CGPlayer_C, m_player, CGPlayerData, m_playerVisibleItems, VisibleItem_C, m_itemId)
 
 // The same field of a VisibleItem_C the client hands a seam by pointer.
-WXL_BINDING_FIELD(visible_item_id, int32_t, VisibleItem_C, "m_itemId", 0)
+WXL_BINDING_FIELD(visible_item_id, int32_t, VisibleItem_C, m_itemId, 0)

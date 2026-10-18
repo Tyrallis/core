@@ -1,57 +1,41 @@
-// The client binding: every fact the runtime reads out of the client, one row per fact.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
 //
-// A row is realised three times from this one table:
-//   - as a member of wxl_core_init (wxl/core/init.h): the accessor the recompiled client hands
-//     over at WarcraftXLInit, in table order, appended and never reordered;
-//   - as wxl::core::binding::<name>, the function the seam bodies and wxl.object call, which on
-//     x64 forwards to that accessor (src/binding/BindingTable.cpp) and on x86 reads the client's
-//     memory at an offset of layouts.def (src/binding/BindingX86.cpp);
-//   - on the client's side, as the function the fork assigns to the accessor
-//     (client/WarcraftXL/Binding.cpp), which the fork's own compiler checks against the member.
+// The client binding: every fact the runtime reads out of the client, one row per fact, one
+// domain per file under binding/. ARCHITECTURE.md lists what a row generates and where.
 //
-// Row shapes. `name` is the accessor's name on every side. `ret` is the C type answered.
-// `absent` is what the function answers when the client handed no accessor (x64) or the
-// executable is not the client (x86).
+// `name` is the fact's name on every side, `ret` the C type answered, `absent` what is answered
+// when the client handed no accessor (x64) or the executable is not the client (x86).
 //
 //   WXL_BINDING(name, ret, params, args, absent)
 //       a fact read by a call: params is the parenthesised parameter list, args the same names
-//       in parentheses, as the x64 forwarder passes them. The x86 body is written by hand in
-//       BindingX86.cpp; a row without one fails to link.
+//       in parentheses. Written by hand on each side, in BindingX86.cpp and in the fork's
+//       WarcraftXL/Binding.cpp; a side without it fails to link.
 //
 //   WXL_BINDING_FIELD(name, ret, Type, member, absent)
-//       ret name(const void* object): the member of the object, read at
-//       WXL_FIELD(#Type, member) on x86. Type is the id of a layouts.def type, member its
-//       designator as a string.
+//       ret name(const void* object): the object's member.
 //
 //   WXL_BINDING_FIELD_VIA(name, ret, Type, via, ViaType, member, absent)
-//       ret name(const void* object): the object's `via` member is a pointer to a ViaType block
-//       (a descriptor), and the fact is that block's `member`. Absent when the pointer is null.
+//       the member of the ViaType block the object's `via` points at; absent when it is null.
 //
 //   WXL_BINDING_FIELD_VIA_INDEX(name, ret, Type, via, ViaType, member)
-//       wxl_bool name(const void* object, uint32_t index, ret* out): element `index` of the
-//       array `member` of ret, bounded by sizeof(member) as layouts.def measured it. False past
-//       the bound; the value goes to *out.
+//       wxl_bool name(const void* object, uint32_t index, ret* out): element `index` of that
+//       block's array `member`; false past its end.
 //
 //   WXL_BINDING_FIELD_VIA_AT(name, ret, Type, via, ViaType, member, Elem, elem_member)
-//       the same for an array of Elem structs, reading each element's `elem_member`.
+//       the same for an array of Elem, reading each element's `elem_member`.
 //
-// A consumer defines WXL_BINDING and, when it realises field reads differently, the field
-// shapes; the ones it leaves undefined collapse onto WXL_BINDING with the signatures above.
-// One domain per file under binding/, in the order below; a new fact is one row there.
-// Copyright (C) 2026 WarcraftXL
+// Type, ViaType and Elem are classes of the client, by the names its source and layouts.def give
+// them; via, member and elem_member are their members as the source writes them. A field row is
+// generated on both sides: on x86 as a read at the offsets layouts.def measured, in the fork as
+// the member access itself.
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// The rows, in this order, are the members of wxl_core_init. The client hands its own rows over
+// at init and the runtime refuses a client built from a different table, naming the first row
+// that differs, so a row goes wherever it belongs in its domain file.
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// A consumer defines WXL_BINDING and, when it realises field rows differently, the field shapes;
+// those left undefined collapse onto WXL_BINDING with the signatures above.
 
 #ifndef WXL_BINDING
 #error "define WXL_BINDING(name, ret, params, args, absent) before including binding.def"

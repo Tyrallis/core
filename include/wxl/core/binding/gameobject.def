@@ -21,14 +21,14 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including gameobject.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(gameobject_created_by, uint64_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_createdBy", 0)
-WXL_BINDING_FIELD_VIA(gameobject_display_id, uint32_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_displayID", 0)
-WXL_BINDING_FIELD_VIA(gameobject_flags, uint32_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_flags", 0)
-WXL_BINDING_FIELD_VIA(gameobject_dynamic_flags, uint16_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_dynamicFlags", 0)
-WXL_BINDING_FIELD_VIA(gameobject_faction, uint32_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_faction", 0)
-WXL_BINDING_FIELD_VIA(gameobject_level, uint32_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_level", 0)
+WXL_BINDING_FIELD_VIA(gameobject_created_by, uint64_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_createdBy, 0)
+WXL_BINDING_FIELD_VIA(gameobject_display_id, uint32_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_displayID, 0)
+WXL_BINDING_FIELD_VIA(gameobject_flags, uint32_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_flags, 0)
+WXL_BINDING_FIELD_VIA(gameobject_dynamic_flags, uint16_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_dynamicFlags, 0)
+WXL_BINDING_FIELD_VIA(gameobject_faction, uint32_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_faction, 0)
+WXL_BINDING_FIELD_VIA(gameobject_level, uint32_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_level, 0)
 
 // The four bytes of GAMEOBJECT_BYTES_1, as the client declares them.
-WXL_BINDING_FIELD_VIA(gameobject_state, int8_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_state", 0)
-WXL_BINDING_FIELD_VIA(gameobject_type_id, int8_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_typeID", 0)
-WXL_BINDING_FIELD_VIA(gameobject_art_kit, int8_t, CGGameObject_C, "m_gameObject", CGGameObjectData, "m_artKit", 0)
+WXL_BINDING_FIELD_VIA(gameobject_state, int8_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_state, 0)
+WXL_BINDING_FIELD_VIA(gameobject_type_id, int8_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_typeID, 0)
+WXL_BINDING_FIELD_VIA(gameobject_art_kit, int8_t, CGGameObject_C, m_gameObject, CGGameObjectData, m_artKit, 0)

@@ -21,7 +21,7 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including container.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(container_num_slots, uint32_t, CGContainer_C, "m_container", CGContainerData, "m_containerFieldNumSlots", 0)
+WXL_BINDING_FIELD_VIA(container_num_slots, uint32_t, CGContainer_C, m_container, CGContainerData, m_containerFieldNumSlots, 0)
 
 // The guid in a slot; the array is the client's 36 slots, the bag's own count is above.
-WXL_BINDING_FIELD_VIA_INDEX(container_slot, uint64_t, CGContainer_C, "m_container", CGContainerData, "m_containerFieldSlot1")
+WXL_BINDING_FIELD_VIA_INDEX(container_slot, uint64_t, CGContainer_C, m_container, CGContainerData, m_containerFieldSlot1)

@@ -117,8 +117,8 @@ endfunction()
 
 # --- WarcraftXL.dll --------------------------------------------------------------------------------
 # What both architectures share: the log, the start-up, the mod host behind it, the bodies of
-# the seams (one file per domain of include/wxl/seams/), the leaf reads of wxl.object (one
-# file per kind of object under src/objects/) and wxl.script, which reaches the client's Lua
+# the seams (one file per domain of include/wxl/seams/), the leaf reads of wxl.object
+# (src/objects/) and wxl.script, which reaches the client's Lua
 # through the binding like everything else. Each architecture adds its entry point, its
 # attachment to the client and its realisation of the client binding below: memory reads at
 # measured offsets on x86 (BindingX86.cpp), the accessors the client handed over on x64
