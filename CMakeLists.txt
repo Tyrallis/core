@@ -123,6 +123,12 @@ add_library(wxl-core SHARED
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
+# Whole-program optimisation in the shipped build only. The runtime is spread thin on purpose --
+# the binding, the log gate, the stage check and Core::Host() are one-line functions in their own
+# translation units, called from the hottest paths there are -- so without this the linker cannot
+# see through any of them. Release only: it costs link time and makes a debug build harder to
+# follow, and neither matters to what ships.
+set_property(TARGET wxl-core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 target_include_directories(wxl-core PRIVATE src include)
 target_link_libraries(wxl-core PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core PRIVATE
@@ -144,6 +150,8 @@ add_executable(wxl-core-seam-harness
     src/services/StorageService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
+# The same build as the DLL, so --bench measures what ships rather than something near it.
+set_property(TARGET wxl-core-seam-harness PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 target_include_directories(wxl-core-seam-harness PRIVATE src include)
 target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)

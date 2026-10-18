@@ -23,6 +23,8 @@
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
+#include <chrono>
+
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
@@ -1631,7 +1633,71 @@ namespace
 #endif
 }
 
-int main()
+
+// --- A measurement, not a check ---------------------------------------------------------------
+// Two paths carry work at a rate nothing else here does: the file-open gate, which the client
+// reaches once per file it opens, and the event bus, which every seam goes through. These are
+// not frame times -- there is no client and no archive behind them -- but they are the real code
+// on the real path, so a change to either shows up here before anyone notices it in game.
+
+void WXL_CALL BenchHandler(void*, const void*) {}
+
+void Bench()
+{
+    using Clock = std::chrono::steady_clock;
+
+    const char* texture = "World\\Expansion01\\Doodads\\Generic\\BloodElf\\Banner01.blp";
+    const char* table   = "DBFilesClient\\Spell.dbc";
+    char        out[512];
+
+    auto time = [](const char* what, int runs, auto&& body) {
+        body();                                 // once, so nothing measured is a cold page
+        const Clock::time_point start = Clock::now();
+        for (int i = 0; i < runs; ++i) body();
+        const double ns =
+            std::chrono::duration<double, std::nano>(Clock::now() - start).count() / runs;
+        printf("  %-46s %8.1f ns/call\n", what, ns);
+    };
+
+    printf("\nbench (%s):\n", sizeof(void*) == 8 ? "x64" : "x86");
+
+    wxl::core::services::data::Clear();
+    time("file-open gate, a path that is not a database", 200000, [&] {
+        wxl::core::services::data::ServedPath(texture, strlen(texture), out, sizeof out);
+    });
+    time("file-open gate, a database nobody serves", 200000, [&] {
+        wxl::core::services::data::ServedPath(table, strlen(table), out, sizeof out);
+    });
+
+    // What the gate used to do to that same texture path before it knew it did not care: find
+    // the last separator, reserve, and lowercase the basename into a std::string. Measured here
+    // so the suffix-first change is a number rather than a claim.
+    time("the lowercased basename the suffix test now skips", 200000, [&] {
+        size_t start = 0;
+        const size_t size = strlen(texture);
+        for (size_t i = 0; i < size; ++i)
+            if (texture[i] == '\\' || texture[i] == '/') start = i + 1;
+        std::string key;
+        key.reserve(size - start);
+        for (size_t i = start; i < size; ++i)
+            key.push_back(texture[i] >= 'A' && texture[i] <= 'Z'
+                              ? static_cast<char>(texture[i] - 'A' + 'a')
+                              : texture[i]);
+        if (key.empty()) printf("unreachable");
+    });
+
+    wxl_update_args args{};
+    args.delta = 0.016f;
+    time("event bus, no subscriber", 200000, [&] { g_host->Raise(WXL_EV_Update, &args); });
+
+    const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
+    time("event bus, one subscriber", 200000, [&] { g_host->Raise(WXL_EV_Update, &args); });
+    g_host->Events().Unsubscribe(sub);
+
+    wxl::core::services::data::Clear();
+}
+
+int main(int argc, char** argv)
 {
     wxl::core::binding::Bind(FakeInit());
 
@@ -1672,6 +1738,9 @@ int main()
 #endif
 
     printf("\n%d failure(s)\n", g_failures);
+    for (int i = 1; i < argc; ++i)
+        if (strcmp(argv[i], "--bench") == 0) Bench();
+
     g_host.reset();
     return g_failures ? 1 : 0;
 }
