@@ -42,10 +42,15 @@ namespace
 
 namespace wxl::core::image
 {
-    bool IsClient()
+    namespace detail
     {
-        const IMAGE_NT_HEADERS32* nt = NtHeaders();
-        return nt && nt->FileHeader.TimeDateStamp == kClientTimeStamp;
+        std::atomic<signed char> g_isClient{-1};
+
+        bool ReadIsClient()
+        {
+            const IMAGE_NT_HEADERS32* nt = NtHeaders();
+            return nt && nt->FileHeader.TimeDateStamp == kClientTimeStamp;
+        }
     }
 
     uint32_t Build() { return IsClient() ? kBuild : 0; }
