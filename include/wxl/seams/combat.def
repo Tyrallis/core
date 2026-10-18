@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
+// The Combat domain: seams on what the server reports of fights -- the handler of the melee
+// messages in UnitCombat_C.cpp, and the CombatLog statics of UnitCombatLog_C.cpp that every
+// spell log goes through, whether it came as a message of its own or inside
+// SMSG_COMBAT_LOG_MULTIPLE.
+//
+// The handler is reached only through the handler table, with the four arguments every
+// handler takes on the stack; the statics are class members with external linkage, each with
+// two callers (the message's own handler and the multiple-log handler), their two arguments
+// on the stack. Both keep the declared convention, cdecl; the check of each row against the
+// binary is pending. Every body reads the message from its cursor, without moving it, and
+// raises nothing for a message cut short.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including combat.def"
+#endif
+
+// The handler of SMSG_ATTACKSTART (full guids), SMSG_ATTACKSTOP and SMSG_COMBAT_EVENT_FAILED
+// (packed guids and a facing flag), SMSG_ATTACKERSTATEUPDATE (a melee round), and
+// SMSG_ENVIRONMENTALDAMAGELOG (a full guid, the cause and the amounts), among the swing errors
+// and the target clear. Before raises CombatAttackStart or CombatAttackStop, CombatDamage or
+// CombatMiss for a round by whether it landed, and CombatDamage for the environment.
+WXL_SEAM_BEFORE(Combat, Packet_Group_29, "Packet_Group_29", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Combat, Packet_Group_29, CombatAttackStart)
+WXL_SEAM_RAISES(Combat, Packet_Group_29, CombatAttackStop)
+WXL_SEAM_RAISES(Combat, Packet_Group_29, CombatDamage)
+WXL_SEAM_RAISES(Combat, Packet_Group_29, CombatMiss)
+
+// SMSG_SPELLLOGMISS: the spell id, the caster as a full guid, a debug flag, then a count of
+// targets, each a full guid and a miss reason, with two floats after it when the flag is set.
+// Before raises CombatMiss once per target.
+WXL_SEAM_BEFORE(Combat, HandleSpellLogMiss, "CombatLog::HandleSpellLogMiss", int32_t, cdecl, (void* msg, int32_t time_offset))
+WXL_SEAM_RAISES(Combat, HandleSpellLogMiss, CombatMiss)
+
+// SMSG_SPELLNONMELEEDAMAGELOG: the target and the caster as packed guids, the spell id, the
+// damage, the overkill, the school, the absorbed and resisted amounts, a periodic flag, a
+// spare byte, the blocked amount and the hit flags. Before raises CombatDamage.
+WXL_SEAM_BEFORE(Combat, HandleSpellNonMeleeDamageLog, "CombatLog::HandleSpellNonMeleeDamageLog", int32_t, cdecl, (void* msg, int32_t time_offset))
+WXL_SEAM_RAISES(Combat, HandleSpellNonMeleeDamageLog, CombatDamage)
+
+// SMSG_SPELLHEALLOG: the target and the caster as packed guids, the spell id, the amount, the
+// overheal, the absorbed amount and a crit flag. Before raises CombatHeal.
+WXL_SEAM_BEFORE(Combat, HandleSpellHealLog, "CombatLog::HandleSpellHealLog", int32_t, cdecl, (void* msg, int32_t time_offset))
+WXL_SEAM_RAISES(Combat, HandleSpellHealLog, CombatHeal)
+
+// SMSG_PERIODICAURALOG: the target and the caster as packed guids, the spell id, then a count
+// of entries each led by its aura type: damage (3, 89), heal (8, 20), energize (21, 24) or
+// drain (64); the client stops at any other. Before raises CombatDamage or CombatHeal per
+// damage or heal entry, in order, up to where the client would stop.
+WXL_SEAM_BEFORE(Combat, HandlePeriodicAuraLog, "CombatLog::HandlePeriodicAuraLog", int32_t, cdecl, (void* msg, int32_t time_offset))
+WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatDamage)
+WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatHeal)

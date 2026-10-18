@@ -12,7 +12,7 @@
 // Rows are sorted by id, then TYPE, then FIELD by offset and member, then SIZE by member, so the
 // file diffs cleanly after an upstream pull.
 //
-// 122 types, 750 field offsets, 7 member sizes.
+// 122 types, 752 field offsets, 7 member sizes.
 WXL_LAYOUT_TYPE(C3Vector, "C3Vector", 0xC, "Engine/Source/Tempest/C3Vector.h", 11)
 WXL_LAYOUT_TYPE(C44Matrix, "C44Matrix", 0x40, "Engine/Source/Tempest/C44Matrix.h", 13)
 WXL_LAYOUT_TYPE(CACHEENTRY, "CACHEENTRY", 0xB4, "WoW/Common/TextureCache.h", 13)
@@ -154,6 +154,8 @@ WXL_LAYOUT_FIELD(CGUnit_C, "m_unit", 0xD0, "WoW/Source/Object/ObjectClient/Unit_
 WXL_LAYOUT_FIELD(CGUnit_C, "m_movement", 0xD8, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_FIELD(CGUnit_C, "m_movementData.m_position", 0x798, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_FIELD(CGUnit_C, "m_movementData.m_facing", 0x7A8, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
+WXL_LAYOUT_FIELD(CGUnit_C, "m_castingSpellId", 0xA6C, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
+WXL_LAYOUT_FIELD(CGUnit_C, "m_channelSpellId", 0xA80, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_FIELD(CGUnit_C, "m_characterComponent", 0xB4C, "WoW/Source/Object/ObjectClient/Unit_C.h", 141)
 WXL_LAYOUT_TYPE(CGWorldFrame, "CGWorldFrame", 0x7E28, "WoW/Source/Ui/WorldFrame.h", 106)
 WXL_LAYOUT_FIELD(CGWorldFrame, "m_simpleTop", 0xA0, "WoW/Source/Ui/WorldFrame.h", 106)

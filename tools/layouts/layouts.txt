@@ -737,6 +737,8 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   m_unit                                  -                                            # CGUnit base: the unit descriptor block
   m_movement                              -                                            # CGUnit base: the movement block GetPosition reads
   m_movementData.m_facing                 -                                            # wxl.object: the raw facing when the unit is read by field
+  m_castingSpellId                        -                                            # binding unit_casting_spell_id: the cast in progress
+  m_channelSpellId                        -                                            # binding unit_channel_spell_id: the channel in progress
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData

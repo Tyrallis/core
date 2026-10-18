@@ -60,3 +60,64 @@ WXL_SEAM_RAISES(Spell, SpellFailed, SpellCastFailed)
 // what the client answers for a spell it cannot cast.
 WXL_SEAM_GATE(Spell, CastSpell, "Spell_C_CastSpell", uint8_t, cdecl, (void* caster, int32_t spell_id, const void* item, uint64_t target, void* cast, uint8_t confirmed))
 WXL_SEAM_RAISES(Spell, CastSpell, SpellCastRequest)
+
+// The rows below are packet handlers reached only through the handler table, with the four
+// arguments every handler takes on the stack (cdecl, as the handlers above), and one free
+// function with external linkage. Their conventions are fixed by that linkage; the check of
+// each against the binary is pending.
+
+// The handler of MSG_CHANNEL_START: the caster as a packed guid, the spell id and the
+// channel's length. Shows the channel on the unit and signals the interface, for a spell the
+// client shows on that caster. Before reads the message from its cursor and raises
+// SpellChannelStart, for a length above zero, which is all the client acts on.
+WXL_SEAM_BEFORE(Spell, Packet_MSG_CHANNEL_START, "Packet_MSG_CHANNEL_START", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_MSG_CHANNEL_START, SpellChannelStart)
+
+// The handler of MSG_CHANNEL_UPDATE: the caster as a packed guid and the time left, zero
+// when the channel ended. Updates or clears the unit's channel and signals the interface.
+// Before reads the message from its cursor and raises SpellChannelUpdate, or SpellChannelStop
+// when no time is left, with the channel's spell as the client holds it on the unit.
+WXL_SEAM_BEFORE(Spell, Packet_MSG_CHANNEL_UPDATE, "Packet_MSG_CHANNEL_UPDATE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_MSG_CHANNEL_UPDATE, SpellChannelUpdate)
+WXL_SEAM_RAISES(Spell, Packet_MSG_CHANNEL_UPDATE, SpellChannelStop)
+
+// The handler of SMSG_UNIT_SPELLCAST_START (0x14D): the caster and the target as packed
+// guids, the spell id, the time left and the full length, for a cast already running when
+// its caster came into view. Shows it on the unit as a cast or a channel by the spell's
+// attributes. Before raises SpellCastResume.
+WXL_SEAM_BEFORE(Spell, Packet_SMSG_UNIT_SPELLCAST_START, "Packet_SMSG_UNIT_SPELLCAST_START", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_SMSG_UNIT_SPELLCAST_START, SpellCastResume)
+
+// The handler of SMSG_SPELL_DELAYED: the caster as a packed guid and the delay. Pushes the
+// unit's cast back and signals the interface. Before raises SpellCastDelayed with the cast
+// the client holds on the unit.
+WXL_SEAM_BEFORE(Spell, Packet_SMSG_SPELL_DELAYED, "Packet_SMSG_SPELL_DELAYED", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_SMSG_SPELL_DELAYED, SpellCastDelayed)
+
+// The handler of SMSG_SPELL_COOLDOWN: the unit as a full guid, a flag byte, then a spell id
+// and a duration per spell to the end of the message. Records each in the player's or the
+// pet's history, and ignores any other unit. Before raises SpellCooldown once per spell, for
+// whichever unit the server named.
+WXL_SEAM_BEFORE(Spell, Packet_SMSG_SPELL_COOLDOWN, "Packet_SMSG_SPELL_COOLDOWN", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_SMSG_SPELL_COOLDOWN, SpellCooldown)
+
+// The handler of SMSG_ITEM_COOLDOWN: the item as a full guid and the spell it casts. Records
+// a cooldown on the item. Before raises SpellCooldown with the item and no duration.
+WXL_SEAM_BEFORE(Spell, Packet_SMSG_ITEM_COOLDOWN, "Packet_SMSG_ITEM_COOLDOWN", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_SMSG_ITEM_COOLDOWN, SpellCooldown)
+
+// The handler of SMSG_COOLDOWN_EVENT, SMSG_CLEAR_COOLDOWN and SMSG_MODIFY_COOLDOWN, which
+// share a header: the spell id and the unit as a full guid, then the shift for a modify.
+// Releases, clears or shifts the cooldown in the history. Before raises SpellCooldownChanged
+// by the opcode.
+WXL_SEAM_BEFORE(Spell, Packet_Group_31, "Packet_Group_31", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Spell, Packet_Group_31, SpellCooldownChanged)
+
+// Cancels a pending cast of the local player's: tells the server when asked and the cast
+// could be in progress, fails the cast with the reason, and clears it. Every cancel reaches
+// it -- the escape key, moving, SpellStopCasting, a refused dialog, a cast the client drops
+// (11 callers). A free function with external linkage, its four arguments on the stack:
+// cdecl. Before raises SpellCastCancel with the cast's caster, spell and count, the reason,
+// and whether the server may be told.
+WXL_SEAM_BEFORE(Spell, CancelSpell, "Spell_C_CancelSpell", void, cdecl, (void* cast, uint8_t stop_recast, uint8_t notify_server, int32_t reason))
+WXL_SEAM_RAISES(Spell, CancelSpell, SpellCastCancel)

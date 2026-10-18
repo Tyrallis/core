@@ -6,7 +6,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.4-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.5-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -255,6 +255,18 @@ source. Everything else observes.
 | `Item.UseItem` (gated) | `CGItem_C::UseItem(const uint64_t* target, int32_t confirmed)` | `ItemUseRequest` at the gate; refusing it answers 0 and the item's spell is never asked for |
 | `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%` |
 | `FrameScript.HandleError` | `FrameScript_HandleError(lua_State* state)`, the error handler of every protected call | `ScriptError` before, with the error value as the VM left it |
+| `Spell.Packet_MSG_CHANNEL_START` | `Packet_MSG_CHANNEL_START(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelStart` before, for a channel of some length |
+| `Spell.Packet_MSG_CHANNEL_UPDATE` | `Packet_MSG_CHANNEL_UPDATE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelUpdate` before, or `SpellChannelStop` when no time is left, with the channel's spell as the client holds it on the unit |
+| `Spell.Packet_SMSG_UNIT_SPELLCAST_START` | `Packet_SMSG_UNIT_SPELLCAST_START(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of opcode 0x14D | `SpellCastResume` before: a cast already running when its caster came into view |
+| `Spell.Packet_SMSG_SPELL_DELAYED` | `Packet_SMSG_SPELL_DELAYED(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellCastDelayed` before, with the cast the client holds on the unit |
+| `Spell.Packet_SMSG_SPELL_COOLDOWN`, `Spell.Packet_SMSG_ITEM_COOLDOWN` | `Packet_SMSG_SPELL_COOLDOWN(...)`, `Packet_SMSG_ITEM_COOLDOWN(...)`, the four handler arguments | `SpellCooldown` before, once per spell of the message, or once for the item |
+| `Spell.Packet_Group_31` | `Packet_Group_31(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_COOLDOWN_EVENT`, `SMSG_CLEAR_COOLDOWN` and `SMSG_MODIFY_COOLDOWN` | `SpellCooldownChanged` before, by the opcode |
+| `Spell.CancelSpell` | `Spell_C_CancelSpell(PendingSpellCast* cast, bool stop_recast, bool notify_server, int32_t reason)`, where every cancel of the player's own cast ends | `SpellCastCancel` before, with the cast's caster, spell and count, the reason, and whether the server may be told |
+| `Combat.Packet_Group_29` | `Packet_Group_29(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_ATTACKSTART`, `SMSG_ATTACKSTOP`, `SMSG_ATTACKERSTATEUPDATE` and `SMSG_ENVIRONMENTALDAMAGELOG` | `CombatAttackStart`, `CombatAttackStop`, `CombatDamage` or `CombatMiss` before, by the opcode and whether the round landed |
+| `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)`, where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
+| `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` before |
+| `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` | `CombatHeal` before |
+| `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` or `CombatHeal` before, per damage or heal entry, up to where the client stops |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:

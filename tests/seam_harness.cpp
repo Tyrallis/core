@@ -75,6 +75,8 @@ namespace
         wxl_vec3 position{};
         uint32_t health = 0;
         int32_t  visibleItems[19]{};
+        uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
+        uint32_t channelSpellId = 0; ///< the channel it shows
     };
 
     /// A visible item as CGPlayer_C::UpdateInventoryComponent is handed one.
@@ -103,6 +105,8 @@ namespace
     uint32_t WXL_CALL FakeTypeId(const void* object) { return Obj(object)->typeId; }
     uint32_t WXL_CALL FakeEntry(const void* object) { return Obj(object)->entry; }
     uint32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
+    uint32_t WXL_CALL FakeCastingSpellId(const void* object) { return Obj(object)->castingSpellId; }
+    uint32_t WXL_CALL FakeChannelSpellId(const void* object) { return Obj(object)->channelSpellId; }
 
     wxl_bool WXL_CALL FakePosition(const void* object, wxl_vec3* out)
     {
@@ -466,6 +470,8 @@ namespace
         init.object_entry           = &FakeEntry;
         init.object_position        = &FakePosition;
         init.unit_health            = &FakeHealth;
+        init.unit_casting_spell_id  = &FakeCastingSpellId;
+        init.unit_channel_spell_id  = &FakeChannelSpellId;
         init.player_visible_item_id = &FakeVisibleItemId;
         init.visible_item_id        = &FakeVisibleItemIdOf;
         init.map_area_tile_x        = &FakeTileX;
@@ -1770,6 +1776,35 @@ namespace
     constexpr uint32_t kMsgSpellGo      = 0x132;
     constexpr uint32_t kMsgSpellFailure = 0x133;
 
+    /// The hit and miss lists of a SpellCastGo, copied out while the args were valid.
+    struct GoWatch
+    {
+        std::vector<uint8_t> hits;
+        std::vector<uint8_t> misses;
+        std::vector<uint8_t> reasons;
+    };
+
+    void WXL_CALL OnSpellGo(void* user, const void* args)
+    {
+        GoWatch&                   watch = *static_cast<GoWatch*>(user);
+        const wxl_spell_cast_args& cast  = *static_cast<const wxl_spell_cast_args*>(args);
+        const uint8_t* hits    = static_cast<const uint8_t*>(cast.hits);
+        const uint8_t* misses  = static_cast<const uint8_t*>(cast.misses);
+        const uint8_t* reasons = static_cast<const uint8_t*>(cast.miss_reasons);
+        watch.hits.assign(hits, hits + (hits ? cast.hits_size : 0));
+        watch.misses.assign(misses, misses + (misses ? cast.misses_size : 0));
+        watch.reasons.assign(reasons, reasons + (reasons ? cast.miss_count : 0));
+    }
+
+    /// Eight bytes as a little-endian guid.
+    uint64_t GuidAt(const std::vector<uint8_t>& bytes, size_t at)
+    {
+        uint64_t guid = 0;
+        if (bytes.size() < at + 8) return 0;
+        for (int i = 0; i < 8; ++i) guid |= static_cast<uint64_t>(bytes[at + i]) << (i * 8);
+        return guid;
+    }
+
     void CheckSpell()
     {
         FakeObject mage;
@@ -1803,17 +1838,24 @@ namespace
             Check(args.spell_id == 133 && args.cast_count == 7 && args.cast_flags == 0x2 &&
                       args.cast_time == 1500 && args.cast_item == 0,
                   "the spell, the count, the flags, the cast time, and no cast item");
-            Check(args.hit_count == 0 && args.miss_count == 0, "and no hits or misses on a start");
+            Check(args.hit_count == 0 && args.miss_count == 0 && args.hits == nullptr &&
+                      args.misses == nullptr && args.miss_reasons == nullptr,
+                  "and no hits or misses on a start");
         }
         Check(store.read == 0u, "reading the message left the store's cursor where it was");
 
-        // SMSG_SPELL_GO: the header, the server's time, one hit, one reflected miss, no target.
+        // SMSG_SPELL_GO: the header, the server's time, one hit, two misses, the first of them
+        // reflected, no target.
         Body go;
         go.Packed(0x4000000000000042ull).Packed(stranger).U8(2).U32(5176).U32(0x800).U32(9999)
-            .U8(1).U64(boar.guid).U8(1).U64(mage.guid).U8(11).U8(0).U32(0);
+            .U8(1).U64(boar.guid).U8(2).U64(mage.guid).U8(11).U8(0).U64(stranger).U8(3).U32(0);
         store = go.Store();
         g_received.clear();
+        GoWatch                watch;
+        const wxl_subscription goSub =
+            g_host->Events().Subscribe(WXL_EV_SpellCastGo, &OnSpellGo, &watch, 0);
         wxl::seam::Spell::Packet_Group_30::Before(nullptr, kMsgSpellGo, 0, &store);
+        g_host->Events().Unsubscribe(goSub);
         const Received* went = Only(WXL_EV_SpellCastGo);
         Check(went != nullptr && Count(WXL_EV_SpellCastStart) == 0,
               "Spell.Packet_Group_30 raises SpellCastGo once for SMSG_SPELL_GO");
@@ -1822,10 +1864,17 @@ namespace
             const wxl_spell_cast_args args = went->As<wxl_spell_cast_args>();
             Check(args.caster == WXL_HANDLE_NONE && args.caster_guid == stranger,
                   "a caster the client does not hold has no handle but keeps its guid");
-            Check(args.hit_count == 1 && args.miss_count == 1 && args.target_guid == 0 &&
+            Check(args.hit_count == 1 && args.miss_count == 2 && args.target_guid == 0 &&
                       args.target == WXL_HANDLE_NONE && args.cast_item == 0x4000000000000042ull,
                   "the hits and misses are counted past a reflect result, and no target is none");
             Check(args.spell_id == 5176 && args.cast_time == 0, "and a go carries no cast time");
+            Check(args.hits_size == 8 && watch.hits.size() == 8 && GuidAt(watch.hits, 0) == boar.guid,
+                  "the hits are handed over as the guids the server listed");
+            Check(args.misses_size == 16 && watch.misses.size() == 16 &&
+                      GuidAt(watch.misses, 0) == mage.guid && GuidAt(watch.misses, 8) == stranger,
+                  "the misses as the guids the server listed, the reflect result left out");
+            Check(watch.reasons.size() == 2 && watch.reasons[0] == 11 && watch.reasons[1] == 3,
+                  "and one reason per miss, in the same order");
         }
 
         // What raises nothing: another opcode, a message cut short.
@@ -1971,6 +2020,484 @@ namespace
         g_host->Events().Unsubscribe(use);
         wxl::seam::ObjectMgr::ObjDelete::Before(&player);
         wxl::seam::ObjectMgr::ObjDelete::Before(&potion);
+    }
+
+    // --- Spell, continued: channels, a resumed cast, a delay, cooldowns, a cancel ---------
+
+    constexpr uint32_t kMsgChannelStart   = 0x139;
+    constexpr uint32_t kMsgChannelUpdate  = 0x13A;
+    constexpr uint32_t kMsgResumeCastBar  = 0x14D;
+    constexpr uint32_t kMsgSpellDelayed   = 0x1E2;
+    constexpr uint32_t kMsgSpellCooldown  = 0x134;
+    constexpr uint32_t kMsgItemCooldown   = 0xB0;
+    constexpr uint32_t kMsgCooldownEvent  = 0x135;
+    constexpr uint32_t kMsgClearCooldown  = 0x1DE;
+    constexpr uint32_t kMsgModifyCooldown = 0x491;
+    constexpr uint32_t kMsgCooldownCheat  = 0x1E1;
+
+    void CheckSpellProgress()
+    {
+        FakeObject priest;
+        priest.guid           = 0x0000000000000ABCull;
+        priest.typeId         = WXL_OBJECT_PLAYER;
+        priest.castingSpellId = 585;
+        priest.channelSpellId = 15407;
+        FakeObject boar;
+        boar.guid   = 0xF130000000000123ull;
+        boar.typeId = WXL_OBJECT_UNIT;
+        wxl::seam::ObjectMgr::InitObject::After(&priest, nullptr, 5000u);
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 5001u);
+        const wxl_handle priestHandle = wxl::core::objects::HandleOf(&priest);
+        const wxl_handle boarHandle   = wxl::core::objects::HandleOf(&boar);
+        const uint64_t   stranger     = 0xF13000000000FFFFull;
+
+        // MSG_CHANNEL_START: the caster, the spell, the length.
+        Body start;
+        start.Packed(priest.guid).U32(15407).U32(3000);
+        FakeStore store = start.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_MSG_CHANNEL_START::Before(nullptr, kMsgChannelStart, 0, &store);
+        const Received* started = Only(WXL_EV_SpellChannelStart);
+        Check(started != nullptr, "Spell.Packet_MSG_CHANNEL_START raises SpellChannelStart once");
+        if (started)
+        {
+            const wxl_spell_progress_args args = started->As<wxl_spell_progress_args>();
+            Check(args.caster == priestHandle && args.caster_guid == priest.guid && args.spell_id == 15407,
+                  "with the caster and the spell");
+            Check(args.duration == 3000 && args.remaining == 3000 && args.target_guid == 0 &&
+                      args.target == WXL_HANDLE_NONE,
+                  "the length as both duration and remaining, and no target");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+        Body none;
+        none.Packed(priest.guid).U32(15407).U32(0);
+        store = none.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_MSG_CHANNEL_START::Before(nullptr, kMsgChannelStart, 0, &store);
+        Check(g_received.empty(), "a channel of no length raises nothing, as the client shows none");
+
+        // MSG_CHANNEL_UPDATE with time left: the spell is the one the unit holds.
+        Body update;
+        update.Packed(priest.guid).U32(1200);
+        store = update.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_MSG_CHANNEL_UPDATE::Before(nullptr, kMsgChannelUpdate, 0, &store);
+        const Received* updated = Only(WXL_EV_SpellChannelUpdate);
+        Check(updated != nullptr && Count(WXL_EV_SpellChannelStop) == 0,
+              "Spell.Packet_MSG_CHANNEL_UPDATE raises SpellChannelUpdate while time is left");
+        if (updated)
+        {
+            const wxl_spell_progress_args args = updated->As<wxl_spell_progress_args>();
+            Check(args.caster == priestHandle && args.spell_id == 15407 && args.remaining == 1200 &&
+                      args.duration == 0,
+                  "with the channel's spell read off the unit, the time left and no length");
+        }
+        Body stop;
+        stop.Packed(stranger).U32(0);
+        store = stop.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_MSG_CHANNEL_UPDATE::Before(nullptr, kMsgChannelUpdate, 0, &store);
+        const Received* stopped = Only(WXL_EV_SpellChannelStop);
+        Check(stopped != nullptr && Count(WXL_EV_SpellChannelUpdate) == 0,
+              "and SpellChannelStop when none is left");
+        if (stopped)
+        {
+            const wxl_spell_progress_args args = stopped->As<wxl_spell_progress_args>();
+            Check(args.caster == WXL_HANDLE_NONE && args.caster_guid == stranger && args.spell_id == 0,
+                  "a caster not in view keeps its guid and has no spell to read");
+        }
+
+        // SMSG_UNIT_SPELLCAST_START: the caster, the target, the spell, the time left, the length.
+        Body resume;
+        resume.Packed(priest.guid).Packed(boar.guid).U32(585).U32(900).U32(2500);
+        store = resume.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_UNIT_SPELLCAST_START::Before(nullptr, kMsgResumeCastBar, 0, &store);
+        const Received* resumed = Only(WXL_EV_SpellCastResume);
+        Check(resumed != nullptr, "Spell.Packet_SMSG_UNIT_SPELLCAST_START raises SpellCastResume once");
+        if (resumed)
+        {
+            const wxl_spell_progress_args args = resumed->As<wxl_spell_progress_args>();
+            Check(args.caster == priestHandle && args.target == boarHandle && args.target_guid == boar.guid &&
+                      args.spell_id == 585 && args.remaining == 900 && args.duration == 2500,
+                  "with the caster, the target, the spell, the time left and the length");
+        }
+
+        // SMSG_SPELL_DELAYED: the caster and the delay; the spell is the unit's cast.
+        Body delayed;
+        delayed.Packed(priest.guid).U32(500);
+        store = delayed.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_SPELL_DELAYED::Before(nullptr, kMsgSpellDelayed, 0, &store);
+        const Received* pushed = Only(WXL_EV_SpellCastDelayed);
+        Check(pushed != nullptr, "Spell.Packet_SMSG_SPELL_DELAYED raises SpellCastDelayed once");
+        if (pushed)
+        {
+            const wxl_spell_delay_args args = pushed->As<wxl_spell_delay_args>();
+            Check(args.caster == priestHandle && args.caster_guid == priest.guid && args.spell_id == 585 &&
+                      args.delay == 500,
+                  "with the caster, the cast read off the unit and the delay");
+        }
+        FakeStore cut{ delayed.bytes.data(), 3, 0 };
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_SPELL_DELAYED::Before(nullptr, kMsgSpellDelayed, 0, &cut);
+        Check(g_received.empty(), "a message cut short raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&priest);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    void CheckSpellCooldown()
+    {
+        FakeObject player;
+        player.guid   = 0x0000000000000ABCull;
+        player.typeId = WXL_OBJECT_PLAYER;
+        FakeObject potion;
+        potion.guid   = 0x4000000000000042ull;
+        potion.typeId = WXL_OBJECT_ITEM;
+        wxl::seam::ObjectMgr::InitObject::After(&player, nullptr, 6000u);
+        wxl::seam::ObjectMgr::InitObject::After(&potion, nullptr, 6001u);
+        const wxl_handle playerHandle = wxl::core::objects::HandleOf(&player);
+        const wxl_handle potionHandle = wxl::core::objects::HandleOf(&potion);
+
+        // SMSG_SPELL_COOLDOWN: the unit, the flags, two spells, and three bytes that are no pair.
+        Body cooldown;
+        cooldown.U64(player.guid).U8(1).U32(133).U32(8000).U32(116).U32(0).U8(7).U8(7).U8(7);
+        FakeStore store = cooldown.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_SPELL_COOLDOWN::Before(nullptr, kMsgSpellCooldown, 0, &store);
+        Check(Count(WXL_EV_SpellCooldown) == 2 && g_received.size() == 2,
+              "Spell.Packet_SMSG_SPELL_COOLDOWN raises SpellCooldown once per whole pair");
+        if (g_received.size() == 2)
+        {
+            const wxl_spell_cooldown_args first  = g_received[0].As<wxl_spell_cooldown_args>();
+            const wxl_spell_cooldown_args second = g_received[1].As<wxl_spell_cooldown_args>();
+            Check(first.unit == playerHandle && first.unit_guid == player.guid && first.spell_id == 133 &&
+                      first.duration == 8000 && first.flags == 1 && first.item == WXL_HANDLE_NONE &&
+                      first.item_guid == 0,
+                  "with the unit, the spell, the duration, the flags and no item");
+            Check(second.spell_id == 116 && second.duration == 0 && second.unit == playerHandle,
+                  "the second pair the same unit, with the spell's own recovery time");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        // SMSG_ITEM_COOLDOWN: the item and the spell it casts.
+        Body item;
+        item.U64(potion.guid).U32(2370);
+        store = item.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_SMSG_ITEM_COOLDOWN::Before(nullptr, kMsgItemCooldown, 0, &store);
+        const Received* onItem = Only(WXL_EV_SpellCooldown);
+        Check(onItem != nullptr, "Spell.Packet_SMSG_ITEM_COOLDOWN raises SpellCooldown once");
+        if (onItem)
+        {
+            const wxl_spell_cooldown_args args = onItem->As<wxl_spell_cooldown_args>();
+            Check(args.item == potionHandle && args.item_guid == potion.guid && args.spell_id == 2370 &&
+                      args.unit == WXL_HANDLE_NONE && args.unit_guid == 0 && args.duration == 0,
+                  "with the item, the spell, no unit and no duration");
+        }
+
+        // Packet_Group_31: the spell and the unit, then what the opcode says.
+        Body change;
+        change.U32(133).U64(player.guid);
+        const struct
+        {
+            uint32_t opcode;
+            uint32_t change;
+        } opcodes[] = { { kMsgCooldownEvent, 0 }, { kMsgClearCooldown, 1 } };
+        for (const auto& opcode : opcodes)
+        {
+            store = change.Store();
+            g_received.clear();
+            wxl::seam::Spell::Packet_Group_31::Before(nullptr, opcode.opcode, 0, &store);
+            const Received* changed = Only(WXL_EV_SpellCooldownChanged);
+            char            what[128];
+            snprintf(what, sizeof what, "Spell.Packet_Group_31 raises SpellCooldownChanged %u for opcode 0x%X",
+                     unsigned(opcode.change), unsigned(opcode.opcode));
+            const wxl_spell_cooldown_change_args args =
+                changed ? changed->As<wxl_spell_cooldown_change_args>() : wxl_spell_cooldown_change_args{};
+            Check(changed && args.change == opcode.change && args.delay == 0 && args.spell_id == 133 &&
+                      args.unit == playerHandle && args.unit_guid == player.guid,
+                  what);
+        }
+        Body modify;
+        modify.U32(133).U64(player.guid).U32(static_cast<uint32_t>(-1000));
+        store = modify.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_Group_31::Before(nullptr, kMsgModifyCooldown, 0, &store);
+        const Received* shifted = Only(WXL_EV_SpellCooldownChanged);
+        Check(shifted != nullptr && shifted->As<wxl_spell_cooldown_change_args>().change == 2 &&
+                  shifted->As<wxl_spell_cooldown_change_args>().delay == -1000,
+              "a modify carries change 2 and its shift, signed");
+        store = change.Store();
+        g_received.clear();
+        wxl::seam::Spell::Packet_Group_31::Before(nullptr, kMsgCooldownCheat, 0, &store);
+        Check(g_received.empty(), "an opcode the row does not serve raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&player);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&potion);
+    }
+
+    void CheckSpellCancel()
+    {
+        FakeObject mage;
+        mage.guid   = 0x0000000000000ABCull;
+        mage.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&mage, nullptr, 7000u);
+        const wxl_handle mageHandle = wxl::core::objects::HandleOf(&mage);
+
+        FakePendingCast pending;
+        pending.caster  = mage.guid;
+        pending.spellId = 133;
+        pending.count   = 4;
+        g_received.clear();
+        wxl::seam::Spell::CancelSpell::Before(&pending, 1, 1, 27);
+        const Received* cancelled = Only(WXL_EV_SpellCastCancel);
+        Check(cancelled != nullptr, "Spell.CancelSpell raises SpellCastCancel once");
+        if (cancelled)
+        {
+            const wxl_spell_cancel_args args = cancelled->As<wxl_spell_cancel_args>();
+            Check(args.caster == mageHandle && args.caster_guid == mage.guid && args.spell_id == 133 &&
+                      args.cast_count == 4 && args.reason == 27 && args.notify_server == WXL_TRUE,
+                  "with the cast's caster, spell and count, the reason, and that the server may be told");
+        }
+        g_received.clear();
+        wxl::seam::Spell::CancelSpell::Before(&pending, 0, 0, 40);
+        const Received* quiet = Only(WXL_EV_SpellCastCancel);
+        Check(quiet && quiet->As<wxl_spell_cancel_args>().notify_server == WXL_FALSE &&
+                  quiet->As<wxl_spell_cancel_args>().reason == 40,
+              "a cancel the server is not told of says so");
+        g_received.clear();
+        wxl::seam::Spell::CancelSpell::Before(nullptr, 1, 1, 27);
+        Check(g_received.empty(), "a null cast raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&mage);
+    }
+
+    // --- Combat: attacks, rounds, the environment, and the spell logs ----------------------
+
+    constexpr uint32_t kMsgAttackStart         = 0x143;
+    constexpr uint32_t kMsgAttackStop          = 0x144;
+    constexpr uint32_t kMsgAttackSwingNotInRange = 0x145;
+    constexpr uint32_t kMsgAttackerStateUpdate = 0x14A;
+    constexpr uint32_t kMsgEnvironmentalDamage = 0x1FC;
+
+    void CheckCombat()
+    {
+        FakeObject warrior;
+        warrior.guid   = 0x0000000000000ABCull;
+        warrior.typeId = WXL_OBJECT_PLAYER;
+        FakeObject boar;
+        boar.guid   = 0xF130000000000123ull;
+        boar.typeId = WXL_OBJECT_UNIT;
+        wxl::seam::ObjectMgr::InitObject::After(&warrior, nullptr, 8000u);
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 8001u);
+        const wxl_handle warriorHandle = wxl::core::objects::HandleOf(&warrior);
+        const wxl_handle boarHandle    = wxl::core::objects::HandleOf(&boar);
+        const uint64_t   stranger      = 0xF13000000000FFFFull;
+
+        // SMSG_ATTACKSTART: two full guids.
+        Body attack;
+        attack.U64(warrior.guid).U64(boar.guid);
+        FakeStore store = attack.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackStart, 0, &store);
+        const Received* began = Only(WXL_EV_CombatAttackStart);
+        Check(began != nullptr, "Combat.Packet_Group_29 raises CombatAttackStart for SMSG_ATTACKSTART");
+        if (began)
+        {
+            const wxl_combat_attack_args args = began->As<wxl_combat_attack_args>();
+            Check(args.attacker == warriorHandle && args.attacker_guid == warrior.guid &&
+                      args.victim == boarHandle && args.victim_guid == boar.guid,
+                  "with the attacker and the victim");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        // SMSG_ATTACKSTOP: packed guids and the facing flag.
+        Body stop;
+        stop.Packed(boar.guid).Packed(warrior.guid).U32(1);
+        store = stop.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackStop, 0, &store);
+        const Received* ended = Only(WXL_EV_CombatAttackStop);
+        Check(ended && ended->As<wxl_combat_attack_args>().attacker == boarHandle &&
+                  ended->As<wxl_combat_attack_args>().victim == warriorHandle,
+              "CombatAttackStop for SMSG_ATTACKSTOP, with the packed guids");
+
+        // SMSG_ATTACKERSTATEUPDATE that landed: a crit over two schools, absorbs per school, a block.
+        const uint32_t landedFlags = 0x200 | 0x20 | 0x2000;
+        Body           round;
+        round.U32(landedFlags).Packed(warrior.guid).Packed(boar.guid).U32(150).U32(0).U8(2)
+            .U32(1).U32(0).U32(100).U32(4).U32(0).U32(50).U32(10).U32(5)
+            .U8(1).U32(0).U32(0).U32(20);
+        store = round.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackerStateUpdate, 0, &store);
+        const Received* landed = Only(WXL_EV_CombatDamage);
+        Check(landed != nullptr && Count(WXL_EV_CombatMiss) == 0,
+              "a round that landed raises CombatDamage once and no CombatMiss");
+        if (landed)
+        {
+            const wxl_combat_damage_args args = landed->As<wxl_combat_damage_args>();
+            Check(args.source == warriorHandle && args.target == boarHandle && args.kind == 0 &&
+                      args.spell_id == 0 && args.amount == 150 && args.overkill == 0,
+                  "with the attacker, the victim, a plain swing and the total");
+            Check(args.school == 5 && args.absorbed == 15 && args.resisted == 0 && args.blocked == 20 &&
+                      args.crit == WXL_TRUE && args.hit_info == landedFlags,
+                  "the schools joined, the absorbs summed, the block, the crit and the flags");
+        }
+        Body dodged;
+        dodged.U32(0).Packed(warrior.guid).Packed(boar.guid).U32(0).U32(0).U8(1).U32(1).U32(0).U32(0)
+            .U8(2).U32(0).U32(845);
+        store = dodged.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackerStateUpdate, 0, &store);
+        const Received* escaped = Only(WXL_EV_CombatMiss);
+        Check(escaped != nullptr && Count(WXL_EV_CombatDamage) == 0,
+              "a round the victim dodged raises CombatMiss and no CombatDamage");
+        if (escaped)
+        {
+            const wxl_combat_miss_args args = escaped->As<wxl_combat_miss_args>();
+            Check(args.melee == WXL_TRUE && args.reason == 2 && args.spell_id == 845 && args.hit_info == 0 &&
+                      args.source == warriorHandle && args.target == boarHandle,
+                  "with the victim's state as the reason and the swing's spell");
+        }
+        Body missed;
+        missed.U32(0x10).Packed(warrior.guid).Packed(boar.guid).U32(0).U32(0).U8(0).U8(0).U32(0).U32(0);
+        store = missed.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackerStateUpdate, 0, &store);
+        const Received* plain = Only(WXL_EV_CombatMiss);
+        Check(plain && plain->As<wxl_combat_miss_args>().reason == 0 &&
+                  plain->As<wxl_combat_miss_args>().hit_info == 0x10,
+              "a plain miss carries no reason and the miss flag");
+
+        // SMSG_ENVIRONMENTALDAMAGELOG: a full guid, the cause, the amounts.
+        Body lava;
+        lava.U64(warrior.guid).U8(3).U32(400).U32(0).U32(0);
+        store = lava.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgEnvironmentalDamage, 0, &store);
+        const Received* burned = Only(WXL_EV_CombatDamage);
+        Check(burned != nullptr, "CombatDamage for SMSG_ENVIRONMENTALDAMAGELOG");
+        if (burned)
+        {
+            const wxl_combat_damage_args args = burned->As<wxl_combat_damage_args>();
+            Check(args.kind == 3 && args.environment == 3 && args.amount == 400 && args.school == 4 &&
+                      args.source == WXL_HANDLE_NONE && args.source_guid == 0 && args.target == warriorHandle,
+                  "with no source, the cause, the amount and the cause's school");
+        }
+        store = attack.Store();
+        g_received.clear();
+        wxl::seam::Combat::Packet_Group_29::Before(nullptr, kMsgAttackSwingNotInRange, 0, &store);
+        Check(g_received.empty(), "an opcode the row does not report raises nothing");
+
+        // SMSG_SPELLLOGMISS: two targets, one not in view.
+        Body missLog;
+        missLog.U32(116).U64(warrior.guid).U8(0).U32(2).U64(boar.guid).U8(3).U64(stranger).U8(7);
+        store = missLog.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellLogMiss::Before(&store, 0);
+        Check(Count(WXL_EV_CombatMiss) == 2 && g_received.size() == 2,
+              "Combat.HandleSpellLogMiss raises CombatMiss once per target");
+        if (g_received.size() == 2)
+        {
+            const wxl_combat_miss_args first  = g_received[0].As<wxl_combat_miss_args>();
+            const wxl_combat_miss_args second = g_received[1].As<wxl_combat_miss_args>();
+            Check(first.source == warriorHandle && first.target == boarHandle && first.spell_id == 116 &&
+                      first.reason == 3 && first.melee == WXL_FALSE && first.hit_info == 0,
+                  "with the caster, the target, the spell and the reason");
+            Check(second.target == WXL_HANDLE_NONE && second.target_guid == stranger && second.reason == 7,
+                  "a target not in view keeps its guid");
+        }
+        Body missDebug;
+        missDebug.U32(116).U64(warrior.guid).U8(1).U32(1).U64(boar.guid).U8(1).U32(0).U32(0);
+        store = missDebug.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellLogMiss::Before(&store, 0);
+        Check(Only(WXL_EV_CombatMiss) && Only(WXL_EV_CombatMiss)->As<wxl_combat_miss_args>().reason == 1,
+              "the debug floats after a target are skipped");
+        Body missCut;
+        missCut.U32(116).U64(warrior.guid).U8(0).U32(2).U64(boar.guid).U8(3);
+        store = missCut.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellLogMiss::Before(&store, 0);
+        Check(g_received.empty(), "a list cut short raises none of it");
+
+        // SMSG_SPELLNONMELEEDAMAGELOG: the target first, then the caster.
+        Body spell;
+        spell.Packed(boar.guid).Packed(warrior.guid).U32(116).U32(900).U32(100).U8(16).U32(50).U32(25)
+            .U8(0).U8(0).U32(0).U32(0x2).U8(0);
+        store = spell.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellNonMeleeDamageLog::Before(&store, 0);
+        const Received* hit = Only(WXL_EV_CombatDamage);
+        Check(hit != nullptr, "Combat.HandleSpellNonMeleeDamageLog raises CombatDamage once");
+        if (hit)
+        {
+            const wxl_combat_damage_args args = hit->As<wxl_combat_damage_args>();
+            Check(args.source == warriorHandle && args.target == boarHandle && args.kind == 1 &&
+                      args.spell_id == 116 && args.amount == 900 && args.overkill == 100,
+                  "with the caster, the target, the spell, the damage and the overkill");
+            Check(args.school == 16 && args.absorbed == 50 && args.resisted == 25 && args.blocked == 0 &&
+                      args.crit == WXL_TRUE && args.hit_info == 0x2,
+                  "the school, the amounts, the crit and the flags");
+        }
+
+        // SMSG_SPELLHEALLOG: the target first, then the caster.
+        Body heal;
+        heal.Packed(warrior.guid).Packed(boar.guid).U32(2061).U32(1200).U32(200).U32(0).U8(1).U8(0);
+        store = heal.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellHealLog::Before(&store, 0);
+        const Received* healed = Only(WXL_EV_CombatHeal);
+        Check(healed != nullptr, "Combat.HandleSpellHealLog raises CombatHeal once");
+        if (healed)
+        {
+            const wxl_combat_heal_args args = healed->As<wxl_combat_heal_args>();
+            Check(args.source == boarHandle && args.target == warriorHandle && args.spell_id == 2061 &&
+                      args.amount == 1200 && args.overheal == 200 && args.absorbed == 0 &&
+                      args.crit == WXL_TRUE && args.periodic == WXL_FALSE,
+                  "with the caster, the target, the spell, the amounts and the crit");
+        }
+
+        // SMSG_PERIODICAURALOG: a damage tick, an energize tick, a heal tick, then a type the
+        // client stops at.
+        Body ticks;
+        ticks.Packed(boar.guid).Packed(warrior.guid).U32(589).U32(4)
+            .U32(3).U32(80).U32(0).U32(32).U32(0).U32(10).U8(0)
+            .U32(21).U32(0).U32(30)
+            .U32(8).U32(60).U32(0).U32(0).U8(1)
+            .U32(77).U32(1);
+        store = ticks.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
+        Check(g_received.size() == 2 && g_received[0].event == WXL_EV_CombatDamage &&
+                  g_received[1].event == WXL_EV_CombatHeal,
+              "Combat.HandlePeriodicAuraLog raises the damage and heal ticks, in order, up to the stop");
+        if (g_received.size() == 2)
+        {
+            const wxl_combat_damage_args tick = g_received[0].As<wxl_combat_damage_args>();
+            const wxl_combat_heal_args   hot  = g_received[1].As<wxl_combat_heal_args>();
+            Check(tick.kind == 2 && tick.spell_id == 589 && tick.amount == 80 && tick.school == 32 &&
+                      tick.resisted == 10 && tick.crit == WXL_FALSE && tick.hit_info == 0 &&
+                      tick.source == warriorHandle && tick.target == boarHandle,
+                  "the damage tick with its amounts, the school and no flags");
+            Check(hot.periodic == WXL_TRUE && hot.amount == 60 && hot.crit == WXL_TRUE &&
+                      hot.spell_id == 589,
+                  "the heal tick as periodic, with its amount and crit");
+        }
+        Body tickCut;
+        tickCut.Packed(boar.guid).Packed(warrior.guid).U32(589).U32(2)
+            .U32(3).U32(80).U32(0).U32(32).U32(0).U32(10).U8(0)
+            .U32(3).U32(80);
+        store = tickCut.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
+        Check(g_received.empty(), "a tick cut short raises none of the log");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&warrior);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
     }
 
     // --- FrameScript: the UI events the client fires, and the errors its Lua raises --------
@@ -2467,6 +2994,10 @@ int main(int argc, char** argv)
     CheckRender();
     CheckSpell();
     CheckSpellRequest();
+    CheckSpellProgress();
+    CheckSpellCooldown();
+    CheckSpellCancel();
+    CheckCombat();
     CheckUiEvent();
     CheckScriptError();
 #if defined(_M_IX86)

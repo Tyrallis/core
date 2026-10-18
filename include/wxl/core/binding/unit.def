@@ -39,3 +39,8 @@ WXL_BINDING_FIELD_VIA(unit_summon, uint64_t, CGUnit_C, m_unit, CGUnitData, m_uni
 WXL_BINDING_FIELD_VIA(unit_charmed_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldCharmedby, 0)
 WXL_BINDING_FIELD_VIA(unit_summoned_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldSummonedby, 0)
 WXL_BINDING_FIELD_VIA(unit_created_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldCreatedby, 0)
+
+// The cast and the channel the client shows on the unit, by spell id; 0 for none. Read by the
+// Spell seams for the messages that name a unit without its spell (a delay, a channel update).
+WXL_BINDING_FIELD(unit_casting_spell_id, uint32_t, CGUnit_C, m_castingSpellId, 0)
+WXL_BINDING_FIELD(unit_channel_spell_id, uint32_t, CGUnit_C, m_channelSpellId, 0)
