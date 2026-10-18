@@ -19,6 +19,7 @@
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
+#include "services/DataService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -53,13 +54,25 @@ namespace wxl::seam::Storage::OpenFile
         // seam is for, the first call through it is what storage being up looks like.
         wxl::core::stages::Reach(WXL_STAGE_STORAGE);
 
+        if (!name || !*name) return false;
+
+        // A client database a mod serves is answered here, before anything is raised: the
+        // client reads each of its databases once, so this is the only moment that counts.
+        // Mods see the open as the path that was asked for, and may still redirect it again.
+        const std::size_t length = std::strlen(*name);
+        if (const char* served = wxl::core::services::data::ServedPath(*name, length))
+        {
+            *name = served;
+            return false;
+        }
+
         wxl::host::ModHost* host = wxl::core::Host();
-        if (!host || !name || !*name) return false;
+        if (!host) return false;
 
         g_redirect[0] = 0;
 
         wxl_file_open_args args{};
-        args.path              = wxl_str{*name, static_cast<uint32_t>(std::strlen(*name))};
+        args.path              = wxl_str{*name, static_cast<uint32_t>(length)};
         args.redirect          = g_redirect;
         args.redirect_capacity = static_cast<uint32_t>(sizeof g_redirect);
 

@@ -116,6 +116,7 @@ add_library(wxl-core SHARED
     src/runtime/Stages.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
+    src/services/DataService.cpp
     src/services/StorageService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
@@ -137,6 +138,7 @@ add_executable(wxl-core-seam-harness
     src/runtime/Stages.cpp
     src/binding/BindingTable.cpp
     src/services/ScriptService.cpp
+    src/services/DataService.cpp
     src/services/StorageService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})

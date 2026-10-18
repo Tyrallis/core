@@ -20,6 +20,7 @@
 
 #include "common/Log.hpp"
 #include "runtime/Attachment.hpp"
+#include "services/DataService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
@@ -102,6 +103,7 @@ namespace
         // and nothing it was holding is going to be given back by it.
         wxl::core::attachment::Release(token);
         wxl::core::services::storage::CloseFilesOf(token);
+        wxl::core::services::data::ForgetMod(token);
     }
 
     // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam

@@ -19,6 +19,7 @@
 #include "runtime/Attachment.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
+#include "services/DataService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
@@ -1292,6 +1293,49 @@ namespace
         g_host->Events().Unsubscribe(sub);
     }
 
+    // --- wxl.data: a client database served from a mod file instead of the client's ----------
+
+    void CheckDataService()
+    {
+        g_files.clear();
+        g_files.push_back(FakeFile{"Mods\\mymod\\Spell.dbc", "WDBC-mine", 0, false});
+        wxl::core::services::data::Clear();
+
+        const wxl_data_api& api = wxl::core::services::DataApi();
+        const wxl_str mine = Str("Mods\\mymod\\Spell.dbc");
+
+        Check(api.serve_table(Str("Spell.dbc"), Str("Mods\\mymod\\Nope.dbc")) == WXL_E_NOT_FOUND,
+              "a table cannot be served from a file the client cannot read");
+        Check(api.serve_table(Str("Spell.dbc"), mine) == WXL_OK, "and can be from one it can");
+        Check(api.serve_table(Str("DBFilesClient\\Spell.dbc"), mine) == WXL_E_FAILED,
+              "the same table under its full name is the same table, and is already taken");
+
+        // What the gate answers for the path the client is about to open.
+        const char* full = "DBFilesClient\\Spell.dbc";
+        const char* served = wxl::core::services::data::ServedPath(full, strlen(full));
+        Check(served != nullptr && strcmp(served, "Mods\\mymod\\Spell.dbc") == 0,
+              "so the client opens the mod's file instead of its own");
+
+        const char* other = "DBFilesClient\\Item.dbc";
+        Check(wxl::core::services::data::ServedPath(other, strlen(other)) == nullptr,
+              "a database nobody serves is opened as the client asked");
+        const char* texture = "World\\Maps\\Azeroth.wdt";
+        Check(wxl::core::services::data::ServedPath(texture, strlen(texture)) == nullptr,
+              "and a file that is not a database is not even looked up");
+
+        Check(api.is_loaded(Str("Spell.dbc")) == WXL_TRUE
+                  && api.is_loaded(Str("Talent.dbc")) == WXL_FALSE,
+              "a table the client has read is known to have been read");
+        Check(api.serve_table(Str("Item.dbc"), mine) == WXL_OK,
+              "serving one the client read already is allowed");
+        Check(api.restore_table(Str("Item.dbc")) == WXL_OK
+                  && api.served_from(Str("Item.dbc")).size == 0,
+              "and giving a table back leaves the client's own file");
+
+        wxl::core::services::data::Clear();
+        g_files.clear();
+    }
+
     // --- Sound: a gate that can keep a sound from starting -------------------------------------
 
     bool g_hushSound = false;
@@ -1612,6 +1656,7 @@ int main()
     CheckStorage();
     CheckSound();
     CheckStorageService();
+    CheckDataService();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();

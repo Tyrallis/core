@@ -20,6 +20,7 @@
 #include "runtime/Attachment.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
+#include "services/DataService.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/host/mod_host.hpp"
@@ -41,6 +42,7 @@ namespace wxl::seam::Client::Destroy
         // code those hooks jump to.
         wxl::core::attachment::ReleaseAll();
         wxl::core::services::storage::CloseEverything();
+        wxl::core::services::data::Clear();
 
         host->UnloadAll();
         WLOG_INFO(wxl::core::kTag, "mods unloaded; the client is on its own from here");
