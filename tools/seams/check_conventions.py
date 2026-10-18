@@ -749,10 +749,32 @@ def check_row(mcp, functions, row, max_callers):
     # --- the argument count ---
     expected = row.expected_stack
     if expected is not None and observed is not None and callee.stack_dwords != expected:
-        finding.problems.append(
-            "%s (%s): the row's parameters fill %d stack dword(s), but 0x%08X reads %d%s"
-            % (row.point, row.origin, expected, address, callee.stack_dwords,
-               evidence(callee, finding.sites)))
+        # A cdecl function that never reads its trailing parameters is still handed them: its
+        # caller pushes them and its caller takes them back, so a detour declared with them
+        # reads only what is really on the stack. What the callee reads is then a lower bound,
+        # and the count that decides is the caller's. That is accepted on evidence alone -- a
+        # call site that pushes exactly the declared count and cleans exactly that many bytes.
+        #
+        # Both witnesses are needed, because each can be wrong, and never in the same place.
+        # The push count runs high at a caller's first call, where no earlier call bounds the
+        # walk and it counts the caller's own prologue; but there, nothing earlier exists to be
+        # folded, so the cleanup is exact and the two disagree. The cleanup runs high when MSVC
+        # folds an earlier call's into it; but an earlier call is exactly what bounds the walk,
+        # so the push count is exact and the two disagree again. Agreement is therefore real,
+        # and a row declaring more than its caller pushes is still a parameter invented.
+        unread = next((s for s in cleaning
+                       if observed == "cdecl" and callee.stack_dwords < expected
+                       and s.pushes == expected and s.cleanup == expected * 4), None)
+        if unread:
+            finding.notes.append(
+                "0x%08X reads %d of its %d stack parameter(s); its caller at 0x%08X pushes all %d "
+                "and cleans them, so the row's count stands"
+                % (address, callee.stack_dwords, expected, unread.addr, expected))
+        else:
+            finding.problems.append(
+                "%s (%s): the row's parameters fill %d stack dword(s), but 0x%08X reads %d%s"
+                % (row.point, row.origin, expected, address, callee.stack_dwords,
+                   evidence(callee, finding.sites)))
     if row.convention == "regparm" and observed == "regparm":
         total = len(callee.reg_args) + callee.stack_dwords
         if total != row.dwords:

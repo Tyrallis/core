@@ -78,6 +78,31 @@ CALLER_FOLDS = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "push 2"), (2, "pu
                     (5, "call 0x401000"), (2, "push 3"), (5, "call 0x409840"),
                     (3, "add esp, 0xc"), (1, "pop ebp"), (1, "ret"))
 
+# An event handler that never reads the two parameters it is handed. The function alone reads
+# no stack at all; only its caller says how many there are.
+CDECL_IGNORES = body((1, "push ebp"), (2, "mov ebp, esp"), (5, "mov eax, 1"), (1, "pop ebp"),
+                     (1, "ret"))
+
+# Its caller pushes the two and cleans exactly those eight bytes: the evidence that excuses it.
+# A call before it bounds the walk back over the pushes, as it does in real code.
+CALLER_EXACT = body((1, "push ebp"), (2, "mov ebp, esp"), (5, "call 0x409840"), (2, "push 2"),
+                    (2, "push 1"), (5, "call 0x401600"), (3, "add esp, 8"), (1, "pop ebp"),
+                    (1, "ret"))
+
+# The same evidence at the first call of its caller, where nothing bounds the walk and it runs
+# on into the caller's own prologue: three pushes counted against eight bytes cleaned.
+CDECL_IGNORES_FIRST = body((1, "push ebp"), (2, "mov ebp, esp"), (5, "mov eax, 1"), (1, "pop ebp"),
+                           (1, "ret"))
+CALLER_FIRST = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "push 2"), (2, "push 1"),
+                    (5, "call 0x401a00"), (3, "add esp, 8"), (1, "pop ebp"), (1, "ret"))
+
+# The same handler reached only through a folded cleanup, which never shows the exact count.
+CDECL_IGNORES_FOLDED = body((1, "push ebp"), (2, "mov ebp, esp"), (5, "mov eax, 1"),
+                            (1, "pop ebp"), (1, "ret"))
+CALLER_FOLDS_ONLY = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "push 2"), (2, "push 1"),
+                         (5, "call 0x401800"), (2, "push 3"), (5, "call 0x409840"),
+                         (3, "add esp, 0xc"), (1, "pop ebp"), (1, "ret"))
+
 PROGRAM = {
     0x00401000: CDECL_TWO,
     0x00401100: STDCALL_TWO,
@@ -86,13 +111,22 @@ PROGRAM = {
     0x00401300: TABLE_SWITCH,
     0x00401400: CALLER_CLEANS,
     0x00401500: CALLER_FOLDS,
+    0x00401600: CDECL_IGNORES,
+    0x00401700: CALLER_EXACT,
+    0x00401800: CDECL_IGNORES_FOLDED,
+    0x00401900: CALLER_FOLDS_ONLY,
+    0x00401A00: CDECL_IGNORES_FIRST,
+    0x00401B00: CALLER_FIRST,
 }
 
 # (name, address, extent)
 SYMBOLS = [("Thing::Plain", 0x00401000, 0x20), ("Thing::Owned", 0x00401100, 0x20),
            ("Thing::Member", 0x00401200, 0x20), ("Thing::Fast", 0x00401280, 0x20),
            ("Thing::Switch", 0x00401300, 0x30), ("Thing::CallsCleanly", 0x00401400, 0x20),
-           ("Thing::CallsFolded", 0x00401500, 0x20)]
+           ("Thing::CallsFolded", 0x00401500, 0x20), ("Thing::Ignores", 0x00401600, 0x20),
+           ("Thing::CallsExactly", 0x00401700, 0x20), ("Thing::IgnoresFolded", 0x00401800, 0x20),
+           ("Thing::CallsFoldedOnly", 0x00401900, 0x20), ("Thing::IgnoresFirst", 0x00401A00, 0x20),
+           ("Thing::CallsFirst", 0x00401B00, 0x20)]
 
 XREFS = {
     0x00401000: ["00401404(UNCONDITIONAL_CALL)"],   # inside CALLER_FOLDS, which folds; then
@@ -116,8 +150,9 @@ def flatten():
 
 MEMORY = flatten()
 # The call sites, found by walking the stub callers; the tool reads them through ghidra_xrefs.
-XREFS[0x00401000] = ["%08x(UNCONDITIONAL_CALL)" % a for a, (_, t) in sorted(MEMORY.items())
-                     if t == "call 0x401000"]
+for _callee in (0x00401000, 0x00401600, 0x00401800, 0x00401A00):
+    XREFS[_callee] = ["%08x(UNCONDITIONAL_CALL)" % a for a, (_, t) in sorted(MEMORY.items())
+                      if t == "call 0x%x" % _callee]
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -299,6 +334,25 @@ CASES = [
     ("a symbol the offsets table does not carry",
      DEMO_DEF.replace('"Thing::Plain"', '"Thing::Vanished"'),
      THUNKS, 1, "no function named Thing::Vanished in functions.def"),
+    # A cdecl event handler that ignores its parameters reads none of them, but they are on the
+    # stack: the caller pushed them and takes them back. The caller's count decides -- and only
+    # an exact one does.
+    ("a cdecl handler that ignores what its caller hands it",
+     DEMO_DEF + 'WXL_SEAM(Demo, Ignores, "Thing::Ignores", void, cdecl, '
+                '(const void* data, void* param))\n',
+     THUNKS, 0, None),
+    ("the same, with no caller that cleans exactly what it declares",
+     DEMO_DEF + 'WXL_SEAM(Demo, IgnoresFolded, "Thing::IgnoresFolded", void, cdecl, '
+                '(const void* data, void* param))\n',
+     THUNKS, 1, "the row's parameters fill 2 stack dword(s), but 0x00401800 reads 0"),
+    ("a parameter invented on a handler that ignores its own",
+     DEMO_DEF + 'WXL_SEAM(Demo, Ignores, "Thing::Ignores", void, cdecl, '
+                '(const void* data, void* param, int32_t extra))\n',
+     THUNKS, 1, "the row's parameters fill 3 stack dword(s), but 0x00401600 reads 0"),
+    ("the same evidence at a caller's first call, which the walk over-counts",
+     DEMO_DEF + 'WXL_SEAM(Demo, IgnoresFirst, "Thing::IgnoresFirst", void, cdecl, '
+                '(const void* data, void* param))\n',
+     THUNKS, 1, "pushes 3 and cleans 8"),
 ]
 
 # What the real binary must say, verified by hand against the disassembly.
