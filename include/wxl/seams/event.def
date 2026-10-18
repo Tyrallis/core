@@ -34,5 +34,13 @@
 // teardown, reaches this function and dispatches nothing. Time still advanced and elapsed_sec is
 // still true, so the event is not false there; what it loses is the client's own handlers, which
 // a mod cannot observe anyway.
-WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, cdecl, (void* context, uint32_t curr_time, float elapsed_sec))
+// The convention is regparm, and the cost of getting that wrong was a crash on the first tick.
+// The function has internal linkage and MSVC gave it a private convention: context arrives in
+// EDI, and only curr_time and elapsed_sec are on the stack. Its body reads EDI before anything
+// else (`lea esi, [edi+0x10]`, the context's critical section), so a detour that returns to the
+// original with EDI holding anything of its own takes the client into EnterCriticalSection on a
+// pointer it computed from zero. Its one caller sets EDI immediately before the call and cleans
+// two stack slots after it, which is the whole proof. So the seam is live on the recompiled
+// client only, where it is a call the source makes and the convention is not in question.
+WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, regparm, (void* context, uint32_t curr_time, float elapsed_sec))
 WXL_SEAM_RAISES(Event, DispatchUpdate, Update)
