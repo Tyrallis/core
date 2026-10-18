@@ -205,10 +205,16 @@ namespace
         char                   buffer[kKeyMax];
         const std::string_view key = KeyInto(table.data, table.size, buffer);
 
-        Held          held;
-        const Served* served = Find(key);
-        if (!served) return wxl_str{nullptr, 0};
-        return wxl_str{served->path.c_str(), static_cast<uint32_t>(served->path.size())};
+        // A copy, taken under the lock: the entry can be given back from another thread the
+        // moment the lock drops, and the answer must outlive that.
+        thread_local std::string answer;
+        {
+            Held          held;
+            const Served* served = Find(key);
+            if (!served) return wxl_str{nullptr, 0};
+            answer = served->path;
+        }
+        return wxl_str{answer.c_str(), static_cast<uint32_t>(answer.size())};
     }
 
     wxl_bool WXL_CALL IsLoaded(wxl_str table)
