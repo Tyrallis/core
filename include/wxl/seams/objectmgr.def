@@ -37,7 +37,12 @@ WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 // in the world (SMSG_DESTROY_OBJECT, out of range, unlock), each after Disable. Before raises
 // ObjectDestroy while the object is still resident and its handle still resolves, then
 // untracks it: the handle a mod kept reads as absent from here on.
-WXL_SEAM(ObjectMgr, ObjDelete, "ObjDelete", void, cdecl, (void* object))
+// Same story as its two neighbours, in a register this time harder to guess: the object arrives
+// in EAX. Verified at 0x004D6FC0 (mov esi,eax before anything else is read) and at all three of
+// its callers, 0x004D737D, 0x004D76C0 and 0x004D786C, each of which does mov eax,esi immediately
+// before the call and pushes nothing. A detour cannot hold EAX across its own body, so the x86
+// build declares this seam and does not attach it.
+WXL_SEAM(ObjectMgr, ObjDelete, "ObjDelete", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 
 // Destroys and frees an object: the destructor, then the heap or SMemFree for the active
