@@ -127,6 +127,7 @@ namespace wxl::core::objects
     // untrack it when the client lets it go, so a handle kept past that point reads as absent.
     wxl_handle Track(void* object);
     void       Untrack(void* object);
+    void       Untrack(wxl_handle handle);
     bool       IsTracked(void* object);
     wxl_handle HandleOf(void* object);
     wxl_handle FromGuid(uint64_t guid);

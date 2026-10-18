@@ -31,17 +31,22 @@ namespace
     /// Announces an object still tracked and forgets it; nothing for one already gone.
     void Leave(void* object)
     {
-        if (!object || !wxl::core::objects::IsTracked(object)) return;
+        if (!object) return;
+
+        // One lookup. Whether it is tracked, which handle it has, and what to retire are the
+        // same question, and this runs for every object the client lets go.
+        const wxl_handle handle = wxl::core::objects::HandleOf(object);
+        if (handle == WXL_HANDLE_NONE) return;
 
         if (wxl::host::ModHost* host = wxl::core::Host())
         {
             wxl_object_args args{};
-            args.object = wxl::core::objects::HandleOf(object);
+            args.object = handle;
             args.guid   = wxl::core::binding::object_guid(object);
             args.type   = wxl::core::binding::object_type_id(object);
             host->Raise(WXL_EV_ObjectDestroy, &args);
         }
-        wxl::core::objects::Untrack(object);
+        wxl::core::objects::Untrack(handle);
     }
 }
 
