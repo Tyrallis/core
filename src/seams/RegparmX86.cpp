@@ -1,18 +1,7 @@
-// The thunks that let a seam stand in front of a function whose arguments arrive in registers.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The thunks that let a seam stand in front of a function whose arguments arrive in registers.
 //
 // Four functions of build 12340 have internal linkage and one or two callers, so MSVC was free
 // to pass their arguments in registers and did. Each thunk here was written against that
@@ -150,7 +139,7 @@ __declspec(naked) static void InitThunk()
 
 // --- ObjectMgr.ObjDelete ------------------------------------------------------------------
 // ObjDelete @0x004D6FC0: a normal prologue, then `mov esi,eax` before anything is read. All
-// three callers -- 0x004D737D, 0x004D76C0, 0x004D786E -- do `mov eax,esi` immediately before
+// three callers do `mov eax,esi` (at 0x004D737D, 0x004D76C0 and 0x004D786C) immediately before
 // the call and push nothing.
 __declspec(naked) static void DeleteThunk()
 {

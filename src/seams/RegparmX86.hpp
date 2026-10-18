@@ -1,18 +1,7 @@
-// The thunks that let a seam stand in front of a function whose arguments arrive in registers.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The thunks that let a seam stand in front of a function whose arguments arrive in registers.
 
 #pragma once
 
@@ -21,12 +10,10 @@ namespace wxl::core::seams::regparm
     /**
      * @brief A seam whose function takes its arguments in registers, and the thunk written for it.
      *
-     * A generated detour cannot serve one of these. Its signature says the arguments are on the
-     * stack, so the arguments it reads are not the function's, and -- the part that crashes the
-     * client -- the registers the function expects are whatever the detour's own body left in
-     * them. The thunks below are written by hand, one per seam, against the disassembly of that
-     * seam's function and of its callers: they keep the registers, call the seam's Before, hand
-     * the registers back, run the original, and call After.
+     * A generated detour reads its arguments from the stack and leaves the registers as its own
+     * body left them, so it can serve none of these. Each thunk is written by hand against the
+     * disassembly of its function and callers: it saves the registers, calls Before, puts them
+     * back, runs the original and calls After. The seam harness drives each one on x86.
      */
     struct Row
     {

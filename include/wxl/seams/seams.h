@@ -1,18 +1,7 @@
-// The seams as functions: Before and After of every row of the seam table.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The seams as functions: Before and After of every row of the seam table.
 
 #ifndef WXL_SEAMS_H
 #define WXL_SEAMS_H
@@ -76,8 +65,8 @@ namespace wxl::seam::detail
     struct conv_stdcall
     {
     };
-    /// A function the compiler gave a private register convention: the x86 build declares the seam
-    /// and never attaches it, because no detour signature can describe how the arguments arrive.
+    /// A function the compiler gave a private register convention. No generated detour can serve
+    /// it; the x86 build attaches it through a thunk of src/seams/RegparmX86.cpp.
     struct conv_regparm
     {
     };

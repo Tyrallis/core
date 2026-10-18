@@ -213,6 +213,8 @@ if(WXL_CORE_X86)
         src/services/HookService.cpp
         src/services/PatchService.cpp)
     target_link_libraries(wxl-core PRIVATE minhook)
+    # The harness drives the register thunks against stand-ins with the client's conventions.
+    target_sources(wxl-core-seam-harness PRIVATE src/seams/RegparmX86.cpp)
 
     # --- wxl-core-patcher.exe ----------------------------------------------------------------------
     add_executable(wxl-core-patcher

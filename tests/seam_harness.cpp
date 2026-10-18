@@ -1,18 +1,7 @@
-// The seam harness: the seam bodies, driven by hand against a real mod host and a fake client.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The seam harness: the seam bodies, driven by hand against a real mod host and a fake client.
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
@@ -34,6 +23,7 @@
 
 #if defined(_M_IX86)
     #include "seams/Detour.hpp"
+    #include "seams/RegparmX86.hpp"
 #endif
 
 #include <cstddef>
@@ -1846,6 +1836,180 @@ namespace
         Check(result == 6 * 1000 + 7, "a gate that takes the call answers in the original's place");
         Check(g_gateCalls == 2, "and the original never ran");
     }
+
+    // --- The register thunks, against stand-ins with the client's conventions -------------------
+
+    // What a stand-in original found in its registers and on its stack.
+    uint32_t g_seenEdi = 0, g_seenEsi = 0, g_seenEax = 0, g_seenEcx = 0;
+    uint32_t g_seenArg0 = 0, g_seenArg1 = 0;
+
+    // What the caller's callee-saved registers held once the thunk returned.
+    uint32_t g_keptEbx = 0, g_keptEsi = 0, g_keptEdi = 0;
+
+    __declspec(naked) void FakeDispatchUpdate()
+    {
+        __asm {
+            mov  dword ptr [g_seenEdi], edi
+            mov  eax, dword ptr [esp+4]
+            mov  dword ptr [g_seenArg0], eax
+            mov  eax, dword ptr [esp+8]
+            mov  dword ptr [g_seenArg1], eax
+            ret
+        }
+    }
+
+    __declspec(naked) void FakeInitObject()
+    {
+        __asm {
+            mov  dword ptr [g_seenEsi], esi
+            mov  dword ptr [g_seenEax], eax
+            mov  dword ptr [g_seenEcx], ecx
+            ret
+        }
+    }
+
+    __declspec(naked) void FakeObjDelete()
+    {
+        __asm {
+            mov  dword ptr [g_seenEax], eax
+            ret
+        }
+    }
+
+    __declspec(naked) void FakeDestroyRemovedObject()
+    {
+        __asm {
+            mov  dword ptr [g_seenEsi], esi
+            ret
+        }
+    }
+
+    /// Calls a thunk the way IEvtDispatchUpdate's caller does: context in EDI, two stack slots
+    /// the caller cleans.
+    void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
+    {
+        __asm {
+            mov  ebx, 0B0B0B0Bh
+            mov  esi, 05050505h
+            mov  edi, context
+            push arg1
+            push arg0
+            call thunk
+            add  esp, 8
+            mov  dword ptr [g_keptEbx], ebx
+            mov  dword ptr [g_keptEsi], esi
+            mov  dword ptr [g_keptEdi], edi
+        }
+    }
+
+    /// Calls a thunk the way InitObject's caller does: ESI, EAX and ECX, nothing pushed.
+    void CallWithEsiEaxEcx(void* thunk, void* esiValue, uint32_t eaxValue, uint32_t ecxValue)
+    {
+        __asm {
+            mov  ebx, 0B0B0B0Bh
+            mov  edi, 0D0D0D0Dh
+            mov  esi, esiValue
+            mov  eax, eaxValue
+            mov  ecx, ecxValue
+            call thunk
+            mov  dword ptr [g_keptEbx], ebx
+            mov  dword ptr [g_keptEsi], esi
+            mov  dword ptr [g_keptEdi], edi
+        }
+    }
+
+    /// Calls a thunk the way ObjDelete's callers do: the object in EAX, nothing pushed.
+    void CallWithEax(void* thunk, void* eaxValue)
+    {
+        __asm {
+            mov  ebx, 0B0B0B0Bh
+            mov  esi, 05050505h
+            mov  edi, 0D0D0D0Dh
+            mov  eax, eaxValue
+            call thunk
+            mov  dword ptr [g_keptEbx], ebx
+            mov  dword ptr [g_keptEsi], esi
+            mov  dword ptr [g_keptEdi], edi
+        }
+    }
+
+    /// Every regparm row has a thunk, and each thunk hands the original its registers back.
+    void CheckRegparmThunks()
+    {
+        namespace regparm = wxl::core::seams::regparm;
+
+        for (const wxl::core::seams::Seam& seam : wxl::core::seams::Table())
+        {
+            if (strcmp(seam.convention, "regparm") != 0) continue;
+            char what[160];
+            snprintf(what, sizeof what, "%s takes its arguments in registers and has a thunk", seam.name);
+            Check(regparm::Find(seam.name) != nullptr, what);
+        }
+        Check(regparm::Find("World.Preload") == nullptr, "a seam with a stack convention has none");
+
+        const regparm::Row* update  = regparm::Find("Event.DispatchUpdate");
+        const regparm::Row* init    = regparm::Find("ObjectMgr.InitObject");
+        const regparm::Row* remove  = regparm::Find("ObjectMgr.ObjDelete");
+        const regparm::Row* destroy = regparm::Find("ObjectMgr.DestroyRemovedObject");
+        if (!update || !init || !remove || !destroy) return;
+
+        *update->original  = reinterpret_cast<void*>(&FakeDispatchUpdate);
+        *init->original    = reinterpret_cast<void*>(&FakeInitObject);
+        *remove->original  = reinterpret_cast<void*>(&FakeObjDelete);
+        *destroy->original = reinterpret_cast<void*>(&FakeDestroyRemovedObject);
+
+        int         context = 0;
+        const float elapsed = 0.25f;
+        uint32_t    elapsedBits;
+        memcpy(&elapsedBits, &elapsed, sizeof elapsedBits);
+
+        g_received.clear();
+        CallWithEdi(update->detour, &context, 4242u, elapsedBits);
+        Check(g_seenEdi == reinterpret_cast<uint32_t>(&context),
+              "Event.DispatchUpdate's original finds the context in EDI");
+        Check(g_seenArg0 == 4242u && g_seenArg1 == elapsedBits, "and its two stack arguments");
+        const Received* tick = Only(WXL_EV_Update);
+        Check(tick && tick->As<wxl_update_args>().delta == elapsed,
+              "Before read the arguments the thunk was handed");
+        Check(g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                  g_keptEdi == reinterpret_cast<uint32_t>(&context),
+              "and the caller gets EBX, ESI and EDI back");
+
+        FakeObject spider;
+        spider.guid   = 0xF130000000000777ull;
+        spider.typeId = WXL_OBJECT_UNIT;
+
+        g_received.clear();
+        CallWithEsiEaxEcx(init->detour, &spider, 0x1234u, 77u);
+        Check(g_seenEsi == reinterpret_cast<uint32_t>(&spider) && g_seenEax == 0x1234u &&
+                  g_seenEcx == 77u,
+              "ObjectMgr.InitObject's original finds the object in ESI, the block in EAX, the time in ECX");
+        const Received* created = Only(WXL_EV_ObjectCreate);
+        Check(created && created->As<wxl_object_args>().guid == spider.guid,
+              "After was handed the object from ESI");
+        Check(g_keptEbx == 0x0B0B0B0Bu && g_keptEdi == 0x0D0D0D0Du &&
+                  g_keptEsi == reinterpret_cast<uint32_t>(&spider),
+              "and the caller gets EBX, ESI and EDI back");
+
+        g_received.clear();
+        CallWithEax(remove->detour, &spider);
+        Check(g_seenEax == reinterpret_cast<uint32_t>(&spider),
+              "ObjectMgr.ObjDelete's original finds the object in EAX");
+        Check(Only(WXL_EV_ObjectDestroy) != nullptr, "Before was handed the object from EAX");
+        Check(g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u && g_keptEdi == 0x0D0D0D0Du,
+              "and the caller gets EBX, ESI and EDI back");
+
+        FakeObject moth;
+        CallWithEsiEaxEcx(destroy->detour, &moth, 0u, 0u);
+        Check(g_seenEsi == reinterpret_cast<uint32_t>(&moth),
+              "ObjectMgr.DestroyRemovedObject's original finds the object in ESI");
+
+        *update->original  = nullptr;
+        *init->original    = nullptr;
+        *remove->original  = nullptr;
+        *destroy->original = nullptr;
+        wxl::core::stages::Restart();
+    }
 #endif
 }
 
@@ -1939,6 +2103,7 @@ int main(int argc, char** argv)
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();
+    CheckRegparmThunks();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

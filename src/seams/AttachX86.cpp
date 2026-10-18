@@ -1,18 +1,7 @@
-// The x86 realisation of the seam table: the detours generated from seams.def.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The x86 realisation of the seam table: the detours generated from seams.def.
 
 #include "seams/AttachX86.hpp"
 
@@ -50,7 +39,7 @@ namespace
         uintptr_t   address; ///< the function's address in Wow.exe build 12340
         void*       detour;
         void**      original;
-        bool        attachable; ///< false for a regparm row: declared, never detoured
+        bool        attachable; ///< false for a regparm row, which is attached through its thunk
         bool        gated;      ///< a WXL_SEAM_GATE row: its Gate can take the call
     };
 
@@ -75,17 +64,15 @@ namespace wxl::core::seams
         bool all = true;
         for (const Row& row : kRows)
         {
-            // A regparm row has no generated detour that could serve it, but it may have a
-            // thunk written by hand for its registers. Where one exists the seam attaches
-            // like any other; where none does, the row stays declared and unattached.
+            // A regparm row is served by the thunk written for its registers.
             const seams::regparm::Row* thunk =
                 row.attachable ? nullptr : seams::regparm::Find(row.name);
             if (!row.attachable && !thunk)
             {
-                WLOG_WARN(kTag, "seam %s not attached at 0x%08zX: the function takes its arguments "
-                                "in registers and no thunk is written for it; the seam is live on "
-                                "the recompiled client only",
-                          row.name, static_cast<size_t>(row.address));
+                WLOG_ERROR(kTag, "seam %s not attached at 0x%08zX: it takes its arguments in "
+                                 "registers and src/seams/RegparmX86.cpp has no thunk for it",
+                           row.name, static_cast<size_t>(row.address));
+                all = false;
                 continue;
             }
 
