@@ -213,10 +213,10 @@ source. Everything else observes.
 | Point | Function | Raises |
 |---|---|---|
 | `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
-| `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` (regparm: x64 only) | `Update` before |
-| `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: x64 only) | `ObjectCreate` after |
-| `ObjectMgr.ObjDelete` | `ObjDelete(void* object)` (regparm: x64 only) | `ObjectDestroy` before |
-| `ObjectMgr.DestroyRemovedObject` | `DestroyRemovedObject(void* object)` (regparm: x64 only) | `ObjectDestroy` before, for an object still tracked |
+| `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` (regparm: EDI) | `Update` before |
+| `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: ESI, EAX, ECX) | `ObjectCreate` after |
+| `ObjectMgr.ObjDelete` | `ObjDelete(void* object)` (regparm: EAX) | `ObjectDestroy` before |
+| `ObjectMgr.DestroyRemovedObject` | `DestroyRemovedObject(void* object)` (regparm: ESI) | `ObjectDestroy` before, for an object still tracked |
 | `Unit.OnDeath` | `CGUnit_C::OnDeath()` | `UnitDeath` after |
 | `Unit.OnAuraAdded`, `Unit.OnAuraRemoved` | `CGUnit_C::OnAuraAdded/OnAuraRemoved(uint32_t index, uint8_t a3, void* aura, int32_t spell_id)` | `UnitAuraChanged` after |
 | `Player.UpdateInventoryComponent` | `CGPlayer_C::UpdateInventoryComponent(int32_t slot, const void* old_item)` | `EquipmentChanged` after, when the item id moved |

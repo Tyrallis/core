@@ -20,6 +20,7 @@
 #include "hook/Engine.hpp"
 #include "runtime/Core.hpp"
 #include "seams/Detour.hpp"
+#include "seams/RegparmX86.hpp"
 
 #include "wxl/offsets/site.hpp"
 #include "wxl/seams/seams.h"
@@ -74,17 +75,24 @@ namespace wxl::core::seams
         bool all = true;
         for (const Row& row : kRows)
         {
-            if (!row.attachable)
+            // A regparm row has no generated detour that could serve it, but it may have a
+            // thunk written by hand for its registers. Where one exists the seam attaches
+            // like any other; where none does, the row stays declared and unattached.
+            const seams::regparm::Row* thunk =
+                row.attachable ? nullptr : seams::regparm::Find(row.name);
+            if (!row.attachable && !thunk)
             {
                 WLOG_WARN(kTag, "seam %s not attached at 0x%08zX: the function takes its arguments "
-                                "in registers, so no detour can read them; the seam is live on the "
-                                "recompiled client only",
+                                "in registers and no thunk is written for it; the seam is live on "
+                                "the recompiled client only",
                           row.name, static_cast<size_t>(row.address));
                 continue;
             }
 
-            const wxl::hook::Id id = wxl::hook::Attach(
-                row.name, reinterpret_cast<void*>(row.address), row.detour, row.original);
+            const wxl::hook::Id id =
+                wxl::hook::Attach(row.name, reinterpret_cast<void*>(row.address),
+                                  thunk ? thunk->detour : row.detour,
+                                  thunk ? thunk->original : row.original);
             if (id == wxl::hook::kNone)
             {
                 WLOG_ERROR(kTag, "seam %s not attached at 0x%08zX", row.name,
@@ -92,9 +100,9 @@ namespace wxl::core::seams
                 all = false;
                 continue;
             }
-            WLOG_INFO(kTag, "seam %s attached at 0x%08zX%s", row.name,
-                      static_cast<size_t>(row.address),
-                      row.gated ? ", gated" : "");
+            WLOG_INFO(kTag, "seam %s attached at 0x%08zX%s%s", row.name,
+                      static_cast<size_t>(row.address), row.gated ? ", gated" : "",
+                      thunk ? ", through its register thunk" : "");
         }
         return all;
     }

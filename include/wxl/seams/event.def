@@ -40,7 +40,7 @@
 // else (`lea esi, [edi+0x10]`, the context's critical section), so a detour that returns to the
 // original with EDI holding anything of its own takes the client into EnterCriticalSection on a
 // pointer it computed from zero. Its one caller sets EDI immediately before the call and cleans
-// two stack slots after it, which is the whole proof. So the seam is live on the recompiled
-// client only, where it is a call the source makes and the convention is not in question.
+// two stack slots after it, which is the whole proof. On x86 it is attached through the thunk in
+// src/seams/RegparmX86.cpp, which keeps EDI across the seam's own body and hands it back.
 WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, regparm, (void* context, uint32_t curr_time, float elapsed_sec))
 WXL_SEAM_RAISES(Event, DispatchUpdate, Update)

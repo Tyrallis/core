@@ -109,6 +109,8 @@ set(WXL_CORE_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 # being edited. Table.cpp is swept up with them: it is the table as data, which both read.
 file(GLOB WXL_SEAM_BODIES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/seams/*.cpp")
 list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/AttachX86\.cpp$")
+# x86 only: hand-written naked thunks for the seams whose arguments arrive in registers.
+list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/RegparmX86\.cpp$")
 file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/objects/*.cpp")
 
 add_library(wxl-core SHARED
@@ -174,6 +176,7 @@ if(WXL_CORE_X86)
         src/runtime/Image.cpp
         src/binding/BindingX86.cpp
         src/seams/AttachX86.cpp
+        src/seams/RegparmX86.cpp
         src/hook/Engine.cpp
         src/hook/Points.cpp
         src/services/HookService.cpp
