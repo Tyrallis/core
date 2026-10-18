@@ -1,18 +1,7 @@
-// The core runtime: paths, the log sink, and the mod host.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The core runtime: paths, the log sink, and the mod host.
 
 #include "runtime/Core.hpp"
 
@@ -106,8 +95,8 @@ namespace
         wxl::core::services::data::ForgetMod(token);
     }
 
-    // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam
-    // exists yet from which the mods could be told to let go before the process ends.
+    // Heap-allocated and never freed: the wxl_host table points into it, and a mod disabled
+    // rather than unloaded stays mapped with that pointer to the end of the process.
     wxl::host::ModHost* g_host = nullptr;
 
     LONG g_started = 0;

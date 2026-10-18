@@ -1,21 +1,10 @@
-// The Player domain of the client binding: the player descriptor block (CGPlayerData).
-//
-// Row shapes: see binding.def, which documents them. The rows read through CGPlayer_C::m_player,
-// which every player carries; the local-only block behind it (CGPlayerLocalData) is not read.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// The Player domain of the client binding: the player descriptor block (CGPlayerData).
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The rows read through CGPlayer_C::m_player, which every player carries; the local-only block
+// behind it (CGPlayerLocalData) is not read.
 
 #ifndef WXL_BINDING
 #error "define WXL_BINDING(name, ret, params, args, absent) before including player.def"

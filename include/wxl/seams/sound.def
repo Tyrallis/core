@@ -1,20 +1,7 @@
-// The Sound domain: a seam on the function every sound of the client is started by.
-//
-// Row shape and columns: see world.def, which documents them.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The Sound domain: a seam on the function every sound of the client is started by.
 
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including sound.def"
@@ -22,15 +9,11 @@
 
 // Starts a sound kit. The client gives this name to two functions -- one taking a kit id, one
 // taking a kit name -- and the second ends by calling the first, so this row covers both: a
-// sound named by path arrives here with the id its name resolved to. That is why the SoundPlay
-// it raises carries an id and an empty path, which the contract allows and which is the whole
-// truth at this point. The symbol carries the address because the name alone is ambiguous.
+// sound named by path arrives here with the id its name resolved to, so SoundPlay carries an id
+// and an empty path. The symbol carries the address because the name alone is ambiguous. A class
+// static: cdecl.
 //
-// A class static, so it has external linkage and carries the convention it is declared with,
-// which is the default: cdecl.
-//
-// Gated, because the contract lets a handler of SoundPlay write WXL_TRUE through
-// wxl_sound_args::suppressed and expect the sound not to play. Taking the call answers 17,
-// which is what the client itself answers when sound is off.
+// Gated: a handler of SoundPlay that writes WXL_TRUE through wxl_sound_args::suppressed stops the
+// sound. Taking the call answers 17, the client's own answer when sound is off.
 WXL_SEAM_GATE(Sound, PlaySoundKit, "SI2::PlaySoundKit@0x004C6A40", int32_t, cdecl, (int32_t sound_kit_id, const void* position, void* object, void* properties, uint32_t advanced_id, uint32_t* sound_id, int32_t check_distance, int32_t keep_playing))
 WXL_SEAM_RAISES(Sound, PlaySoundKit, SoundPlay)

@@ -1,55 +1,7 @@
-// The World domain: seams on the functions that load and unload the world.
-//
-// One row per seam, as WXL_SEAM(domain, name, symbol, ret, conv, params):
-//
-//   domain  the table this row belongs to; the first half of the point's name
-//   name    the client function the seam attaches to, never what it means: the second half of
-//           the point's name ("World.Preload"), the C++ namespace of its Before and After
-//           (wxl::seam::World::Preload), and part of the ABI -- appended, never renamed or
-//           dropped
-//   symbol  the function's qualified name as the recompiled client spells it: what the x86
-//           build resolves against functions.def, and where the x64 call sites belong.
-//           A name the client gives to more than one function is written
-//           "<name>@0x<address>" to say which one; a plain name that is carried by
-//           several addresses does not compile, which is how the ambiguity is caught
-//   ret     the function's return type as the C boundary sees it, `void` when it returns
-//           nothing. A value is threaded through After, which takes it as its first parameter
-//   conv    the function's calling convention on x86: `cdecl` for a free or static function,
-//           `thiscall` for a non-static member (the x86 detour is then a __fastcall shim that
-//           takes `this` in ECX and a dummy EDX), `stdcall` for a callback. Named after the
-//           convention, so a wrong column is a wrong detour and a visibly wrong row.
-//           Which functions can carry a convention of the compiler's own making is decided by
-//           linkage, not by the word `static`: a file-level static is private to its object
-//           file, so MSVC may pass its arguments wherever it likes and the row must say
-//           `regparm`; a class static, a non-static member and a free function all have
-//           external linkage, so they carry the convention they are declared with and no
-//           disassembly is needed to be sure of it
-//   params  the parameter list, in parentheses, as the C boundary sees the function's
-//           arguments: a reference is a pointer, a class is its SDK struct or a `void*`, `this`
-//           is the first parameter of a thiscall row. Before takes exactly these; After takes
-//           the result first when ret is not void, then these; the x86 detour has this
-//           signature in the row's convention
-//
-// A row that lacks a column does not expand: the macro takes six, and the compiler says so.
-// A seam is followed by one WXL_SEAM_RAISES(domain, name, event) per event of the contract its
-// body raises, naming the event without its WXL_EV_ prefix. Both attachments publish the union as
-// the events this runtime can raise, and core/tools/seams/check_seams.py checks each one against
-// the body that is supposed to raise it.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The World domain: seams on the functions that load and unload the world.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including world.def"

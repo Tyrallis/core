@@ -1,63 +1,52 @@
-// The seam table: every seam the runtime realises, one domain per file.
-//
-// A seam is a function of the client with a Before and an After, both realised by both builds:
-// on x86 a detour at the function's resolved address calls Before, the original, then After; on
-// x64 the recompiled client's own source calls Before where the function starts and After where
-// it returns. The body of each is written once, in src/seams/<Domain>.cpp.
-//
-// There are two row shapes, and a seam is one or the other:
-//
-//   WXL_SEAM(domain, name, symbol, ret, conv, params)       an observing seam: Before, After
-//   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)  a gated seam: Gate
-//
-// An observing seam watches. It is told the call started and that it finished, and changes
-// neither. A gated seam stands in the doorway: its single entry point, Gate, is handed every
-// argument by address and answers whether it has taken the call -- taken means the function
-// does not run at all and the seam has said what it answers instead; not taken means the
-// function runs, with whatever the seam left at those addresses, which is also how an argument
-// is rewritten.
-//
-// A gated seam has no After, deliberately. On x64 the call sites are the client's own source,
-// and an After would have to be written at every return of the function rather than once at
-// its head; a seam that wants to watch a function watches it with the observing shape. So the
-// choice between the two is: does a promise of the contract need the call stopped or an
-// argument changed? If not, observe.
-//
-// A row whose parameter is a client type the boundary cannot name crosses as void*, and the
-// x64 call site then passes the address of a local copy of it: such an argument can be read
-// and not usefully rewritten. A row that means to be rewritten declares a type both sides
-// spell the same, as a path does.
-//
-// Include this with both macros defined. This file holds nothing but the domain tables, in the
-// order below; the columns are described in world.def.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// The seam table: every client function the runtime hooks, one domain per file. ARCHITECTURE.md
+// shows what a row generates on each side.
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
+//   WXL_SEAM(domain, name, symbol, ret, conv, params)       observes the call: Before and After
+//   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)  decides the call: Gate
+//   WXL_SEAM_RAISES(domain, name, event)                    an event the seam's body raises
 //
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// Before runs when the function is entered and After when it returns; neither changes the call.
+// Gate is handed every argument by address and answers whether it took the call: taken, the
+// function does not run and Gate has written its result; not taken, the function runs with the
+// arguments as Gate left them. A gate has no After, because on x64 an After is a call at every
+// return of the function. A seam is a gate only when the contract needs a call stopped or an
+// argument rewritten.
+//
+// Columns:
+//
+//   domain  the file the row is in; the first half of the seam's name ("World.Preload").
+//   name    the client function, not what it is used for: the second half of the seam's name and
+//           the namespace of its body (wxl::seam::World::Preload). Part of the ABI, never renamed.
+//   symbol  the function as the client fork names it: what x86 resolves against functions.def and
+//           where check_seams.py looks for the x64 call sites. "<name>@0x<address>" picks one of
+//           several functions sharing a name; an ambiguous plain name does not compile.
+//   ret     the return type at the C boundary, `void` for none. After takes it first.
+//   conv    the x86 convention: cdecl, stdcall, thiscall (`this` first in params), or regparm.
+//           Linkage decides: a free function, a class static, a member, or a static whose address
+//           is taken keeps its declared convention; a file-level static whose address is never
+//           taken may get one of the compiler's own, with arguments in registers, and is then
+//           regparm, attached through a thunk in src/seams/RegparmX86.cpp. check_conventions.py
+//           verifies the column against Wow.exe.
+//   params  the arguments at the C boundary: a reference is a pointer, a client class is a `void*`
+//           or its SDK struct. Before takes exactly these, After the result first. A `void*`
+//           reaches a gate on x64 as the address of a local copy: it can be read, not rewritten.
+//
+// WXL_SEAM_RAISES rows follow their seam and name the event without WXL_EV_. Both runtimes publish
+// their union as the events they raise, and check_seams.py checks each against the seam's body.
+//
+// Include with WXL_SEAM and WXL_SEAM_GATE defined; WXL_SEAM_RAISES defaults to nothing.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
-// No default: a consumer that has not been taught the deciding shape must not silently skip the
-// rows that use it. Define it, even to nothing, to say the omission is deliberate.
+// No default: a consumer that skips the gates says so by defining it to nothing.
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including seams.def"
 #endif
 
-// A second row shape, WXL_SEAM_RAISES(domain, name, event), says which events of the contract a
-// seam's body raises: one row per event, next to the seam that raises it. Both attachments build
-// the list of raisable events from it, so a seam cannot be live on one architecture and silent on
-// the other. A consumer that only wants the seams leaves it undefined and gets nothing.
 #ifndef WXL_SEAM_RAISES
     #define WXL_SEAM_RAISES(domain, name, event)
     #define WXL_SEAM_RAISES_DEFAULTED

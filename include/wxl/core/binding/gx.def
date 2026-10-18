@@ -1,22 +1,7 @@
-// The Gx domain of the client binding: the graphics device, as the render seams need to read it.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
-//
-// Row shapes: see binding.def, which documents them. This shard is the last one binding.def
-// includes, so the members it adds to wxl_core_init come after every earlier one: a recompiled
-// client built against an older header hands over a shorter table, and these read as absent.
+// The Gx domain of the client binding: the graphics device, as the render seams need to read it.
 
 #ifndef WXL_BINDING
 #error "define WXL_BINDING(name, ret, params, args, absent) before including gx.def"

@@ -1,18 +1,7 @@
-// The core runtime: where its files live, and the mod host it stands up for the client.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The core runtime: where its files live, and the mod host it stands up for the client.
 
 #pragma once
 
@@ -48,9 +37,9 @@ namespace wxl::core
      * Runs once, on whichever thread calls it first: on x86 the client's main thread from the
      * entry trampoline, or the core's own thread when the executable has none; on x64 the
      * client's call to WarcraftXLInit. Must not run under the loader lock, since loading a mod
-     * is a LoadLibrary. The host lives for the rest of the process: no seam exists yet from
-     * which a shutdown stage could run before the client tears its DLLs down, so nothing is
-     * unloaded. Never throws; a failure is logged and the client goes on without mods.
+     * is a LoadLibrary. The host lives for the rest of the process; the mods are told
+     * WXL_STAGE_SHUTDOWN and unloaded by the Client.Destroy seam. Never throws; a failure is
+     * logged and the client goes on without mods.
      * @return true when the host is up and its mods are loaded. A second call reports the first.
      */
     bool Start();

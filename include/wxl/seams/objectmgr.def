@@ -1,20 +1,7 @@
-// The ObjectMgr domain: seams on the object manager, where objects enter and leave the client.
-//
-// Row shape and columns: see world.def, which documents them.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The ObjectMgr domain: seams on the object manager, where objects enter and leave the client.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including objectmgr.def"
@@ -26,10 +13,10 @@
 // of ObjectMgrClient.cpp with one caller, CreateObject, which links the object into the visible
 // list right after it returns; an object the client already held comes back through Reenable
 // and never reaches here. After tracks the object and raises ObjectCreate with its handle.
-// Static with one caller: MSVC passes the object in ESI, the create block in EAX and the time in
-// ECX, and pushes nothing. Verified at 0x004D3FF0 (mov edx,[esi+0x14] with no prologue) and at
-// its caller 0x004D6D5A-63 (mov ecx,[ebp+8]; lea eax,[ebp-0x2EC] before the call). On x86 it is
-// attached through the thunk in src/seams/RegparmX86.cpp.
+//
+// regparm: the object in ESI, the create block in EAX, the time in ECX, nothing pushed. Evidence:
+// 0x004D3FF0 (mov edx,[esi+0x14], no prologue) and the caller at 0x004D6D5A-63 (mov ecx,[ebp+8];
+// lea eax,[ebp-0x2EC] before the call).
 WXL_SEAM(ObjectMgr, InitObject, "InitObject", void, regparm, (void* object, const void* create, uint32_t time))
 WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 
@@ -38,11 +25,10 @@ WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
 // in the world (SMSG_DESTROY_OBJECT, out of range, unlock), each after Disable. Before raises
 // ObjectDestroy while the object is still resident and its handle still resolves, then
 // untracks it: the handle a mod kept reads as absent from here on.
-// Same story as its two neighbours, in a register this time harder to guess: the object arrives
-// in EAX. Verified at 0x004D6FC0 (mov esi,eax before anything else is read) and at all three of
-// its callers, 0x004D737D, 0x004D76C0 and 0x004D786C, each of which does mov eax,esi immediately
-// before the call and pushes nothing. A generated detour cannot hold EAX across its own body, so
-// on x86 it is attached through the thunk in src/seams/RegparmX86.cpp instead.
+//
+// regparm: the object in EAX. Evidence: 0x004D6FC0 (mov esi,eax before anything else is read)
+// and its three callers, 0x004D737D, 0x004D76C0 and 0x004D786C, each `mov eax,esi` just before
+// the call, nothing pushed.
 WXL_SEAM(ObjectMgr, ObjDelete, "ObjDelete", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 
@@ -51,8 +37,8 @@ WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 // untracked, and from DestroyAllObjects on the way out of the world, which bypasses ObjDelete.
 // Before raises ObjectDestroy and untracks only an object still tracked, so each object is
 // announced once whichever way it leaves.
-// Same: the object arrives in ESI. Verified at 0x004D4090 (mov ecx,[esi+8], no prologue) and at
-// its callers, 0x004D4919 among them (mov esi,<object> before the call, nothing pushed). On x86
-// it is attached through the thunk in src/seams/RegparmX86.cpp.
+//
+// regparm: the object in ESI. Evidence: 0x004D4090 (mov ecx,[esi+8], no prologue) and its
+// callers, 0x004D4919 among them (mov esi,<object> before the call, nothing pushed).
 WXL_SEAM(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)

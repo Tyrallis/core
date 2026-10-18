@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
 // wxl.named-archives: widens the client's patch-archive directory scan from a single-letter
 // wildcard to an arbitrary one, so an archive or folder can be named "Patch-Interface.MPQ"
 // instead of only "Patch-A.MPQ".."Patch-Z.MPQ".
-// Copyright (C) 2026 WarcraftXL
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // The client hands "patch-?.MPQ" and "patch-%s-?.MPQ" (the locale variant) to its directory
 // listing as FindFirstFile wildcards, not printf specifiers: '?' matches exactly one character,

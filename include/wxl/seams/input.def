@@ -1,21 +1,8 @@
-// The Input domain: a seam on the one function every window message of the client passes
-// through.
-//
-// Row shape and columns: see world.def, which documents them.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The Input domain: a seam on the one function every window message of the client passes
+// through.
 
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including input.def"
@@ -25,15 +12,11 @@
 // sends it. A free function with external linkage, declared in Engine/Source/Os/Input.h and
 // installed as the window class's procedure, so its convention is the platform's default.
 //
-// Gated, because the contract lets a handler of Input write WXL_TRUE through
-// wxl_input_args::handled and expect the client not to see the message. Taking the call
-// answers 0, which is what a window procedure answers for a message it handled itself; that is
-// right for the messages a mod has any business swallowing -- keys, characters, mouse buttons
-// -- and wrong for the few that want a different value, so a handler that swallows one of
-// those is answering for the client and had better know it.
+// Gated: a handler of Input that writes WXL_TRUE through wxl_input_args::handled keeps the
+// message from the client. Taking the call answers 0, a window procedure's answer for a message it
+// handled -- right for keys, characters and mouse buttons, the messages a mod swallows.
 //
-// The x64 call site is in Engine/Source/Os/Win64/Input.cpp. Its Win32 twin is left alone: that
-// configuration is the layout reference and carries no runtime, and the stock 32-bit client
-// reaches this function by detour, not by call site.
+// The x64 call site is in Engine/Source/Os/Win64/Input.cpp. The fork's Win32 configuration
+// carries no runtime: the stock 32-bit client reaches this function by detour.
 WXL_SEAM_GATE(Input, WindowProc, "OsWindowProc", intptr_t, cdecl, (void* window, uint32_t message, uintptr_t wparam, intptr_t lparam))
 WXL_SEAM_RAISES(Input, WindowProc, Input)

@@ -1,28 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
 // The NetClient domain: seams on the two functions every message of the world connection goes
 // through, in and out.
 //
-// Row shape and columns: see world.def, which documents them. Both rows are gated seams
-// (WXL_SEAM_GATE), because the contract lets a handler of MessageReceived or MessageSent write
-// WXL_TRUE through wxl_message_args::suppressed and expect the message to stop there. An
-// observing seam could report the message and not withhold it; only a gated one can.
+// The first two rows are gates: a handler of MessageReceived or MessageSent that writes WXL_TRUE
+// through wxl_message_args::suppressed stops the message there.
 //
 // A message is a CDataStore positioned at its opcode: m_data + m_read is the opcode, and the
 // body runs from just past it to m_size. The opcode's width is not the same in both directions
 // -- the server writes a uint16, the client a uint32 -- so each body reads its own.
-// Copyright (C) 2026 WarcraftXL
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including netclient.def"

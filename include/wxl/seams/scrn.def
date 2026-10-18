@@ -1,20 +1,7 @@
-// The Scrn domain: seams on the screen's paint, which drives every frame the client draws.
-//
-// Row shape and columns: see world.def, which documents them.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The Scrn domain: seams on the screen's paint, which drives every frame the client draws.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including scrn.def"
@@ -24,16 +11,12 @@
 // and the window can be seen, it walks the layers in z-order -- the world and the interface are
 // two of them -- has each paint, and presents; otherwise it presents what is there and sleeps.
 //
-// Before raises FrameBegin, but only on the branch that draws, decided with the same two tests
-// the function makes, GxHasContext and GxIsWindowVisible -- the first of which it inlines, at
-// 0x004A8723. A minimised client paints nothing, and a frame announced then would be a mod
-// drawing with no device. After raises nothing; the frame closes at the present, in
-// Gx.ScenePresent, before the image is shown. A frame announces no stage: the paint is
-// registered after the script context exists, so ConsoleDevice.Initialize announces graphics.
+// Before raises FrameBegin only on the branch that draws, decided by the function's own two
+// tests, GxHasContext (inlined at 0x004A8723) and GxIsWindowVisible: a minimised client draws no
+// frame. After raises nothing; the frame ends at the present, in Gx.ScenePresent.
 //
-// It is a static of Layer.cpp, but its address is taken -- it is registered as an event handler
-// -- so it keeps the convention it is declared with. It never reads its two parameters; they are
-// on the stack all the same, pushed and cleaned by its callers (0x004A8BA4 pushes both and
-// cleans eight bytes), which is why the row declares them.
+// A static of Layer.cpp whose address is taken (it is registered as an event handler), so it
+// keeps its declared convention. It never reads its two parameters; its callers push and clean
+// them (0x004A8BA4 pushes both and cleans eight bytes), so the row declares them.
 WXL_SEAM(Scrn, OnPaint, "OnPaint", int32_t, cdecl, (const void* data, void* param))
 WXL_SEAM_RAISES(Scrn, OnPaint, FrameBegin)

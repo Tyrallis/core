@@ -1,20 +1,7 @@
-// The Event domain: seams on the scheduler that drives the client's ticks.
-//
-// Row shape and columns: see world.def, which documents them.
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
+// The Event domain: seams on the scheduler that drives the client's ticks.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including event.def"
@@ -30,17 +17,11 @@
 // Update, ahead of the client's own EVENT_ID_UPDATE handlers, so a mod's tick runs before the
 // game's. After raises nothing: the tick's fact is that it started.
 //
-// The one case where the call is not the fact: a context in SCHEDSTATE_CLOSED, during scheduler
-// teardown, reaches this function and dispatches nothing. Time still advanced and elapsed_sec is
-// still true, so the event is not false there; what it loses is the client's own handlers, which
-// a mod cannot observe anyway.
-// The convention is regparm, and the cost of getting that wrong was a crash on the first tick.
-// The function has internal linkage and MSVC gave it a private convention: context arrives in
-// EDI, and only curr_time and elapsed_sec are on the stack. Its body reads EDI before anything
-// else (`lea esi, [edi+0x10]`, the context's critical section), so a detour that returns to the
-// original with EDI holding anything of its own takes the client into EnterCriticalSection on a
-// pointer it computed from zero. Its one caller sets EDI immediately before the call and cleans
-// two stack slots after it, which is the whole proof. On x86 it is attached through the thunk in
-// src/seams/RegparmX86.cpp, which keeps EDI across the seam's own body and hands it back.
+// During scheduler teardown a context in SCHEDSTATE_CLOSED reaches this function and dispatches
+// nothing; Update is still raised, with the time that elapsed.
+//
+// regparm: context in EDI, curr_time and elapsed_sec on the stack. The body reads EDI first
+// (`lea esi, [edi+0x10]`, the context's critical section); the one caller sets EDI just before
+// the call and cleans two stack slots after it.
 WXL_SEAM(Event, DispatchUpdate, "IEvtDispatchUpdate", void, regparm, (void* context, uint32_t curr_time, float elapsed_sec))
 WXL_SEAM_RAISES(Event, DispatchUpdate, Update)
