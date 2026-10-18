@@ -1,7 +1,9 @@
 # seams: the wiring check
 
-`check_seams.py` compares the seam table in `core/include/wxl/seams/*.def` with the client fork's
-sources and fails when the two disagree.
+Two tools read the same table. `check_seams.py` compares the seam table in
+`core/include/wxl/seams/*.def` with the client fork's sources and fails when the two disagree.
+`check_conventions.py` compares the same table with `Wow.exe` 3.3.5a (12340) and fails when a row
+names a convention the binary does not use; it is documented at the bottom of this file.
 
 ## Why it exists
 
@@ -97,4 +99,80 @@ needs nothing but Python:
 
 ```sh
 python core/tools/seams/test_check_seams.py
+```
+
+# conventions: the binary check
+
+`check_seams.py` cannot see a row whose `conv` column is wrong, because it never looks at
+`Wow.exe`. A row that says `cdecl` about a function taking its context in EDI produces a detour
+that clobbers EDI; the original then dereferences whatever was left there and the client dies on
+the first frame. `check_conventions.py` closes that: it reads the function out of the binary
+through the `dawnlight-rag` ghidra MCP and compares what the instructions do with what the row
+claims. x86 only -- the x64 realisation is direct source calls with no convention of its own.
+
+## What it decides, per row
+
+It resolves the row's `symbol` column against `include/wxl/offsets/generated/functions.def`, the
+way `WXL_SEAM_SITE` does, including the `"<name>@0x<address>"` form, then reads the function:
+
+| | |
+| --- | --- |
+| **register arguments** | a register read before it is written is one the function was handed. `eax`, `ecx` and `edx` count only before the first `call`, after which they hold whatever a callee left; `ebx`, `esi` and `edi` count anywhere, except where a `push` is matched by a `pop` and is therefore a save |
+| **thiscall** | `ecx` is the only register argument |
+| **stack arguments** | the widest `[ebp+N]` the function reaches, or `[esp+N]` tracked against the entry stack pointer when it has no frame, and the amount its `ret` pops, whichever is larger |
+| **who cleans** | `ret N` means the function cleans N bytes, so `stdcall` or `thiscall`; `ret` with arguments on the stack means the caller cleans, so `cdecl` |
+| **the call sites** | `ghidra_xrefs`, then the enclosing function decoded from its entry: the pushes before the call and an `add esp, N` after it |
+| **the thunks** | a `regparm` row has a thunk in `src/seams/RegparmX86.cpp`, a thunk belongs to a `regparm` row, and the registers the thunk restores before calling the original are the ones the function reads |
+
+A row's declared parameters are measured in 4-byte slots, so a `uint64_t` counts twice and a
+`thiscall` row's first parameter is `this` in ECX rather than a slot. Every verdict is printed
+with the addresses it was read from, so the claim can be checked rather than believed.
+
+Two things it is careful about, because both mislead by hand:
+
+* **MSVC elides `add esp, N`.** `World.Preload` is cleaned explicitly at `0x0074B64A` and not at
+  all at `0x0071375A`, where the compiler folded the cleanup into a later adjustment. No cleanup
+  at one site proves nothing, so the tool reads further sites until one cleans, and a cleanup
+  *larger* than the call needs is treated as a fold rather than a disagreement. The verdict rests
+  on the function's own `ret`; the call sites corroborate it.
+* **`ghidra_disasm` decodes linearly from wherever it is pointed.** Every decode starts on an
+  address known to be an instruction boundary -- a function entry, never a byte before a call --
+  and stops at the switch table a `jmp dword ptr [reg*4 + 0x...]` points into, which otherwise
+  decodes as plausible instructions reading registers the function never takes.
+
+## Running it
+
+```sh
+python core/tools/seams/check_conventions.py             # from the core checkout
+python core/tools/seams/check_conventions.py -v          # what the binary says about every row
+python core/tools/seams/check_conventions.py --json      # the same as data
+python core/tools/seams/check_conventions.py --point Event.DispatchUpdate
+python core/tools/seams/check_conventions.py --cache mcp.json   # then --offline to replay it
+```
+
+Python 3, standard library only; it speaks the MCP's HTTP transport itself. It exits 0 when every
+row agrees, 1 with one line per disagreement otherwise, and 2 when it cannot start -- a missing
+offsets table, or an MCP that does not answer, which it names rather than crashing on. A full run
+is around 90 MCP calls and a second and a half. Start the stack with `infra/deploy/rag-up.ps1`
+then `infra/deploy/mcp-up.ps1`, or point `--mcp` elsewhere.
+
+## What it does not prove
+
+That the registers of a `regparm` row carry the parameters in the order the row lists them. The
+tool checks that the set of registers matches the thunk and that the counts add up; which one is
+`object` and which is `create` is read from the callers, and `RegparmX86.cpp` records that above
+each thunk with the addresses it was read from. It also cannot settle a function that nothing
+calls directly and that takes nothing on the stack: with no arguments, `cdecl` and `stdcall` are
+the same machine code, and the tool says so instead of guessing.
+
+## Self-test
+
+`test_check_conventions.py` serves a stub binary over a stub MCP -- synthetic functions whose
+convention is known because the test wrote their instructions -- and asserts the tool's exit code
+and the problem it names, once per rule. It then points the tool at the real client and compares
+all 23 rows against the conventions verified by hand against the disassembly, skipping that half
+when the MCP is not up:
+
+```sh
+python core/tools/seams/test_check_conventions.py
 ```
