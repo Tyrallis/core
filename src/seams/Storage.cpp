@@ -60,9 +60,9 @@ namespace wxl::seam::Storage::OpenFile
         // client reads each of its databases once, so this is the only moment that counts.
         // Mods see the open as the path that was asked for, and may still redirect it again.
         const std::size_t length = std::strlen(*name);
-        if (const char* served = wxl::core::services::data::ServedPath(*name, length))
+        if (wxl::core::services::data::ServedPath(*name, length, g_redirect, sizeof g_redirect))
         {
-            *name = served;
+            *name = g_redirect;
             return false;
         }
 

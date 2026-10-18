@@ -22,8 +22,12 @@
 
 #include "wxl/host/mod_host.hpp"
 
+#include <windows.h>
+
 #include <cstddef>
+#include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -39,10 +43,28 @@ namespace
         bool        used = false; ///< the client has read it; an override now is too late
     };
 
+    // SRWLOCK rather than std::mutex, for the reason the log gives: zero-initialised, with no
+    // constructor and no destructor, so it holds from the first call to the last. It is needed
+    // because the client opens files from more than one thread, while mods claim and give back
+    // tables from their own, and both reach the two sets below.
+    SRWLOCK g_lock = SRWLOCK_INIT;
+
     std::vector<Served>      g_served;
     std::vector<std::string> g_loaded; ///< every table the client has read, basename lowercased
 
+    /// Held across a whole operation. Every one of them is cold: the hot path never gets here.
+    struct Held
+    {
+        Held() { AcquireSRWLockExclusive(&g_lock); }
+        ~Held() { ReleaseSRWLockExclusive(&g_lock); }
+        Held(const Held&)            = delete;
+        Held& operator=(const Held&) = delete;
+    };
+
     char Lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+
+    /// Longer than any name the client's databases carry: one that does not fit is not one.
+    constexpr std::size_t kKeyMax = 128;
 
     /**
      * @brief A table's name reduced to what identifies it: the file, lowercased.
@@ -50,27 +72,37 @@ namespace
      * The client names a table by its full path, "DBFilesClient\Spell.dbc", and a mod is
      * likely to write just "Spell.dbc". Database names are unique across the client, so the
      * folder carries no information and dropping it makes both spellings the same table.
+     *
+     * Written into the caller's buffer and terminated there, so no key is ever allocated.
      */
-    std::string Key(const char* text, size_t size)
+    std::string_view KeyInto(const char* text, std::size_t size, char (&out)[kKeyMax])
     {
-        if (!text) return std::string();
-        size_t start = 0;
-        for (size_t i = 0; i < size; ++i)
+        out[0] = 0;
+        if (!text) return {};
+
+        std::size_t start = 0;
+        for (std::size_t i = 0; i < size; ++i)
             if (text[i] == '\\' || text[i] == '/') start = i + 1;
 
-        std::string key;
-        key.reserve(size - start);
-        for (size_t i = start; i < size; ++i) key.push_back(Lower(text[i]));
-        return key;
+        const std::size_t length = size - start;
+        if (length >= kKeyMax) return {};
+        for (std::size_t i = 0; i < length; ++i) out[i] = Lower(text[start + i]);
+        out[length] = 0;
+        return std::string_view(out, length);
     }
 
-    std::string Key(wxl_str text) { return Key(text.data, text.size); }
-
-    Served* Find(const std::string& key)
+    Served* Find(std::string_view key)
     {
         for (Served& served : g_served)
             if (served.table == key) return &served;
         return nullptr;
+    }
+
+    bool Loaded(std::string_view key)
+    {
+        for (const std::string& table : g_loaded)
+            if (table == key) return true;
+        return false;
     }
 
     uint32_t Asking()
@@ -90,63 +122,102 @@ namespace
 
     wxl_result WXL_CALL ServeTable(wxl_str table, wxl_str path)
     {
-        const std::string key = Key(table);
+        char                   buffer[kKeyMax];
+        const std::string_view key = KeyInto(table.data, table.size, buffer);
         if (key.empty() || !path.data || !path.size) return WXL_E_INVALID;
 
         const std::string file(path.data, path.size);
         if (!wxl::core::binding::file_exists(file.c_str()))
         {
             WLOG_WARN(kTag, "%s cannot serve %s from %s: the client cannot read it",
-                      ModName(Asking()), key.c_str(), file.c_str());
+                      ModName(Asking()), buffer, file.c_str());
             return WXL_E_NOT_FOUND;
         }
 
-        if (const Served* taken = Find(key))
+        const uint32_t mod = Asking();
+
+        bool        taken = false;
+        uint32_t    owner = 0;
+        std::string from;
+        bool        late = false;
         {
-            WLOG_WARN(kTag, "%s cannot serve %s: %s already does, from %s", ModName(Asking()),
-                      key.c_str(), ModName(taken->mod), taken->path.c_str());
-            return WXL_E_FAILED;
+            Held held;
+            if (const Served* already = Find(key))
+            {
+                taken = true;
+                owner = already->mod;
+                from  = already->path;
+            }
+            else
+            {
+                late = Loaded(key);
+                g_served.push_back(Served{std::string(key), file, mod, late});
+            }
         }
 
-        const bool late = std::find(g_loaded.begin(), g_loaded.end(), key) != g_loaded.end();
-        g_served.push_back(Served{key, file, Asking(), late});
+        if (taken)
+        {
+            WLOG_WARN(kTag, "%s cannot serve %s: %s already does, from %s", ModName(mod), buffer,
+                      ModName(owner), from.c_str());
+            return WXL_E_FAILED;
+        }
         if (late)
             WLOG_WARN(kTag, "%s serves %s from %s, but the client read it already; it will be "
                             "used next session and not this one",
-                      ModName(Asking()), key.c_str(), file.c_str());
+                      ModName(mod), buffer, file.c_str());
         else
-            WLOG_INFO(kTag, "%s serves %s from %s", ModName(Asking()), key.c_str(), file.c_str());
+            WLOG_INFO(kTag, "%s serves %s from %s", ModName(mod), buffer, file.c_str());
         return WXL_OK;
     }
 
     wxl_result WXL_CALL RestoreTable(wxl_str table)
     {
-        const std::string key = Key(table);
-        for (size_t i = 0; i < g_served.size(); ++i)
+        char                   buffer[kKeyMax];
+        const std::string_view key = KeyInto(table.data, table.size, buffer);
+        if (key.empty()) return WXL_E_NOT_FOUND;
+
+        const uint32_t mod    = Asking();
+        wxl_result     answer = WXL_E_NOT_FOUND;
         {
-            if (g_served[i].table != key) continue;
-            // Only whoever claimed it may give it back: one mod cannot undo another's work
-            // behind its back and leave it reading a table it does not expect.
-            if (g_served[i].mod != Asking()) return WXL_E_FAILED;
-            g_served.erase(g_served.begin() + static_cast<std::ptrdiff_t>(i));
-            WLOG_INFO(kTag, "%s is the client's own again", key.c_str());
-            return WXL_OK;
+            Held held;
+            for (std::size_t i = 0; i < g_served.size(); ++i)
+            {
+                if (g_served[i].table != key) continue;
+                // Only whoever claimed it may give it back: one mod cannot undo another's work
+                // behind its back and leave it reading a table it does not expect.
+                if (g_served[i].mod != mod)
+                {
+                    answer = WXL_E_FAILED;
+                    break;
+                }
+                g_served.erase(g_served.begin() + static_cast<std::ptrdiff_t>(i));
+                answer = WXL_OK;
+                break;
+            }
         }
-        return WXL_E_NOT_FOUND;
+
+        if (answer == WXL_OK) WLOG_INFO(kTag, "%s is the client's own again", buffer);
+        return answer;
     }
 
     wxl_str WXL_CALL ServedFrom(wxl_str table)
     {
-        const Served* served = Find(Key(table));
+        char                   buffer[kKeyMax];
+        const std::string_view key = KeyInto(table.data, table.size, buffer);
+
+        Held          held;
+        const Served* served = Find(key);
         if (!served) return wxl_str{nullptr, 0};
         return wxl_str{served->path.c_str(), static_cast<uint32_t>(served->path.size())};
     }
 
     wxl_bool WXL_CALL IsLoaded(wxl_str table)
     {
-        const std::string key = Key(table);
-        return std::find(g_loaded.begin(), g_loaded.end(), key) != g_loaded.end() ? WXL_TRUE
-                                                                                   : WXL_FALSE;
+        char                   buffer[kKeyMax];
+        const std::string_view key = KeyInto(table.data, table.size, buffer);
+
+        Held held;
+        return Loaded(key) ? WXL_TRUE : WXL_FALSE;
     }
 
     const wxl_data_api g_data = {
@@ -160,25 +231,56 @@ namespace wxl::core::services
 
     namespace data
     {
-        const char* ServedPath(const char* path, size_t size)
+        bool ServedPath(const char* path, size_t size, char* out, size_t capacity)
         {
-            if (!path) return nullptr;
-            const std::string key = Key(path, size);
-            if (key.size() < 5 || key.compare(key.size() - 4, 4, ".dbc") != 0) return nullptr;
+            if (!path || !out || !capacity) return false;
 
-            // Every database the client opens is noted, whether or not anyone serves it: that
-            // is what lets a mod be told its override came too late.
-            if (std::find(g_loaded.begin(), g_loaded.end(), key) == g_loaded.end())
-                g_loaded.push_back(key);
+            // The suffix is read off the path as it came, before anything is built. This runs
+            // at every file the client opens, and all but a few hundred of them are not
+            // databases: what the rest of this function costs is what the test spares them.
+            if (size < 5) return false;
+            const char* ext = path + size - 4;
+            if (ext[0] != '.' || Lower(ext[1]) != 'd' || Lower(ext[2]) != 'b'
+                || Lower(ext[3]) != 'c')
+                return false;
 
-            Served* served = Find(key);
-            if (!served) return nullptr;
-            served->used = true;
-            return served->path.c_str();
+            char                   buffer[kKeyMax];
+            const std::string_view key = KeyInto(path, size, buffer);
+            if (key.empty()) return false;
+
+            bool served  = false;
+            bool tooLong = false;
+            {
+                Held held;
+
+                // Every database the client opens is noted, whether or not anyone serves it:
+                // that is what lets a mod be told its override came too late.
+                if (!Loaded(key)) g_loaded.emplace_back(key);
+
+                if (Served* table = Find(key))
+                {
+                    table->used = true;
+                    // Copied out rather than handed over: the mod serving it may give the
+                    // table back from another thread the moment the lock drops, and the client
+                    // reads the path after this has returned.
+                    if (table->path.size() < capacity)
+                    {
+                        std::memcpy(out, table->path.c_str(), table->path.size() + 1);
+                        served = true;
+                    }
+                    else
+                        tooLong = true;
+                }
+            }
+
+            if (tooLong)
+                WLOG_WARN(kTag, "%s is served from a path too long to hand to the client", buffer);
+            return served;
         }
 
         void ForgetMod(uint32_t mod)
         {
+            Held held;
             for (size_t i = g_served.size(); i > 0; --i)
             {
                 if (g_served[i - 1].mod != mod) continue;
@@ -190,6 +292,7 @@ namespace wxl::core::services
 
         void Clear()
         {
+            Held held;
             g_served.clear();
             g_loaded.clear();
         }

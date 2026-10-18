@@ -1310,18 +1310,27 @@ namespace
         Check(api.serve_table(Str("DBFilesClient\\Spell.dbc"), mine) == WXL_E_FAILED,
               "the same table under its full name is the same table, and is already taken");
 
-        // What the gate answers for the path the client is about to open.
+        // What the gate answers for the path the client is about to open, written where the
+        // seam keeps it: the service hands over a copy, never a pointer into its own tables.
+        char        redirect[512] = {};
         const char* full = "DBFilesClient\\Spell.dbc";
-        const char* served = wxl::core::services::data::ServedPath(full, strlen(full));
-        Check(served != nullptr && strcmp(served, "Mods\\mymod\\Spell.dbc") == 0,
+        Check(wxl::core::services::data::ServedPath(full, strlen(full), redirect, sizeof redirect)
+                  && strcmp(redirect, "Mods\\mymod\\Spell.dbc") == 0,
               "so the client opens the mod's file instead of its own");
 
         const char* other = "DBFilesClient\\Item.dbc";
-        Check(wxl::core::services::data::ServedPath(other, strlen(other)) == nullptr,
+        Check(!wxl::core::services::data::ServedPath(other, strlen(other), redirect,
+                                                    sizeof redirect),
               "a database nobody serves is opened as the client asked");
         const char* texture = "World\\Maps\\Azeroth.wdt";
-        Check(wxl::core::services::data::ServedPath(texture, strlen(texture)) == nullptr,
+        Check(!wxl::core::services::data::ServedPath(texture, strlen(texture), redirect,
+                                                    sizeof redirect),
               "and a file that is not a database is not even looked up");
+        const char* upper = "DBFilesClient\\CHARTITLES.DBC";
+        Check(!wxl::core::services::data::ServedPath(upper, strlen(upper), redirect,
+                                                    sizeof redirect)
+                  && api.is_loaded(Str("CharTitles.dbc")) == WXL_TRUE,
+              "a database named in capitals is the same database, suffix and all");
 
         Check(api.is_loaded(Str("Spell.dbc")) == WXL_TRUE
                   && api.is_loaded(Str("Talent.dbc")) == WXL_FALSE,

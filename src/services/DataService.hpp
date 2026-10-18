@@ -28,16 +28,20 @@ namespace wxl::core::services
     namespace data
     {
         /**
-         * @brief What the client should open instead, for a path it is about to open.
+         * @brief Whether the client should open something else, for a path it is about to open.
          *
-         * Called by the Storage seam at every open. Answers null for anything that is not a
-         * client database and for one nobody serves, which is almost every call: the check is
-         * a suffix test and a lookup by name.
+         * Called by the Storage seam at every open, which is why the database suffix is read
+         * off the path before anything else happens: for the overwhelming majority of opens
+         * the answer costs four character comparisons and no allocation, no lock and no lookup.
+         *
+         * When a mod serves the table, what it serves is written to @p out, terminated there,
+         * and true returned. It is copied rather than handed over because the caller's buffer
+         * outlives the call and the service's own strings do not.
          *
          * Every database it sees is remembered as read, which is what lets a mod be told that
          * an override it registered has come too late to be used.
          */
-        const char* ServedPath(const char* path, std::size_t size);
+        bool ServedPath(const char* path, std::size_t size, char* out, std::size_t capacity);
 
         /// Gives back every table a mod was serving, when it is disabled or unloaded.
         void ForgetMod(uint32_t mod);
