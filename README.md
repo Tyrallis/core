@@ -6,7 +6,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.2-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.3-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -50,6 +50,9 @@ the lifecycle, the log.
   call from inside it. A row is observing (`Before`, `After`) or gated (`Gate`, which can stop
   the call and rewrite its arguments).
 - **An unbuffered log.** One write per line, so a crash keeps everything up to it.
+
+How the pieces fit, and which files a new seam, fact or event touches:
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 📋 Table of contents
 
@@ -145,7 +148,7 @@ What a mod can reach **today**, by build:
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
-| lifecycle stages | `EARLY`, `STORAGE`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
+| lifecycle stages | `EARLY`, `STORAGE`, `GRAPHICS`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
 
 ### `wxl.script` and the two script contexts
 
@@ -266,16 +269,21 @@ Both read memory before writing: if the bytes are already in the patched state t
 
 ```
 include/wxl/core/init.h          the 64-bit entry point, for the client to include
+include/wxl/core/binding/        the client binding: the facts read out of the client, one .def per domain
 include/wxl/seams/               the seam table (one .def per domain) and seams.h, their Before/After
 include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
-src/runtime/                     host bring-up, stages, the per-architecture attachment
-src/seams/                       the seam bodies, one file per domain (both); the x86 detours; the table as data (x64)
+src/runtime/                     host bring-up, stages, frames, the per-architecture attachment
+src/binding/                     the binding realised: memory reads (x86), the client's accessors (x64)
+src/seams/                       the seam bodies, one file per domain (both); the x86 detours and thunks
+src/objects/                     wxl.object over the binding
+src/services/                    wxl.script, wxl.storage, wxl.data (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
 src/hook/                        the detour engine and the named points        (x86)
-src/services/                    wxl.script (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
+tests/seam_harness.cpp           every seam body against a fake client; --bench times the hot paths
 mods/                            the mods above                                (x86)
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
+tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
 ```
 
@@ -290,6 +298,7 @@ tools/offsets/, tools/layouts/   regenerate the tables from the decompiled clien
 | `refused … requires service …` | the mod needs something this build does not publish; see the table above |
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
 | `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
+| `the client and this runtime were built from different binding tables` (x64) | the client and `WarcraftXL.dll` come from different trees; the line names the first row of `binding.def` that differs. Rebuild both from one tree |
 | `the client handed no <row> accessor; what reads it answers absent` (x64) | the client was built against an older `init.h` than this runtime; the row of `binding.def` it names answers its absent value (map `-1`, no position, ...) until the client passes one |
 
 ## 📄 License

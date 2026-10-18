@@ -33,7 +33,7 @@ For every row of the seam table:
 | **in place** | every call sits inside the function the row's `symbol` column names, not another one |
 | **arity** | the call passes as many arguments as the row declares parameters; `After` of a row with a return type takes the result first, so one more |
 | **arguments** | argument *n* carries the row's parameter *n* by name; a `thiscall` row's first parameter is carried by `this` |
-| **ABI** | every row has its six columns; `ret` is not empty; `conv` is `cdecl`, `thiscall` or `stdcall`; a `thiscall` row's first parameter is a pointer |
+| **ABI** | every row has its six columns; `ret` is not empty; `conv` is `cdecl`, `thiscall`, `stdcall` or `regparm`; a `thiscall` row's first parameter is a pointer |
 
 and, in the other direction:
 
@@ -71,7 +71,7 @@ beside that checkout.
 ## In the build
 
 `client/WarcraftXL/CMakeLists.txt` declares a `wxl-seam-check` target that runs the tool, and
-`WarcraftXLClient` depends on it, so a 64-bit build of the client runs the check and fails on a
+`WorldClient` depends on it, so a 64-bit build of the client runs the check and fails on a
 dropped call site. It is declared there and not in the fork's root `CMakeLists.txt` on purpose:
 `core/tools/layouts/measure_layouts.py` parses that root file and refuses a condition it does not
 recognise, so nothing conditional may be added to it.
@@ -170,7 +170,7 @@ the same machine code, and the tool says so instead of guessing.
 `test_check_conventions.py` serves a stub binary over a stub MCP -- synthetic functions whose
 convention is known because the test wrote their instructions -- and asserts the tool's exit code
 and the problem it names, once per rule. It then points the tool at the real client and compares
-all 23 rows against the conventions verified by hand against the disassembly, skipping that half
+every row against the conventions verified by hand against the disassembly, skipping that half
 when the MCP is not up:
 
 ```sh
