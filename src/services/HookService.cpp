@@ -19,10 +19,14 @@
 #include "common/Log.hpp"
 #include "hook/Engine.hpp"
 #include "hook/Points.hpp"
+#include "runtime/Core.hpp"
 #include "runtime/Image.hpp"
+
+#include "wxl/host/mod_host.hpp"
 
 #include <windows.h>
 #include <cstring>
+#include <vector>
 
 namespace
 {
@@ -31,6 +35,40 @@ namespace
     wxl_str Str(const char* text)
     {
         return wxl_str{text, static_cast<uint32_t>(strlen(text))};
+    }
+
+    /// One hook a mod attached, and the mod it belongs to. A detour is a jump into that
+    /// mod's binary, so the runtime has to know whose it is before the binary can be freed.
+    struct Owned
+    {
+        wxl_hook id;
+        uint32_t mod; ///< the host's token for the mod, 0 when the runtime attached it itself
+    };
+
+    std::vector<Owned> g_owned;
+
+    /// The mod the host says is running: whoever is inside the call that is attaching.
+    uint32_t Asking()
+    {
+        const wxl::host::ModHost* host = wxl::core::Host();
+        return host ? host->CurrentMod() : 0u;
+    }
+
+    /// Records a successful attach against the mod that asked for it.
+    wxl_hook Remember(wxl_hook hook)
+    {
+        if (hook != WXL_HOOK_NONE) g_owned.push_back(Owned{hook, Asking()});
+        return hook;
+    }
+
+    void Forget(wxl_hook hook)
+    {
+        for (std::size_t i = 0; i < g_owned.size(); ++i)
+        {
+            if (g_owned[i].id != hook) continue;
+            g_owned.erase(g_owned.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
     }
 
     /// The named points, or none at all in an image whose addresses they do not describe.
@@ -74,13 +112,15 @@ namespace
             WLOG_WARN(kTag, "attach '%s': no point of that name", name ? name : "(null)");
             return WXL_HOOK_NONE;
         }
-        return wxl::hook::Attach(point->name, reinterpret_cast<void*>(point->address), detour,
-                                 original, priority);
+        return Remember(wxl::hook::Attach(point->name, reinterpret_cast<void*>(point->address),
+                                          detour, original, priority));
     }
 
     wxl_result WXL_CALL Detach(wxl_hook hook)
     {
-        return wxl::hook::Detach(hook) ? WXL_OK : WXL_E_NOT_FOUND;
+        if (!wxl::hook::Detach(hook)) return WXL_E_NOT_FOUND;
+        Forget(hook);
+        return WXL_OK;
     }
 
     // --- wxl.hook.raw -----------------------------------------------------------------------
@@ -95,8 +135,8 @@ namespace
     wxl_hook WXL_CALL AttachAt(const char* name, uintptr_t target, void* detour, void** original,
                                int32_t priority)
     {
-        return wxl::hook::Attach(name ? name : "?", reinterpret_cast<void*>(target), detour,
-                                 original, priority);
+        return Remember(wxl::hook::Attach(name ? name : "?", reinterpret_cast<void*>(target),
+                                          detour, original, priority));
     }
 
     const wxl_hook_api g_hook = {
@@ -120,4 +160,27 @@ namespace wxl::core::services
 {
     const wxl_hook_api&     HookApi() { return g_hook; }
     const wxl_hook_raw_api& HookRawApi() { return g_hookRaw; }
+
+    void ReleaseHooksOf(uint32_t mod)
+    {
+        std::size_t released = 0;
+        for (std::size_t i = g_owned.size(); i > 0; --i)
+        {
+            Owned& owned = g_owned[i - 1];
+            if (owned.mod != mod) continue;
+            wxl::hook::Detach(owned.id);
+            g_owned.erase(g_owned.begin() + static_cast<std::ptrdiff_t>(i - 1));
+            ++released;
+        }
+        if (released)
+            WLOG_INFO(kTag, "detached %zu hook(s) a mod left attached", released);
+    }
+
+    void ReleaseEveryHook()
+    {
+        for (const Owned& owned : g_owned) wxl::hook::Detach(owned.id);
+        if (!g_owned.empty())
+            WLOG_INFO(kTag, "detached %zu hook(s) still attached on the way out", g_owned.size());
+        g_owned.clear();
+    }
 }

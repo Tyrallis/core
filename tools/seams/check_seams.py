@@ -161,7 +161,9 @@ def read_table(seams_dir, problems):
                                 % (origin, macro, len(columns)))
                 continue
             domain, name, symbol, returns, convention, params = columns
-            symbol = symbol.strip().strip('"')
+            # "<name>@0x<address>" picks one of several functions the client gives that name
+            # to; everything outside the x86 attachment wants the name alone.
+            symbol = symbol.strip().strip('"').split("@")[0]
             if not returns:
                 problems.append("%s: the ret column of %s.%s is empty; write void for none"
                                 % (origin, domain, name))

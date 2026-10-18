@@ -60,6 +60,10 @@ namespace wxl::core::attachment
         };
     }
 
+    void Release(uint32_t mod) { services::ReleaseHooksOf(mod); }
+
+    void ReleaseAll() { services::ReleaseEveryHook(); }
+
     void Install()
     {
         // The core's own detours go in before any mod can attach behind them, and only in the

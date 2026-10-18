@@ -63,6 +63,41 @@ namespace wxl::offsets::site_detail
         }
     }
 
+    /// The index of '@' in a seam's symbol, or npos when it carries no address.
+    constexpr std::size_t AtSign(const char* text)
+    {
+        for (std::size_t i = 0; text[i]; ++i)
+            if (text[i] == '@') return i;
+        return static_cast<std::size_t>(-1);
+    }
+
+    /// The hexadecimal address written after the '@', as in "SI2::PlaySoundKit@0x004C6A40".
+    constexpr std::uint32_t HexAt(const char* text, std::size_t from)
+    {
+        std::uint32_t value = 0;
+        std::size_t   i     = from;
+        if (text[i] == '0' && (text[i + 1] == 'x' || text[i + 1] == 'X')) i += 2;
+        for (; text[i]; ++i) {
+            const char c = text[i];
+            const int digit = (c >= '0' && c <= '9')   ? c - '0'
+                              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                              : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                                                       : -1;
+            if (digit < 0) return 0;
+            value = value * 16u + static_cast<std::uint32_t>(digit);
+        }
+        return value;
+    }
+
+    /// Whether a row's name is exactly the first `n` characters of `spec`.
+    constexpr bool EqualUpTo(const char* row, const char* spec, std::size_t n)
+    {
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!row[i] || row[i] != spec[i]) return false;
+        }
+        return row[n] == 0;
+    }
+
     struct Match
     {
         std::uint32_t address = 0;
@@ -87,6 +122,33 @@ namespace wxl::offsets::site_detail
         }
         return m;
     }
+
+    /**
+     * @brief The function a seam's symbol names, with an overload told apart by its address.
+     *
+     * A symbol is either a plain name, which must be carried by exactly one address, or
+     * "<name>@<address>" for a name the client gives to more than one function. The second
+     * form is the only way a row can reach an overload, and the only reason to write it.
+     */
+    constexpr Match FindSpec(const char* spec)
+    {
+        const std::size_t at = AtSign(spec);
+        if (at == static_cast<std::size_t>(-1)) return Find(spec, 0, false);
+
+        const std::uint32_t address = HexAt(spec, at + 1);
+        Match               m;
+        std::uint32_t       last = 0;
+        for (const Row& r : kRows) {
+            if (!EqualUpTo(r.name, spec, at)) continue;
+            if (r.address != address) continue;
+            if (m.found && r.address == last) continue;
+            last = r.address;
+            ++m.found;
+            m.address = r.address;
+            m.extent  = r.length ? r.length : r.bound;
+        }
+        return m;
+    }
 }
 
 // WXL_SITE(name, delta): the address `delta` bytes into the one function called `name`.
@@ -102,6 +164,21 @@ namespace wxl::offsets::site_detail
         static_assert(m.extent != 0, "WXL_SITE: " name " has no known extent (sentinel row)"); \
         static_assert(static_cast<std::uint64_t>(delta) < m.extent, \
                       "WXL_SITE: delta " #delta " reaches past the end of " name); \
+        return static_cast<std::uintptr_t>(m.address) + static_cast<std::uintptr_t>(delta); \
+    }())
+
+// WXL_SEAM_SITE(spec, delta): the same for a seam's symbol column, which may be a plain
+// name or "<name>@<address>" when the client gives that name to more than one function.
+#define WXL_SEAM_SITE(spec, delta) \
+    ([]() consteval -> std::uintptr_t { \
+        constexpr ::wxl::offsets::site_detail::Match m = \
+            ::wxl::offsets::site_detail::FindSpec(spec); \
+        static_assert(m.found != 0, "WXL_SEAM_SITE: no function matches " spec); \
+        static_assert(m.found < 2, "WXL_SEAM_SITE: " spec " has several addresses; write it as " \
+                                   "\"<name>@0x...\" to say which"); \
+        static_assert(m.extent != 0, "WXL_SEAM_SITE: " spec " has no known extent"); \
+        static_assert(static_cast<std::uint64_t>(delta) < m.extent, \
+                      "WXL_SEAM_SITE: delta " #delta " reaches past the end of " spec); \
         return static_cast<std::uintptr_t>(m.address) + static_cast<std::uintptr_t>(delta); \
     }())
 

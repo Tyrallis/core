@@ -16,6 +16,7 @@
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "runtime/Attachment.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/ScriptService.hpp"
@@ -47,6 +48,19 @@ namespace
 namespace wxl::core
 {
     wxl::host::ModHost* Host() { return g_host.get(); }
+}
+
+namespace
+{
+    int g_released = 0;
+}
+
+// The attachment is per-architecture and the harness is neither, so it stands in for it. What
+// the seam bodies ask of it is counted, which is how the checks below know it was asked.
+namespace wxl::core::attachment
+{
+    void Release(uint32_t) { ++g_released; }
+    void ReleaseAll() { ++g_released; }
 }
 
 // --- A fake client, handed to the binding as a wxl_core_init ---------------------------------
@@ -409,6 +423,7 @@ namespace
         case WXL_EV_Connected:
         case WXL_EV_Disconnected:      return sizeof(wxl_connection_args);
         case WXL_EV_Input:             return sizeof(wxl_input_args);
+        case WXL_EV_SoundPlay:         return sizeof(wxl_sound_args);
         case WXL_EV_FileOpen:          return sizeof(wxl_file_open_args);
         default:                       return 0;
         }
@@ -1201,6 +1216,53 @@ namespace
         g_host->Events().Unsubscribe(sub);
     }
 
+    // --- Sound: a gate that can keep a sound from starting -------------------------------------
+
+    bool g_hushSound = false;
+    int  g_sounds    = 0;
+    uint32_t g_lastKit = 0;
+
+    void WXL_CALL OnSound(void*, const void* args)
+    {
+        const wxl_sound_args& sound = *static_cast<const wxl_sound_args*>(args);
+        ++g_sounds;
+        g_lastKit = sound.sound_id;
+        if (g_hushSound && sound.suppressed) *sound.suppressed = WXL_TRUE;
+    }
+
+    void CheckSound()
+    {
+        const wxl_subscription sub =
+            g_host->Events().Subscribe(WXL_EV_SoundPlay, &OnSound, nullptr, 0);
+
+        int32_t     kit        = 1234;
+        const void* position   = nullptr;
+        void*       object     = nullptr;
+        void*       properties = nullptr;
+        uint32_t    advanced   = 0;
+        uint32_t*   soundId    = nullptr;
+        int32_t     distance   = 1;
+        int32_t     keep       = 0;
+        int32_t     answer     = -1;
+
+        g_hushSound = false;
+        Check(!wxl::seam::Sound::PlaySoundKit::Gate(&answer, &kit, &position, &object,
+                                                     &properties, &advanced, &soundId,
+                                                     &distance, &keep),
+              "a sound nobody stops is played by the client");
+        Check(g_sounds == 1 && g_lastKit == 1234u,
+              "and the handler is told which kit, whether it was named by id or by path");
+
+        g_hushSound = true;
+        Check(wxl::seam::Sound::PlaySoundKit::Gate(&answer, &kit, &position, &object,
+                                                    &properties, &advanced, &soundId,
+                                                    &distance, &keep),
+              "a handler that suppresses it takes the call");
+        Check(answer == 17, "and the client is answered as it answers itself when sound is off");
+
+        g_host->Events().Unsubscribe(sub);
+    }
+
     // --- Storage: a gate that changes what the client is about to open ------------------------
 
     const char* g_answerWith = nullptr;
@@ -1247,6 +1309,25 @@ namespace
               "the next file and no longer");
 
         g_host->Events().Unsubscribe(sub);
+    }
+
+    /// Client.Destroy: the last thing a mod is told, and the point at which what a mod left
+    /// jumping into its own code is taken away before that code is freed.
+    void CheckClientDestroy()
+    {
+        namespace stages = wxl::core::stages;
+        stages::Restart();
+        stages::Reach(WXL_STAGE_READY);
+        g_released = 0;
+
+        wxl::seam::Client::Destroy::Before();
+        Check(stages::Reached() == WXL_STAGE_SHUTDOWN,
+              "Client.Destroy announces the shutdown stage");
+        Check(g_released == 1,
+              "and takes back every detour a mod left behind, before its binary is freed");
+
+        wxl::seam::Client::Destroy::After();
+        stages::Restart();
     }
 
     // --- NetClient: the connection coming up and going away ------------------------------------
@@ -1388,8 +1469,10 @@ int main()
     CheckFrameScript();
     CheckNetClient();
     CheckNetConnection();
+    CheckClientDestroy();
     CheckInput();
     CheckStorage();
+    CheckSound();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckThiscallGate();

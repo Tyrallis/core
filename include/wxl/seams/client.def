@@ -1,0 +1,36 @@
+// The Client domain: a seam on the function that takes the client apart.
+//
+// Row shape and columns: see world.def, which documents them.
+// Copyright (C) 2026 WarcraftXL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including client.def"
+#endif
+
+// Takes the client apart: the glue, the add-ons, the client databases, the sound, the script
+// context, the console, in that order. One caller, on the way out of the main function, while
+// everything a mod might still hold is alive and the process is not yet being torn down. That
+// is the last moment at which a mod can be told anything, and it is where the shutdown stage
+// and the unload run.
+//
+// A file-level static, so the compiler was free to give it a convention of its own -- but it
+// takes no arguments and returns nothing, so there is no argument to misread and no stack to
+// clean either way, and a cdecl detour is correct whatever the compiler chose. This is the
+// only kind of internal-linkage static a row may declare without disassembling it first.
+//
+// Before does the work. After is where the runtime would be if there were anything left to do
+// after a mod's last line has run, and there is not.
+WXL_SEAM(Client, Destroy, "WowClientDestroy", void, cdecl, ())

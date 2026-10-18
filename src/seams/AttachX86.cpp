@@ -55,7 +55,7 @@ namespace
 
     const Row kRows[] = {
 #define WXL_SEAM_ROW(domain, name, symbol, gated)                                                \
-    { #domain "." #name, WXL_SITE(symbol, 0), reinterpret_cast<void*>(&domain##_##name::Detour), \
+    { #domain "." #name, WXL_SEAM_SITE(symbol, 0), reinterpret_cast<void*>(&domain##_##name::Detour), \
       reinterpret_cast<void**>(&domain##_##name::original), domain##_##name::kAttachable,        \
       gated },
 #define WXL_SEAM(domain, name, symbol, ret, conv, params) WXL_SEAM_ROW(domain, name, symbol, false)

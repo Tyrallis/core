@@ -30,7 +30,7 @@ namespace wxl::hook
         // functions.def once per seam would exceed the compiler's step limit.
         const Point kPoints[] = {
 #define WXL_SEAM(domain, name, symbol, ret, conv, params) \
-    { #domain "." #name, WXL_SITE(symbol, 0), #ret " __" #conv " " #params },
+    { #domain "." #name, WXL_SEAM_SITE(symbol, 0), #ret " __" #conv " " #params },
 #define WXL_SEAM_GATE WXL_SEAM
 #include "wxl/seams/seams.def"
 #undef WXL_SEAM_GATE

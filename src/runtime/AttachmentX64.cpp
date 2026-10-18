@@ -45,6 +45,12 @@ namespace wxl::core::attachment
         };
     }
 
+    // Nothing of this build is a detour, and wxl.hook is not published on it, so a mod holds
+    // nothing of the attachment to give back.
+    void Release(uint32_t) {}
+
+    void ReleaseAll() {}
+
     void Install()
     {
         // Nothing to attach: the client's source calls Before and After itself. What is checked

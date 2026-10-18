@@ -43,4 +43,19 @@ namespace wxl::core::attachment
      *        so that no mod can get in front of them.
      */
     void Install();
+
+    /**
+     * @brief Takes back what a mod still holds of the attachment: the detours it installed.
+     *
+     * A detour is a jump into the mod's binary. Freeing that binary with the jump still there
+     * turns the next call the client makes into a jump to nothing, so this runs before a mod's
+     * code goes away -- when it is disabled, and on the way out. A mod that detached its own
+     * hooks first loses nothing by it.
+     *
+     * @param mod  the host's token for the mod (wxl::host::ModHost::ModToken).
+     */
+    void Release(uint32_t mod);
+
+    /// The same for every mod at once, on the way out.
+    void ReleaseAll();
 }

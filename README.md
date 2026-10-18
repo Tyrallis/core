@@ -143,7 +143,7 @@ What a mod can reach **today**, by build:
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
 | `wxl.storage`, `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
-| lifecycle stages | `EARLY`, `STORAGE`, `SCRIPT`, `READY` | the same |
+| lifecycle stages | `EARLY`, `STORAGE`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
 
 ### `wxl.script` and the two script contexts
 
@@ -229,6 +229,8 @@ source. Everything else observes.
 | `NetClient.HandleDisconnect` | `NetClient::HandleDisconnect()` | `Disconnected` before, while the connection is still the one being lost |
 | `Input.WindowProc` (gated) | `OsWindowProc(void* window, uint32_t message, uintptr_t wparam, intptr_t lparam)` | `Input` at the gate; writing `handled` answers 0 and the client's own procedure never sees the message |
 | `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate; a path written into `redirect` is what the client opens instead. `FileOpened` is not raised: it carries the result, and this function has a dozen returns |
+| `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
+| `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
 
 A seam is named after the function it attaches to, never after what it means; the name is part of
 the ABI and is appended, never renamed or dropped.

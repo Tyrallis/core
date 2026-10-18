@@ -36,11 +36,13 @@ DEMO_DEF = '''// The demo domain.
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including demo.def"
 #endif
+# Load and Count name their function plainly; Open writes the address too, as a row must when
+# the client gives that name to more than one function.
 WXL_SEAM(Demo, Load, "Thing::Load", void, cdecl, (const wxl_vec3* position, int32_t flags))
 WXL_SEAM_RAISES(Demo, Load, Opened)
 WXL_SEAM(Demo, Count, "Thing::Count", int32_t, thiscall, (void* self, int32_t flags))
 WXL_SEAM_RAISES(Demo, Count, Closed)
-WXL_SEAM_GATE(Demo, Open, "Thing::Open", int32_t, cdecl, (const char* path, uint32_t mode))
+WXL_SEAM_GATE(Demo, Open, "Thing::Open@0x00401000", int32_t, cdecl, (const char* path, uint32_t mode))
 WXL_SEAM_RAISES(Demo, Open, Opened)
 '''
 

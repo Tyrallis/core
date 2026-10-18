@@ -74,6 +74,8 @@
 #include "wxl/seams/netclient.def"
 #include "wxl/seams/input.def"
 #include "wxl/seams/storage.def"
+#include "wxl/seams/client.def"
+#include "wxl/seams/sound.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

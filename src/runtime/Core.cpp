@@ -97,6 +97,8 @@ namespace
     void OnModDisabled(void*, wxl::host::ModHost::ModToken token, const char*)
     {
         wxl::core::services::script::OnModDisabled(token);
+        // Its code is not trusted to run again, so neither is anything that jumps into it.
+        wxl::core::attachment::Release(token);
     }
 
     // Heap-allocated and never freed: the wxl_host table mods keep points into it, and no seam
