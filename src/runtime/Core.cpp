@@ -15,6 +15,10 @@
 #include "runtime/Code.hpp"
 #include "runtime/Session.hpp"
 #include "services/DataService.hpp"
+#include "services/GxService.hpp"
+#include "services/M2FileService.hpp"
+#include "services/M2Service.hpp"
+
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/Assets.hpp"
@@ -106,6 +110,10 @@ namespace
         // Its providers, served names and transforms: no call into its code starts again.
         wxl::core::services::assets::ReleaseOf(token);
         wxl::core::services::data::ForgetMod(token);
+        wxl::core::services::gx::ForgetMod(token);
+        wxl::core::services::m2::ForgetMod(token);
+        wxl::core::services::m2file::ForgetMod(token);
+
         // What it reported of its memory, and the threshold it watched, go too.
         wxl::core::services::footprint::ForgetMod(token);
         // Its watches go with it: the client stops reporting what no other mod watches.

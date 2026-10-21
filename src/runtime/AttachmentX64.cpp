@@ -15,12 +15,19 @@
 #include "profile/Profile.hpp"
 #include "services/ActionService.hpp"
 #include "services/FootprintService.hpp"
+
+#include "services/GxService.hpp"
+#include "services/M2FileService.hpp"
+#include "services/M2Service.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/services/object.h"
 #include "wxl/services/point.h"
 #include "wxl/services/data.h"
+#include "wxl/services/gx.h"
+#include "wxl/services/m2.h"
+#include "wxl/services/m2file.h"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -64,6 +71,10 @@ namespace wxl::core::attachment
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
             { WXL_PROFILE_SERVICE, WXL_PROFILE_SERVICE_VERSION, &profile::Api() },
 #endif
+
+            { WXL_GX_SERVICE, WXL_GX_SERVICE_VERSION, &services::GxApi() },
+            { WXL_M2_SERVICE, WXL_M2_SERVICE_VERSION, &services::M2Api() },
+            { WXL_M2FILE_SERVICE, WXL_M2FILE_SERVICE_VERSION, &services::M2FileApi() },
         };
     }
 

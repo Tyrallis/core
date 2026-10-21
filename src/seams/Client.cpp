@@ -14,6 +14,8 @@
 #include "runtime/Stages.hpp"
 #include "services/DataService.hpp"
 #include "services/Assets.hpp"
+#include "services/M2FileService.hpp"
+#include "services/M2Service.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/host/mod_host.hpp"
@@ -38,6 +40,9 @@ namespace wxl::seam::Client::Destroy
         wxl::core::services::storage::CloseEverything();
         wxl::core::services::assets::ReleaseAll();
         wxl::core::services::data::Clear();
+        wxl::core::services::m2::Clear();
+        wxl::core::services::m2file::Clear();
+
         for (wxl::host::ModHost::ModToken token = 1; token <= host->Loaded().size(); ++token)
         {
             wxl::core::objects::Service().DropWatches(token);

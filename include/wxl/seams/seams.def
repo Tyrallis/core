@@ -117,6 +117,9 @@
 #include "wxl/seams/achievement.def"
 #include "wxl/seams/blpfile.def"
 
+#include "wxl/seams/m2.def"
+#include "wxl/seams/component.def"
+
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES
     #undef WXL_SEAM_RAISES_DEFAULTED

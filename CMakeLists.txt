@@ -174,6 +174,9 @@ add_library(wxl-core SHARED
     src/services/StorageService.cpp
     src/services/FootprintService.cpp
     src/services/ActionService.cpp
+    src/services/GxService.cpp
+    src/services/M2Service.cpp
+    src/services/M2FileService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
@@ -210,6 +213,9 @@ add_executable(wxl-core-seam-harness
     src/services/StorageService.cpp
     src/services/FootprintService.cpp
     src/services/ActionService.cpp
+    src/services/GxService.cpp
+    src/services/M2Service.cpp
+    src/services/M2FileService.cpp
     ${WXL_SEAM_BODIES}
     ${WXL_OBJECT_READS})
 # The same build as the DLL, so --bench measures what ships rather than something near it.

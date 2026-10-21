@@ -9,6 +9,7 @@
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "services/M2FileService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -16,9 +17,9 @@
 #include <cstdint>
 #include <cstring>
 
-namespace wxl::seam::M2Shared::LoadSucceededCallback
+namespace
 {
-    void WXL_CALL Before(void* param)
+    void RaiseModelLoad(void* param)
     {
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host || !param || !host->Listening(WXL_EV_ModelLoad)) return;
@@ -50,6 +51,16 @@ namespace wxl::seam::M2Shared::LoadSucceededCallback
             WLOG_WARN(wxl::core::kTag, "model %s: the %u bytes a mod answered could not be put in "
                                        "place; the client parses the file as read",
                       path, static_cast<unsigned>(replacement_size));
+    }
+}
+
+namespace wxl::seam::M2Shared::LoadSucceededCallback
+{
+    void WXL_CALL Before(void* param)
+    {
+        RaiseModelLoad(param);
+        // then wxl.m2file's read stage, on the bytes the client is about to parse
+        wxl::core::services::m2file::OnRead(param);
     }
 }
 
