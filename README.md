@@ -263,9 +263,9 @@ source. Everything else observes.
 | `Spell.Packet_Group_31` | `Packet_Group_31(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_COOLDOWN_EVENT`, `SMSG_CLEAR_COOLDOWN` and `SMSG_MODIFY_COOLDOWN` | `SpellCooldownChanged` before, by the opcode |
 | `Spell.CancelSpell` | `Spell_C_CancelSpell(PendingSpellCast* cast, bool stop_recast, bool notify_server, int32_t reason)`, where every cancel of the player's own cast ends | `SpellCastCancel` before, with the cast's caster, spell and count, the reason, and whether the server may be told |
 | `Combat.Packet_Group_29` | `Packet_Group_29(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_ATTACKSTART`, `SMSG_ATTACKSTOP`, `SMSG_ATTACKERSTATEUPDATE` and `SMSG_ENVIRONMENTALDAMAGELOG` | `CombatAttackStart`, `CombatAttackStop`, `CombatDamage` or `CombatMiss` before, by the opcode and whether the round landed |
-| `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)`, where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
-| `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` before |
-| `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` | `CombatHeal` before |
+| `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)` (regparm: EDI), where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
+| `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatDamage` before |
+| `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatHeal` before |
 | `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` or `CombatHeal` before, per damage or heal entry, up to where the client stops |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the

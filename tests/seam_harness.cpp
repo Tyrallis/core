@@ -2776,6 +2776,59 @@ namespace
         }
     }
 
+    // What a stand-in combat log original answers, so the thunk can be seen handing it back.
+    constexpr uint32_t kLogAnswer = 0x600D600Du;
+    uint32_t           g_answered = 0;
+
+    __declspec(naked) void FakeLogFromEdi()
+    {
+        __asm {
+            mov  dword ptr [g_seenEdi], edi
+            mov  eax, dword ptr [esp+4]
+            mov  dword ptr [g_seenArg0], eax
+            mov  eax, 600D600Dh         // kLogAnswer
+            ret
+        }
+    }
+
+    __declspec(naked) void FakeLogFromEax()
+    {
+        __asm {
+            mov  dword ptr [g_seenEax], eax
+            mov  eax, dword ptr [esp+4]
+            mov  dword ptr [g_seenArg0], eax
+            mov  eax, 600D600Dh         // kLogAnswer
+            ret
+        }
+    }
+
+    /// Calls a thunk the way the combat log statics' callers do: the message in EDI, or in EAX
+    /// when `inEax`, and the time offset in one stack slot the caller cleans.
+    void CallLog(void* thunk, bool inEax, void* msg, uint32_t timeOffset)
+    {
+        __asm {
+            mov  ebx, 0B0B0B0Bh
+            mov  esi, 05050505h
+            mov  edi, 0D0D0D0Dh
+            mov  eax, 0A0A0A0Ah
+            cmp  byte ptr [inEax], 0
+            mov  ecx, msg
+            jne  in_eax
+            mov  edi, ecx
+            jmp  call_it
+        in_eax:
+            mov  eax, ecx
+        call_it:
+            push timeOffset
+            call thunk
+            add  esp, 4
+            mov  dword ptr [g_answered], eax
+            mov  dword ptr [g_keptEbx], ebx
+            mov  dword ptr [g_keptEsi], esi
+            mov  dword ptr [g_keptEdi], edi
+        }
+    }
+
     /// Calls a thunk the way IEvtDispatchUpdate's caller does: context in EDI, two stack slots
     /// the caller cleans.
     void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
@@ -2895,6 +2948,60 @@ namespace
         CallWithEsiEaxEcx(destroy->detour, &moth, 0u, 0u);
         Check(g_seenEsi == reinterpret_cast<uint32_t>(&moth),
               "ObjectMgr.DestroyRemovedObject's original finds the object in ESI");
+
+        // The combat log statics: a miss with one target, a damage line and a heal line.
+        const regparm::Row* miss   = regparm::Find("Combat.HandleSpellLogMiss");
+        const regparm::Row* damage = regparm::Find("Combat.HandleSpellNonMeleeDamageLog");
+        const regparm::Row* heal   = regparm::Find("Combat.HandleSpellHealLog");
+        if (miss && damage && heal)
+        {
+            *miss->original   = reinterpret_cast<void*>(&FakeLogFromEdi);
+            *damage->original = reinterpret_cast<void*>(&FakeLogFromEax);
+            *heal->original   = reinterpret_cast<void*>(&FakeLogFromEax);
+
+            Body missLog;
+            missLog.U32(116).U64(0xF130000000000001ull).U8(0).U32(1).U64(0xF130000000000002ull).U8(3);
+            FakeStore store = missLog.Store();
+            g_received.clear();
+            CallLog(miss->detour, false, &store, 7u);
+            Check(g_seenEdi == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 7u,
+                  "Combat.HandleSpellLogMiss's original finds the message in EDI, the offset on the stack");
+            Check(Only(WXL_EV_CombatMiss) != nullptr, "Before was handed the message from EDI");
+            Check(g_answered == kLogAnswer, "and the caller gets the original's answer");
+            Check(g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == reinterpret_cast<uint32_t>(&store),
+                  "and EBX, ESI and EDI back");
+
+            Body spell;
+            spell.Packed(0xF130000000000002ull).Packed(0xF130000000000001ull).U32(116).U32(900).U32(0)
+                .U8(4).U32(0).U32(0).U8(0).U8(0).U32(0).U32(0);
+            store = spell.Store();
+            g_received.clear();
+            CallLog(damage->detour, true, &store, 9u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 9u,
+                  "Combat.HandleSpellNonMeleeDamageLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatDamage) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
+            Body healLog;
+            healLog.Packed(0xF130000000000001ull).Packed(0xF130000000000002ull).U32(2061).U32(1200)
+                .U32(0).U32(0).U8(0);
+            store = healLog.Store();
+            g_received.clear();
+            CallLog(heal->detour, true, &store, 11u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 11u,
+                  "Combat.HandleSpellHealLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatHeal) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
+            *miss->original   = nullptr;
+            *damage->original = nullptr;
+            *heal->original   = nullptr;
+        }
 
         *update->original  = nullptr;
         *init->original    = nullptr;

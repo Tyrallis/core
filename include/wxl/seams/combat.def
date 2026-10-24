@@ -7,11 +7,13 @@
 // SMSG_COMBAT_LOG_MULTIPLE.
 //
 // The handler is reached only through the handler table, with the four arguments every
-// handler takes on the stack; the statics are class members with external linkage, each with
-// two callers (the message's own handler and the multiple-log handler), their two arguments
-// on the stack. Both keep the declared convention, cdecl; the check of each row against the
-// binary is pending. Every body reads the message from its cursor, without moving it, and
-// raises nothing for a message cut short.
+// handler takes on the stack: cdecl. The statics each have two callers, the message's own
+// handler and the multiple-log handler. HandlePeriodicAuraLog takes both its arguments on the
+// stack (`push edi; push esi; call; add esp,8` at 0x006D41BF): cdecl. The three others take the
+// message in a register and the time offset alone on the stack, cleaned by the caller: regparm,
+// attached through their thunks in src/seams/RegparmX86.cpp, where the evidence for each is
+// recorded. Every body reads the message from its cursor, without moving it, and raises nothing
+// for a message cut short.
 
 #ifndef WXL_SEAM_BEFORE
 #error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including combat.def"
@@ -31,18 +33,30 @@ WXL_SEAM_RAISES(Combat, Packet_Group_29, CombatMiss)
 // SMSG_SPELLLOGMISS: the spell id, the caster as a full guid, a debug flag, then a count of
 // targets, each a full guid and a miss reason, with two floats after it when the flag is set.
 // Before raises CombatMiss once per target.
-WXL_SEAM_BEFORE(Combat, HandleSpellLogMiss, "CombatLog::HandleSpellLogMiss", int32_t, cdecl, (void* msg, int32_t time_offset))
+//
+// regparm: the message in EDI, the time offset on the stack. Evidence: 0x006D3090 (`mov ecx,edi`
+// at 0x006D30A0, CDataStore::Get on it) and its callers, `mov edi,[ebp+0x14]; push 0` at
+// 0x006D3204 and `mov edi,esi` at 0x006D419B, each cleaning one dword after the call.
+WXL_SEAM_BEFORE(Combat, HandleSpellLogMiss, "CombatLog::HandleSpellLogMiss", int32_t, regparm, (void* msg, int32_t time_offset))
 WXL_SEAM_RAISES(Combat, HandleSpellLogMiss, CombatMiss)
 
 // SMSG_SPELLNONMELEEDAMAGELOG: the target and the caster as packed guids, the spell id, the
 // damage, the overkill, the school, the absorbed and resisted amounts, a periodic flag, a
 // spare byte, the blocked amount and the hit flags. Before raises CombatDamage.
-WXL_SEAM_BEFORE(Combat, HandleSpellNonMeleeDamageLog, "CombatLog::HandleSpellNonMeleeDamageLog", int32_t, cdecl, (void* msg, int32_t time_offset))
+//
+// regparm: the message in EAX, the time offset on the stack. Evidence: 0x006D3840 (`mov esi,eax`
+// at 0x006D384B) and its callers, `mov eax,[ebp+0x14]; push 0` at 0x006D3C13 and `mov eax,esi`
+// at 0x006D41CC, each cleaning one dword after the call.
+WXL_SEAM_BEFORE(Combat, HandleSpellNonMeleeDamageLog, "CombatLog::HandleSpellNonMeleeDamageLog", int32_t, regparm, (void* msg, int32_t time_offset))
 WXL_SEAM_RAISES(Combat, HandleSpellNonMeleeDamageLog, CombatDamage)
 
 // SMSG_SPELLHEALLOG: the target and the caster as packed guids, the spell id, the amount, the
 // overheal, the absorbed amount and a crit flag. Before raises CombatHeal.
-WXL_SEAM_BEFORE(Combat, HandleSpellHealLog, "CombatLog::HandleSpellHealLog", int32_t, cdecl, (void* msg, int32_t time_offset))
+//
+// regparm: the message in EAX, the time offset on the stack. Evidence: 0x006D3C30 (`mov esi,eax`
+// at 0x006D3C3B) and its callers, `mov eax,[ebp+0x14]; push 0` at 0x006D3DD3 and `mov eax,esi`
+// at 0x006D4191, each cleaning one dword after the call.
+WXL_SEAM_BEFORE(Combat, HandleSpellHealLog, "CombatLog::HandleSpellHealLog", int32_t, regparm, (void* msg, int32_t time_offset))
 WXL_SEAM_RAISES(Combat, HandleSpellHealLog, CombatHeal)
 
 // SMSG_PERIODICAURALOG: the target and the caster as packed guids, the spell id, then a count
