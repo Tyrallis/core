@@ -703,6 +703,49 @@ GROUND_TRUTH = {
     "Combat.HandleSpellNonMeleeDamageLog": ("0x006D3840", "regparm", ["eax"], 1),
     "Combat.HandleSpellHealLog":       ("0x006D3C30", "regparm", ["eax"], 1),
     "Combat.HandlePeriodicAuraLog":    ("0x007531F0", "cdecl", [], 2),
+    # SpellLogEnergizeLog is the same kind of static: `mov eax, [ebp+0x14]; push 0; call; add
+    # esp, 4` at 0x006D3EF3, `push edi; mov eax, esi; call` at 0x006D4186, `mov esi, eax` at
+    # 0x006D3DFB.
+    "Combat.HandleSpellLogEnergizeLog": ("0x006D3DF0", "regparm", ["eax"], 1),
+    # The zone, mouseover and click rows. NewZoneFeedback reads its seven at [ebp+8..0x20] and
+    # leaves by a tail `jmp` to CGSpellBook__UpdateUsable at 0x005206D9, so no `ret` settles who
+    # cleans; its one caller (0x0078F1DD, the row's witness) pushes the seven and cleans them
+    # with the argument of the call before it (`add esp, 0x20`). HandleObjectTrackChange reads guid at [ebp+8] and
+    # prev_guid at [ebp+0x10]; HandleSpriteTrack (0x0051FB75) pushes four and cleans 0x10. The
+    # click events are pointers to the world frame's locals (0x004F7971, 0x004F799D): the
+    # terrain one's button at +0x14, the sprite one's at +8.
+    "GameUI.NewZoneFeedback":          ("0x005204C0", "cdecl", [], 7),
+    "GameUI.HandleObjectTrackChange":  ("0x0051F790", "cdecl", [], 4),
+    "GameUI.HandleTerrainClick":       ("0x00527830", "cdecl", [], 1),
+    "GameUI.HandleSpriteClick":        ("0x00527870", "cdecl", [], 1),
+    # CVar::InternalSet reads ECX at 0x007667B5 and ends in `ret 0x14`. SendMovementUpdate reads
+    # ECX at 0x0071F0C8 and ends in `ret 0x1C`; CallMoveEventHandlers (0x006EB2ED-0x006EB309)
+    # pushes seven around the call that computes the opcode.
+    "ConsoleVar.InternalSet":          ("0x007667B0", "thiscall", ["ecx"], 5),
+    "Unit.SendMovementUpdate":         ("0x0071F0C0", "thiscall", ["ecx"], 7),
+    # OnUpdateMoney is a mirror handler and reads none of its arguments; CallMirrorFunctions
+    # (0x004D5238-0x004D5256) pushes the six dwords of MIRRORHANDLERFUNC, calls through
+    # [esi+0x10] at 0x004D5254 (the row's witness) and cleans 0x18. Packet_Group_9 reads msg at [ebp+0x14] and msg_id at
+    # [ebp+0xC] and ends in a bare `ret`.
+    "Player.OnUpdateMoney":            ("0x006DA070", "cdecl", [], 0),
+    "Player.Packet_Group_9":           ("0x006E2E90", "cdecl", [], 4),
+    # UpdateCurrentScreen copies its one at 0x004D82FF into 0x00B6A9E0 and ends in `ret` or tail
+    # jumps. The RealmConnection handlers end in `ret 0xC`; Login::RealmListResult, reached only
+    # through the vtables of GruntLogin (0x00A94928) and BattlenetLogin (0x00A94768), in `ret 4`.
+    "Glue.UpdateCurrentScreen":        ("0x004D82C0", "cdecl", [], 1),
+    "RealmConnection.HandleAuthResponse": ("0x00464640", "thiscall", ["ecx"], 3),
+    "RealmConnection.HandleCharEnum":  ("0x00464C10", "thiscall", ["ecx"], 3),
+    "RealmConnection.RequestCharacterLogin": ("0x00464AB0", "thiscall", ["ecx"], 3),
+    "Login.RealmListResult":           ("0x00465F10", "thiscall", ["ecx"], 1),
+    # ChatMessageReceived: OnMessageChat (0x0050EBA6) pushes 0 and msg and cleans 8.
+    # AddChatMessage: ChatMessageReceived pushes fifteen dwords and cleans 0x3C after the call at
+    # 0x0050C3AA. The script functions are lua_CFunctions; LOG_XPGAIN reads its message at
+    # [ebp+0x14].
+    "Chat.ChatMessageReceived":        ("0x0050BE70", "cdecl", [], 2),
+    "Chat.AddChatMessage":             ("0x00509DD0", "cdecl", [], 15),
+    "Chat.Script_SendChatMessage":     ("0x0050D170", "cdecl", [], 1),
+    "Chat.Script_SendAddonMessage":    ("0x00500560", "cdecl", [], 1),
+    "Chat.Packet_SMSG_LOG_XPGAIN":     ("0x0050C720", "cdecl", [], 4),
 }
 
 
