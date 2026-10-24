@@ -26,6 +26,7 @@
     #include "seams/RegparmX86.hpp"
 #endif
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -77,7 +78,35 @@ namespace
         int32_t  visibleItems[19]{};
         uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
         uint32_t channelSpellId = 0; ///< the channel it shows
+        uint32_t movementFlags  = 0; ///< the movement block's flags
+        float    facing         = 0.0f;
+        uint32_t money          = 0; ///< the local block's coinage
     };
+
+    /// A terrain click and a sprite click, as the GameUI rows read them.
+    struct FakeTerrainClick
+    {
+        uint64_t guid   = 0;
+        wxl_vec3 point{};
+        uint32_t button = 0;
+    };
+
+    struct FakeSpriteClick
+    {
+        uint64_t guid   = 0;
+        uint32_t button = 0;
+    };
+
+    /// A console variable, as the ConsoleVar rows read one.
+    struct FakeCVar
+    {
+        const char* name  = nullptr;
+        const char* value = nullptr;
+        uint32_t    flags = 0;
+    };
+
+    /// The glue screen the fake client shows.
+    char g_glueScreen[64] = {};
 
     /// A visible item as CGPlayer_C::UpdateInventoryComponent is handed one.
     struct FakeVisibleItem
@@ -113,6 +142,45 @@ namespace
         if (Obj(object)->typeId == WXL_OBJECT_ITEM) return WXL_FALSE;
         *out = Obj(object)->position;
         return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeFacing(const void* object, float* out)
+    {
+        if (Obj(object)->typeId == WXL_OBJECT_ITEM) return WXL_FALSE;
+        *out = Obj(object)->facing;
+        return WXL_TRUE;
+    }
+
+    uint32_t WXL_CALL FakeMovementFlags(const void* object) { return Obj(object)->movementFlags; }
+    uint32_t WXL_CALL FakeMoney(const void* object) { return Obj(object)->money; }
+
+    const FakeTerrainClick* Terrain(const void* evt) { return static_cast<const FakeTerrainClick*>(evt); }
+    uint64_t WXL_CALL FakeTerrainGuid(const void* evt) { return Terrain(evt)->guid; }
+    float WXL_CALL FakeTerrainX(const void* evt) { return Terrain(evt)->point.x; }
+    float WXL_CALL FakeTerrainY(const void* evt) { return Terrain(evt)->point.y; }
+    float WXL_CALL FakeTerrainZ(const void* evt) { return Terrain(evt)->point.z; }
+    uint32_t WXL_CALL FakeTerrainButton(const void* evt) { return Terrain(evt)->button; }
+
+    const FakeSpriteClick* Sprite(const void* evt) { return static_cast<const FakeSpriteClick*>(evt); }
+    uint64_t WXL_CALL FakeSpriteGuid(const void* evt) { return Sprite(evt)->guid; }
+    uint32_t WXL_CALL FakeSpriteButton(const void* evt) { return Sprite(evt)->button; }
+
+    const FakeCVar* CVarOf(const void* cvar) { return static_cast<const FakeCVar*>(cvar); }
+    const char* WXL_CALL FakeCVarName(const void* cvar) { return CVarOf(cvar)->name; }
+    const char* WXL_CALL FakeCVarValue(const void* cvar) { return CVarOf(cvar)->value; }
+    uint32_t WXL_CALL FakeCVarFlags(const void* cvar) { return CVarOf(cvar)->flags; }
+
+    const char* WXL_CALL FakeGlueScreen(void) { return g_glueScreen; }
+
+    /// A login object as the fake client keeps it: what its GetLoginServerType answers.
+    struct FakeLogin
+    {
+        int32_t serverType = 0;
+    };
+
+    int32_t WXL_CALL FakeLoginServerType(const void* login)
+    {
+        return login ? static_cast<const FakeLogin*>(login)->serverType : -1;
     }
 
     wxl_bool WXL_CALL FakeVisibleItemId(const void* object, uint32_t slot, int32_t* out)
@@ -514,6 +582,21 @@ namespace
         init.pending_cast_caster    = &FakePendingCaster;
         init.pending_cast_spell_id  = &FakePendingSpellId;
         init.pending_cast_count     = &FakePendingCount;
+        init.object_facing          = &FakeFacing;
+        init.unit_movement_flags    = &FakeMovementFlags;
+        init.player_money           = &FakeMoney;
+        init.terrain_click_guid     = &FakeTerrainGuid;
+        init.terrain_click_x        = &FakeTerrainX;
+        init.terrain_click_y        = &FakeTerrainY;
+        init.terrain_click_z        = &FakeTerrainZ;
+        init.terrain_click_button   = &FakeTerrainButton;
+        init.sprite_click_guid      = &FakeSpriteGuid;
+        init.sprite_click_button    = &FakeSpriteButton;
+        init.cvar_name              = &FakeCVarName;
+        init.cvar_value             = &FakeCVarValue;
+        init.cvar_flags             = &FakeCVarFlags;
+        init.glue_current_screen    = &FakeGlueScreen;
+        init.login_server_type      = &FakeLoginServerType;
         return init;
     }
 }
@@ -1757,6 +1840,34 @@ namespace
             return *this;
         }
 
+        Body& U16(uint16_t value)
+        {
+            bytes.push_back(static_cast<uint8_t>(value));
+            bytes.push_back(static_cast<uint8_t>(value >> 8));
+            return *this;
+        }
+
+        Body& F32(float value)
+        {
+            uint32_t bits = 0;
+            memcpy(&bits, &value, sizeof bits);
+            return U32(bits);
+        }
+
+        /// A NUL-terminated string.
+        Body& Str(const char* text)
+        {
+            bytes.insert(bytes.end(), text, text + strlen(text) + 1);
+            return *this;
+        }
+
+        /// A string as the chat carries one: its length with the NUL, then the bytes.
+        Body& Sized(const char* text)
+        {
+            U32(static_cast<uint32_t>(strlen(text) + 1));
+            return Str(text);
+        }
+
         /// A guid packed as the server packs it: the mask, then the non-zero bytes.
         Body& Packed(uint64_t guid)
         {
@@ -2472,13 +2583,13 @@ namespace
         store = ticks.Store();
         g_received.clear();
         wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
-        Check(g_received.size() == 2 && g_received[0].event == WXL_EV_CombatDamage &&
-                  g_received[1].event == WXL_EV_CombatHeal,
-              "Combat.HandlePeriodicAuraLog raises the damage and heal ticks, in order, up to the stop");
-        if (g_received.size() == 2)
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_CombatDamage &&
+                  g_received[1].event == WXL_EV_CombatEnergize && g_received[2].event == WXL_EV_CombatHeal,
+              "Combat.HandlePeriodicAuraLog raises the damage, energize and heal ticks, in order, up to the stop");
+        if (g_received.size() == 3)
         {
             const wxl_combat_damage_args tick = g_received[0].As<wxl_combat_damage_args>();
-            const wxl_combat_heal_args   hot  = g_received[1].As<wxl_combat_heal_args>();
+            const wxl_combat_heal_args   hot  = g_received[2].As<wxl_combat_heal_args>();
             Check(tick.kind == 2 && tick.spell_id == 589 && tick.amount == 80 && tick.school == 32 &&
                       tick.resisted == 10 && tick.crit == WXL_FALSE && tick.hit_info == 0 &&
                       tick.source == warriorHandle && tick.target == boarHandle,
@@ -2498,6 +2609,685 @@ namespace
 
         wxl::seam::ObjectMgr::ObjDelete::Before(&warrior);
         wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    // --- The third wave: the world, the player, the console, the glue, the chat, energize --
+
+    /// Strings of an args struct, copied out while they were valid: the harness keeps only
+    /// the struct's bytes, and a wxl_str in it points at memory the seam owned for the call.
+    struct StrWatch
+    {
+        std::vector<std::string> strings;
+        int                      calls = 0;
+    };
+
+    void WXL_CALL OnZone(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_zone_args& zone  = *static_cast<const wxl_zone_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(zone.zone_text.data, zone.zone_text.size),
+                          std::string(zone.subzone_text.data, zone.subzone_text.size),
+                          std::string(zone.real_zone_text.data, zone.real_zone_text.size) };
+    }
+
+    void CheckWorldZoneMouseoverClick()
+    {
+        FakeObject boar;
+        boar.guid     = 0xF130000000000123ull;
+        boar.typeId   = WXL_OBJECT_UNIT;
+        boar.position = wxl_vec3{ 10.0f, 20.0f, 30.0f };
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 9000u);
+        const wxl_handle boarHandle = wxl::core::objects::HandleOf(&boar);
+
+        // The zone: the first call announces, the same again does not, a subzone change does.
+        StrWatch zoneWatch;
+        const wxl_subscription zoneSub = g_host->Events().Subscribe(WXL_EV_ZoneChanged, &OnZone, &zoneWatch, 0);
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 0, -1, "Elwynn Forest", nullptr, "Elwynn Forest", 0);
+        const Received* zone = Only(WXL_EV_ZoneChanged);
+        Check(zone != nullptr, "GameUI.NewZoneFeedback raises ZoneChanged once for a new zone");
+        if (zone)
+        {
+            const wxl_zone_args args = zone->As<wxl_zone_args>();
+            Check(args.area_id == 12 && args.subzone_id == 0 && args.wmo_group_id == -1 &&
+                      args.indoors == WXL_FALSE && args.new_area == WXL_TRUE,
+                  "with the ids, outdoors, and a new area");
+            Check(zoneWatch.strings.size() == 3 && zoneWatch.strings[0] == "Elwynn Forest" &&
+                      zoneWatch.strings[1].empty() && zoneWatch.strings[2] == "Elwynn Forest",
+                  "and the texts, an absent one empty");
+        }
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 0, -1, "Elwynn Forest", nullptr, "Elwynn Forest", 0);
+        Check(g_received.empty(), "the same zone again raises nothing");
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 87, -1, "Elwynn Forest", "Goldshire", "Elwynn Forest", 0);
+        Check(Only(WXL_EV_ZoneChanged) && Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().new_area == WXL_FALSE &&
+                  Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().subzone_id == 87 && zoneWatch.strings[1] == "Goldshire",
+              "a subzone within the area raises ZoneChanged without a new area");
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 87, 3, "Elwynn Forest", "Goldshire", "Elwynn Forest", 1);
+        Check(Only(WXL_EV_ZoneChanged) && Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().indoors == WXL_TRUE,
+              "going indoors raises it with indoors set");
+        g_host->Events().Unsubscribe(zoneSub);
+
+        // The mouseover: announced once per change, from the previous object to the current.
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(boar.guid, 0);
+        const Received* over = Only(WXL_EV_MouseoverChanged);
+        Check(over != nullptr, "GameUI.HandleObjectTrackChange raises MouseoverChanged once");
+        if (over)
+        {
+            const wxl_mouseover_args args = over->As<wxl_mouseover_args>();
+            Check(args.previous == WXL_HANDLE_NONE && args.previous_guid == 0 && args.current == boarHandle &&
+                      args.current_guid == boar.guid,
+                  "from nothing to the unit's handle");
+        }
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(boar.guid, 0);
+        Check(g_received.empty(), "the same object again raises nothing");
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(0, boar.guid);
+        Check(Only(WXL_EV_MouseoverChanged) && Only(WXL_EV_MouseoverChanged)->As<wxl_mouseover_args>().previous == boarHandle &&
+                  Only(WXL_EV_MouseoverChanged)->As<wxl_mouseover_args>().current == WXL_HANDLE_NONE,
+              "leaving it raises MouseoverChanged to nothing");
+
+        // A terrain click: the point, the game object (none here), the button renumbered.
+        FakeTerrainClick terrain;
+        terrain.point  = wxl_vec3{ 1.0f, 2.0f, 3.0f };
+        terrain.button = 4;
+        g_received.clear();
+        wxl::seam::GameUI::HandleTerrainClick::Before(&terrain);
+        const Received* ground = Only(WXL_EV_WorldClick);
+        Check(ground != nullptr, "GameUI.HandleTerrainClick raises WorldClick once");
+        if (ground)
+        {
+            const wxl_world_click_args args = ground->As<wxl_world_click_args>();
+            Check(args.point.x == 1.0f && args.point.y == 2.0f && args.point.z == 3.0f &&
+                      args.object == WXL_HANDLE_NONE && args.button == 1,
+                  "with the hit point, no object, and the right button as 1");
+        }
+
+        // A sprite click: the object, its position as the point, the left button as 0.
+        FakeSpriteClick sprite;
+        sprite.guid   = boar.guid;
+        sprite.button = 1;
+        g_received.clear();
+        wxl::seam::GameUI::HandleSpriteClick::Before(&sprite);
+        const Received* model = Only(WXL_EV_WorldClick);
+        Check(model != nullptr, "GameUI.HandleSpriteClick raises WorldClick once");
+        if (model)
+        {
+            const wxl_world_click_args args = model->As<wxl_world_click_args>();
+            Check(args.object == boarHandle && args.point.x == 10.0f && args.point.z == 30.0f && args.button == 0,
+                  "with the object, its position, and the left button as 0");
+        }
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    void CheckPlayerMoveMoneyLevel()
+    {
+        FakeObject me;
+        me.guid          = 0x0000000000000042ull;
+        me.typeId        = WXL_OBJECT_PLAYER;
+        me.position      = wxl_vec3{ -8949.0f, -132.0f, 83.5f };
+        me.facing        = 1.5f;
+        me.movementFlags = 0x1;
+        me.money         = 12345;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9100u);
+        const wxl_handle handle = wxl::core::objects::HandleOf(&me);
+
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1000, 181, 0.0f, 0, 0, 255);
+        const Received* start = Only(WXL_EV_PlayerMoveStart);
+        Check(start != nullptr && Count(WXL_EV_PlayerMoveStop) == 0,
+              "Unit.SendMovementUpdate raises PlayerMoveStart for MSG_MOVE_START_FORWARD");
+        if (start)
+        {
+            const wxl_player_move_args args = start->As<wxl_player_move_args>();
+            Check(args.unit == handle && args.unit_guid == me.guid && args.opcode == 181 && args.flags == 0x1 &&
+                      args.position.x == -8949.0f && args.facing == 1.5f,
+                  "with the unit, the opcode, the flags, the position and the facing");
+        }
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1200, 183, 0.0f, 0, 0, 255);
+        Check(Only(WXL_EV_PlayerMoveStop) != nullptr && Count(WXL_EV_PlayerMoveStart) == 0,
+              "PlayerMoveStop for MSG_MOVE_STOP");
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1300, 238, 0.0f, 0, 0, 255);
+        Check(g_received.empty(), "a heartbeat raises nothing");
+
+        const uint32_t previous = 10000;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateMoney::Before(me.guid, 0xFF8, 4, &previous, nullptr);
+        const Received* money = Only(WXL_EV_PlayerMoneyChanged);
+        Check(money != nullptr, "Player.OnUpdateMoney raises PlayerMoneyChanged once");
+        if (money)
+        {
+            const wxl_money_args args = money->As<wxl_money_args>();
+            Check(args.player == handle && args.previous == 10000 && args.current == 12345,
+                  "with the player, the value the mirror hands over and the field's");
+        }
+
+        // SMSG_LEVEL_UP_INFO: the level, the health, seven powers, five stats.
+        Body level;
+        level.U32(10).U32(25).U32(40).U32(0).U32(0).U32(0).U32(0).U32(0).U32(0).U32(1).U32(2).U32(3).U32(4).U32(5);
+        FakeStore store = level.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x1D4, 0, &store);
+        const Received* leveled = Only(WXL_EV_PlayerLevelUp);
+        Check(leveled != nullptr, "Player.Packet_Group_9 raises PlayerLevelUp for SMSG_LEVEL_UP_INFO");
+        if (leveled)
+        {
+            const wxl_level_up_args args = leveled->As<wxl_level_up_args>();
+            Check(args.level == 10 && args.health == 25 && args.mana == 40 && args.runic_power == 0 &&
+                      args.strength == 1 && args.spirit == 5,
+                  "with the level, the health, the powers and the stats");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+        store = level.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x1D5, 0, &store);
+        Check(g_received.empty(), "another opcode of the group raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+    }
+
+    void WXL_CALL OnCVar(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_cvar_args& cvar  = *static_cast<const wxl_cvar_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(cvar.name.data, cvar.name.size),
+                          std::string(cvar.previous.data, cvar.previous.size),
+                          std::string(cvar.value.data, cvar.value.size) };
+    }
+
+    void CheckConsoleVar()
+    {
+        StrWatch                      watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_CVarChanged, &OnCVar, &watch, 0);
+
+        FakeCVar cvar;
+        cvar.name  = "farclip";
+        cvar.value = "777";
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 1, 0, 0, 1);
+        Check(watch.calls == 1 && watch.strings.size() == 3 && watch.strings[0] == "farclip" &&
+                  watch.strings[1] == "777" && watch.strings[2] == "1000",
+              "ConsoleVar.InternalSet raises CVarChanged with the name, the previous and the new value");
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "777", 1, 0, 0, 1);
+        Check(watch.calls == 1, "setting the same value raises nothing");
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 0, 1, 1, 0);
+        Check(watch.calls == 1, "a set of the reset and default values alone raises nothing");
+        cvar.flags = 0x4;
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 1, 0, 0, 1);
+        Check(watch.calls == 1, "a read-only variable raises nothing");
+        cvar.flags = 0;
+        cvar.value = nullptr;
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "5", 1, 1, 1, 0);
+        Check(watch.calls == 2 && watch.strings[1].empty() && watch.strings[2] == "5",
+              "the first value of a variable raises it with an empty previous");
+
+        g_host->Events().Unsubscribe(sub);
+    }
+
+    void WXL_CALL OnGlueScreen(void* user, const void* args)
+    {
+        StrWatch&                   watch  = *static_cast<StrWatch*>(user);
+        const wxl_glue_screen_args& screen = *static_cast<const wxl_glue_screen_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(screen.screen.data, screen.screen.size),
+                          std::string(screen.previous.data, screen.previous.size) };
+    }
+
+    void WXL_CALL OnCharacter(void* user, const void* args)
+    {
+        StrWatch&                 watch     = *static_cast<StrWatch*>(user);
+        const wxl_character_args& character = *static_cast<const wxl_character_args*>(args);
+        ++watch.calls;
+        watch.strings.push_back(std::string(character.name.data, character.name.size));
+    }
+
+    void WXL_CALL OnRealm(void* user, const void* args)
+    {
+        StrWatch&             watch = *static_cast<StrWatch*>(user);
+        const wxl_realm_args& realm = *static_cast<const wxl_realm_args*>(args);
+        ++watch.calls;
+        watch.strings.push_back(std::string(realm.name.data, realm.name.size));
+        watch.strings.push_back(std::string(realm.address.data, realm.address.size));
+    }
+
+    /// One character of SMSG_CHAR_ENUM, as the server writes it.
+    void WriteCharacter(Body& body, uint64_t guid, const char* name, uint8_t level, uint32_t map)
+    {
+        body.U64(guid).Str(name).U8(1).U8(4).U8(0).U8(1).U8(2).U8(3).U8(4).U8(5).U8(level).U32(12).U32(map)
+            .F32(-8949.0f).F32(-132.0f).F32(83.5f).U32(0).U32(0x2).U32(0).U8(level == 1 ? 1 : 0)
+            .U32(0).U32(0).U32(0);
+        for (int slot = 0; slot < 23; ++slot) body.U32(0).U8(0).U32(0);
+    }
+
+    void CheckGlue()
+    {
+        StrWatch                      screens;
+        const wxl_subscription screenSub = g_host->Events().Subscribe(WXL_EV_GlueScreenChanged, &OnGlueScreen, &screens, 0);
+        strcpy(g_glueScreen, "login");
+        wxl::seam::Glue::UpdateCurrentScreen::Before("charselect");
+        Check(screens.calls == 1 && screens.strings.size() == 2 && screens.strings[0] == "charselect" &&
+                  screens.strings[1] == "login",
+              "Glue.UpdateCurrentScreen raises GlueScreenChanged with the screen coming up and the one left");
+        g_host->Events().Unsubscribe(screenSub);
+
+        // SMSG_AUTH_RESPONSE: a queue with the billing block, then a plain refusal.
+        Body queue;
+        queue.U8(27).U32(0).U8(0).U32(0).U8(2).U32(42).U8(1);
+        FakeStore store = queue.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        const Received* queued = Only(WXL_EV_GlueAuthResult);
+        Check(queued != nullptr, "RealmConnection.HandleAuthResponse raises GlueAuthResult once");
+        if (queued)
+        {
+            const wxl_auth_result_args args = queued->As<wxl_auth_result_args>();
+            Check(args.result == 27 && args.queue_position == 42 && args.expansion == 2 &&
+                      args.free_character_migration == WXL_TRUE,
+                  "with the result, the queue position, the expansion and the migration flag");
+        }
+        Body refused;
+        refused.U8(13);
+        store = refused.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        Check(Only(WXL_EV_GlueAuthResult) && Only(WXL_EV_GlueAuthResult)->As<wxl_auth_result_args>().result == 13 &&
+                  Only(WXL_EV_GlueAuthResult)->As<wxl_auth_result_args>().queue_position == 0,
+              "a refusal carries the result alone");
+
+        // A queue message with fewer than the queue's five bytes left: the client's unsigned
+        // test wraps and reads the billing block, which runs out after its first dword, and
+        // tells the glue the result all the same.
+        Body shortQueue;
+        shortQueue.U8(27).U32(7);
+        store = shortQueue.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        {
+            const Received* cut = Only(WXL_EV_GlueAuthResult);
+            Check(cut && cut->As<wxl_auth_result_args>().result == 27 &&
+                      cut->As<wxl_auth_result_args>().billing_time_remaining == 7 &&
+                      cut->As<wxl_auth_result_args>().expansion == 0 &&
+                      cut->As<wxl_auth_result_args>().queue_position == 0,
+                  "a queue message cut short reads as the client reads it, and still carries the result");
+        }
+
+        // SMSG_CHAR_ENUM: two characters, then one cut short, then too many.
+        StrWatch                      names;
+        const wxl_subscription charSub = g_host->Events().Subscribe(WXL_EV_GlueCharacter, &OnCharacter, &names, 0);
+        Body list;
+        list.U8(2);
+        WriteCharacter(list, 0x1ull, "Thrall", 80, 1);
+        WriteCharacter(list, 0x2ull, "Jaina", 1, 0);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_GlueCharacterList &&
+                  g_received[1].event == WXL_EV_GlueCharacter && g_received[2].event == WXL_EV_GlueCharacter,
+              "RealmConnection.HandleCharEnum raises GlueCharacterList, then GlueCharacter per entry");
+        if (g_received.size() == 3)
+        {
+            const wxl_character_list_args head   = g_received[0].As<wxl_character_list_args>();
+            const wxl_character_args      first  = g_received[1].As<wxl_character_args>();
+            const wxl_character_args      second = g_received[2].As<wxl_character_args>();
+            Check(head.count == 2 && head.valid == WXL_TRUE, "the list with its count, valid");
+            Check(first.index == 0 && first.count == 2 && first.guid == 0x1ull && first.race == 1 && first.class_id == 4 &&
+                      first.level == 80 && first.zone_id == 12 && first.map_id == 1 && first.position.z == 83.5f &&
+                      first.flags == 0x2 && first.first_login == WXL_FALSE,
+                  "the first with its guid, race, class, level, zone, map, position and flags");
+            Check(second.index == 1 && second.level == 1 && second.first_login == WXL_TRUE &&
+                      names.strings.size() == 2 && names.strings[0] == "Thrall" && names.strings[1] == "Jaina",
+                  "the second as a first login, and both names");
+        }
+        Check(store.read == 0u, "reading the list left the store's cursor where it was");
+        Body cut;
+        cut.U8(2);
+        WriteCharacter(cut, 0x1ull, "Thrall", 80, 1);
+        cut.U64(0x2ull).Str("Jaina");
+        store = cut.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(g_received.empty(), "a list cut short raises none of it");
+        Body many;
+        many.U8(11);
+        store = many.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(Only(WXL_EV_GlueCharacterList) && Only(WXL_EV_GlueCharacterList)->As<wxl_character_list_args>().valid == WXL_FALSE &&
+                  Count(WXL_EV_GlueCharacter) == 0,
+              "a list the client refuses raises the list alone, not valid");
+        g_host->Events().Unsubscribe(charSub);
+
+        g_received.clear();
+        wxl::seam::RealmConnection::RequestCharacterLogin::Before(nullptr, 0x1ull, 0);
+        Check(Only(WXL_EV_GlueEnterWorld) && Only(WXL_EV_GlueEnterWorld)->As<wxl_enter_world_args>().character_guid == 0x1ull,
+              "RealmConnection.RequestCharacterLogin raises GlueEnterWorld with the character");
+
+        // The realm list: two realms, one with a version, positioned at the count.
+        StrWatch                      realms;
+        const wxl_subscription realmSub = g_host->Events().Subscribe(WXL_EV_GlueRealm, &OnRealm, &realms, 0);
+        Body realmList;
+        realmList.U16(2)
+            .U8(1).U8(0).U8(0x4).Str("Dawnlight").Str("127.0.0.1:8085").F32(1.5f).U8(3).U8(2).U8(1).U8(3).U8(3).U8(5).U16(12340)
+            .U8(0).U8(1).U8(0x2).Str("Old").Str("10.0.0.1:8085").F32(0.0f).U8(0).U8(1).U8(2);
+        store = realmList.Store();
+        FakeLogin grunt;
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&grunt, &store);
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_GlueRealmList &&
+                  g_received[0].As<wxl_realm_list_args>().count == 2,
+              "Login.RealmListResult raises GlueRealmList with the count, then GlueRealm per entry");
+        if (g_received.size() == 3)
+        {
+            const wxl_realm_args first  = g_received[1].As<wxl_realm_args>();
+            const wxl_realm_args second = g_received[2].As<wxl_realm_args>();
+            Check(first.index == 0 && first.type == 1 && first.flags == 0x4 && first.locked == WXL_FALSE &&
+                      first.population == 1.5f && first.characters == 3 && first.category == 2 && first.realm_id == 1 &&
+                      first.version_major == 3 && first.version_build == 12340,
+                  "the first with its type, flags, population, characters, category, id and version");
+            Check(second.index == 1 && second.locked == WXL_TRUE && second.realm_id == 2 && second.version_major == 0 &&
+                      realms.strings.size() == 4 && realms.strings[0] == "Dawnlight" &&
+                      realms.strings[1] == "127.0.0.1:8085" && realms.strings[2] == "Old",
+                  "the second locked and without a version, and the names and addresses");
+        }
+
+        // The list BattlenetLogin::BuildRealmListResult writes: the region, the battlegroup, the
+        // realm id and the build as dwords where a Grunt list has the id's byte.
+        Body battlenetList;
+        battlenetList.U16(1)
+            .U8(0).U8(0).U8(0x4).Str("Lordaeron").Str("10.1.0.1:3724").F32(400.0f).U8(1).U8(9)
+            .U32(2).U32(14).U32(301).U32(12340).U8(3).U8(3).U8(5).U16(12340)
+            .U16(0);
+        store = battlenetList.Store();
+        FakeLogin battlenet;
+        battlenet.serverType = 1;
+        realms.strings.clear();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&battlenet, &store);
+        Check(g_received.size() == 2 && g_received[0].event == WXL_EV_GlueRealmList &&
+                  g_received[0].As<wxl_realm_list_args>().count == 1,
+              "Login.RealmListResult reads a Battle.net login's list too");
+        if (g_received.size() == 2)
+        {
+            const wxl_realm_args realm = g_received[1].As<wxl_realm_args>();
+            Check(realm.region_id == 2 && realm.battlegroup_id == 14 && realm.realm_id == 301 &&
+                      realm.build == 12340 && realm.category == 9 && realm.version_major == 3 &&
+                      realm.version_build == 12340 && realms.strings.size() == 2 &&
+                      realms.strings[0] == "Lordaeron",
+                  "with its region, battlegroup, dword realm id, build and version");
+        }
+
+        // The layout follows the login, not the bytes: a Grunt login reads the id's byte.
+        store = battlenetList.Store();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&grunt, &store);
+        Check(g_received.size() == 2 && g_received[1].As<wxl_realm_args>().realm_id == 2 &&
+                  g_received[1].As<wxl_realm_args>().region_id == 0,
+              "a Grunt login reads the id's byte and no Battle.net members");
+
+        store = realmList.Store();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(nullptr, &store);
+        Check(g_received.empty(), "and a login the binding cannot ask raises nothing");
+        g_host->Events().Unsubscribe(realmSub);
+    }
+
+    void WXL_CALL OnChat(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_chat_args& chat  = *static_cast<const wxl_chat_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(chat.sender_name.data, chat.sender_name.size),
+                          std::string(chat.target_name.data, chat.target_name.size),
+                          std::string(chat.channel.data, chat.channel.size),
+                          std::string(chat.text.data, chat.text.size) };
+    }
+
+    /// What the chat-send handler saw and whether it suppressed the message.
+    struct SendWatch
+    {
+        StrWatch strings;
+        bool     suppress = false;
+    };
+
+    void WXL_CALL OnChatSend(void* user, const void* args)
+    {
+        SendWatch&                watch = *static_cast<SendWatch*>(user);
+        const wxl_chat_send_args& send  = *static_cast<const wxl_chat_send_args*>(args);
+        ++watch.strings.calls;
+        watch.strings.strings = { std::string(send.text.data, send.text.size),
+                                  std::string(send.type.data, send.type.size),
+                                  std::string(send.language.data, send.language.size),
+                                  std::string(send.target.data, send.target.size),
+                                  std::string(send.prefix.data, send.prefix.size),
+                                  send.addon ? "addon" : "chat" };
+        if (watch.suppress) *send.suppressed = WXL_TRUE;
+    }
+
+    /// What the client does with a message it shows: ChatMessageReceived reads it, hands
+    /// AddChatMessage the text where it lies in the message and the type it settled on, and
+    /// returns. A null `text` is a message the client drops: no AddChatMessage.
+    void ReceiveChat(FakeStore& store, uint8_t is_gm, const char* text, int32_t shown_type,
+                     uint64_t sender_guid)
+    {
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, is_gm);
+        if (text)
+        {
+            const uint8_t* at = std::search(store.data, store.data + store.size, text, text + strlen(text));
+            wxl::seam::Chat::AddChatMessage::Before(reinterpret_cast<const char*>(at), shown_type, nullptr, 0,
+                                                    nullptr, nullptr, "", sender_guid, 0, 0, 0, is_gm, nullptr);
+        }
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, is_gm);
+    }
+
+    void CheckChat()
+    {
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABCull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+        const wxl_handle orcHandle = wxl::core::objects::HandleOf(&orc);
+
+        StrWatch                      watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_ChatMessage, &OnChat, &watch, 0);
+
+        // A say: the default layout.
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("Lok'tar").U8(0);
+        FakeStore store = say.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Lok'tar", 1, orc.guid);
+        const Received* said = Only(WXL_EV_ChatMessage);
+        Check(said != nullptr, "Chat.AddChatMessage raises ChatMessage once for a say the client shows");
+        if (said)
+        {
+            const wxl_chat_args args = said->As<wxl_chat_args>();
+            Check(args.type == 1 && args.language == 7 && args.sender == orcHandle && args.sender_guid == orc.guid &&
+                      args.tag == 0 && args.gm == WXL_FALSE && watch.strings[3] == "Lok'tar" && watch.strings[0].empty(),
+                  "with the type, the language, the sender, the text and no name");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        // A channel message with a chat tag, as a GM message with the sender's name.
+        Body channel;
+        channel.U8(17).U32(0).U64(orc.guid).U32(0).Sized("Thrall").Str("General").U64(0).Sized("hello").U8(0x4);
+        store = channel.Store();
+        g_received.clear();
+        ReceiveChat(store, 1, "hello", 17, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().gm == WXL_TRUE &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().tag == 0x4 && watch.strings[0] == "Thrall" &&
+                  watch.strings[2] == "General" && watch.strings[3] == "hello",
+              "a GM channel message carries the sender's name, the channel and the tag");
+
+        // A monster yell at a creature, whose name the message carries; a player's it does not.
+        Body yell;
+        yell.U8(14).U32(0).U64(0xF130000000000123ull).U32(0).Sized("Hogger").U64(0xF130000000000456ull).Sized("Gnoll")
+            .Sized("Grrr!").U8(0);
+        store = yell.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Grrr!", 14, 0xF130000000000123ull);
+        Check(Only(WXL_EV_ChatMessage) &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().target_guid == 0xF130000000000456ull &&
+                  watch.strings[0] == "Hogger" && watch.strings[1] == "Gnoll" && watch.strings[3] == "Grrr!",
+              "a monster yell carries the creature's name, the target and its name");
+        Body yellAtPlayer;
+        yellAtPlayer.U8(14).U32(0).U64(0xF130000000000123ull).U32(0).Sized("Hogger").U64(orc.guid).Sized("Grrr!")
+            .U8(0);
+        store = yellAtPlayer.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Grrr!", 14, 0xF130000000000123ull);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().target_guid == orc.guid &&
+                  watch.strings[1].empty() && watch.strings[3] == "Grrr!",
+              "and at a player, no target name");
+
+        // An achievement message, and a message cut short.
+        Body achievement;
+        achievement.U8(48).U32(0).U64(orc.guid).U32(0).U64(0).Sized("earned").U8(0).U32(1234);
+        store = achievement.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "earned", 48, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().achievement_id == 1234,
+              "an achievement message carries its id");
+        Body cut;
+        cut.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).U32(50);
+        store = cut.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, nullptr, 0, orc.guid);
+        Check(g_received.empty(), "a message cut short raises nothing");
+
+        // A foreign whisper: 8 on the wire, shown as a whisper, which is the type raised.
+        Body foreign;
+        foreign.U8(8).U32(1).U64(orc.guid).U32(0).Sized("Thrall").U64(0).Sized("psst").U8(0);
+        store = foreign.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "psst", 7, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().type == 7 &&
+                  watch.strings[0] == "Thrall" && watch.strings[3] == "psst",
+              "a foreign whisper is raised as the whisper the client shows");
+
+        // A message the client drops (an ignored sender): read, never shown, never raised.
+        store = say.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, nullptr, 0, orc.guid);
+        Check(g_received.empty(), "a message the client drops raises nothing");
+
+        // The client's own lines raise nothing, inside a received message or outside one.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before("You are now AFK.", 0, nullptr, 0, nullptr, nullptr, "", 0, 0, 0, 0,
+                                                0, nullptr);
+        store = say.Store();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        wxl::seam::Chat::AddChatMessage::Before("Lok'tar", 1, nullptr, 0, nullptr, nullptr, "", orc.guid, 0, 0, 0, 0,
+                                                nullptr);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_received.empty(), "a line that is not the received message's own text raises nothing");
+        g_host->Events().Unsubscribe(sub);
+
+        // The gates: the script's arguments off the Lua stack, suppressed or not.
+        SendWatch                     send;
+        const wxl_subscription sendSub = g_host->Events().Subscribe(WXL_EV_ChatSend, &OnChatSend, &send, 0);
+        g_vm.stack = { String("hello"), String("SAY"), FakeValue{}, FakeValue{} };
+        int32_t result = 7;
+        void*   state  = &g_vm;
+        Check(!wxl::seam::Chat::Script_SendChatMessage::Gate(&result, &state) && result == 7,
+              "Chat.Script_SendChatMessage lets the call through when nothing suppresses it");
+        Check(send.strings.calls == 1 && send.strings.strings.size() == 6 && send.strings.strings[0] == "hello" &&
+                  send.strings.strings[1] == "SAY" && send.strings.strings[2].empty() && send.strings.strings[3].empty() &&
+                  send.strings.strings[5] == "chat",
+              "having raised ChatSend with the text, the type and the absent arguments empty");
+        send.suppress = true;
+        g_vm.stack    = { String("psst"), String("WHISPER"), String("Orcish"), String("Thrall") };
+        Check(wxl::seam::Chat::Script_SendChatMessage::Gate(&result, &state) && result == 0,
+              "a suppressed message takes the call and answers no result");
+        Check(send.strings.strings[2] == "Orcish" && send.strings.strings[3] == "Thrall",
+              "with the language and the target as the script passed them");
+        g_vm.stack = { String("MyAddon"), String("payload"), String("GUILD"), FakeValue{} };
+        Check(wxl::seam::Chat::Script_SendAddonMessage::Gate(&result, &state) && send.strings.strings[4] == "MyAddon" &&
+                  send.strings.strings[0] == "payload" && send.strings.strings[1] == "GUILD" &&
+                  send.strings.strings[5] == "addon",
+              "Chat.Script_SendAddonMessage raises ChatSend as an addon message with its prefix");
+        g_vm.stack.clear();
+        g_host->Events().Unsubscribe(sendSub);
+
+        // SMSG_LOG_XPGAIN: a kill with its bonus and rate, then a quest.
+        Body kill;
+        kill.U64(0xF130000000000123ull).U32(150).U8(0).U32(30).F32(0.5f).U8(1);
+        store = kill.Store();
+        g_received.clear();
+        wxl::seam::Chat::Packet_SMSG_LOG_XPGAIN::Before(nullptr, 0x1D0, 0, &store);
+        const Received* gained = Only(WXL_EV_PlayerXpGain);
+        Check(gained != nullptr, "Chat.Packet_SMSG_LOG_XPGAIN raises PlayerXpGain once");
+        if (gained)
+        {
+            const wxl_xp_gain_args args = gained->As<wxl_xp_gain_args>();
+            Check(args.source_guid == 0xF130000000000123ull && args.source == WXL_HANDLE_NONE && args.amount == 150 &&
+                      args.kind == 0 && args.bonus == 30 && args.group_multiplier == 0.5f && args.refer_a_friend == WXL_TRUE,
+                  "with the source, the amount, the kind, the bonus, the rate and the flag");
+        }
+        Body quest;
+        quest.U64(orc.guid).U32(500).U8(1).U8(0);
+        store = quest.Store();
+        g_received.clear();
+        wxl::seam::Chat::Packet_SMSG_LOG_XPGAIN::Before(nullptr, 0x1D0, 0, &store);
+        Check(Only(WXL_EV_PlayerXpGain) && Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().kind == 1 &&
+                  Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().group_multiplier == 1.0f &&
+                  Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().source == orcHandle,
+              "a gain that is not a kill carries no bonus and a rate of 1");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
+    }
+
+    void CheckEnergize()
+    {
+        FakeObject priest;
+        priest.guid   = 0x0000000000000ABCull;
+        priest.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&priest, nullptr, 9300u);
+        const wxl_handle priestHandle = wxl::core::objects::HandleOf(&priest);
+
+        // SMSG_SPELLENERGIZELOG: the target first, then the caster.
+        Body energize;
+        energize.Packed(priest.guid).Packed(priest.guid).U32(29166).U32(0).U32(300);
+        FakeStore store = energize.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellLogEnergizeLog::Before(&store, 0);
+        const Received* gained = Only(WXL_EV_CombatEnergize);
+        Check(gained != nullptr, "Combat.HandleSpellLogEnergizeLog raises CombatEnergize once");
+        if (gained)
+        {
+            const wxl_combat_energize_args args = gained->As<wxl_combat_energize_args>();
+            Check(args.source == priestHandle && args.target == priestHandle && args.spell_id == 29166 &&
+                      args.power_type == 0 && args.amount == 300 && args.periodic == WXL_FALSE && args.drain == WXL_FALSE,
+                  "with the caster, the target, the spell, the power and the amount");
+        }
+
+        // SMSG_PERIODICAURALOG: an energize tick and a drain tick.
+        Body ticks;
+        ticks.Packed(priest.guid).Packed(priest.guid).U32(589).U32(2).U32(21).U32(3).U32(20).U32(64).U32(0).U32(50).F32(2.0f);
+        store = ticks.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
+        Check(g_received.size() == 2 && Count(WXL_EV_CombatEnergize) == 2,
+              "Combat.HandlePeriodicAuraLog raises CombatEnergize for an energize and a drain tick");
+        if (g_received.size() == 2)
+        {
+            const wxl_combat_energize_args tick  = g_received[0].As<wxl_combat_energize_args>();
+            const wxl_combat_energize_args drain = g_received[1].As<wxl_combat_energize_args>();
+            Check(tick.periodic == WXL_TRUE && tick.drain == WXL_FALSE && tick.power_type == 3 && tick.amount == 20 &&
+                      tick.spell_id == 589,
+                  "the energize tick as periodic, with its power and amount");
+            Check(drain.drain == WXL_TRUE && drain.power_type == 0 && drain.amount == 50 && drain.multiplier == 2.0f,
+                  "the drain tick with its multiplier");
+        }
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&priest);
     }
 
     // --- FrameScript: the UI events the client fires, and the errors its Lua raises --------
@@ -2965,15 +3755,18 @@ namespace
         Check(g_seenEsi == reinterpret_cast<uint32_t>(&moth),
               "ObjectMgr.DestroyRemovedObject's original finds the object in ESI");
 
-        // The combat log statics: a miss with one target, a damage line and a heal line.
+        // The combat log statics: a miss with one target, a damage line, a heal line and an energize
+        // line.
         const regparm::Row* miss   = regparm::Find("Combat.HandleSpellLogMiss");
         const regparm::Row* damage = regparm::Find("Combat.HandleSpellNonMeleeDamageLog");
         const regparm::Row* heal   = regparm::Find("Combat.HandleSpellHealLog");
-        if (miss && damage && heal)
+        const regparm::Row* energy = regparm::Find("Combat.HandleSpellLogEnergizeLog");
+        if (miss && damage && heal && energy)
         {
             *miss->original   = reinterpret_cast<void*>(&FakeLogFromEdi);
             *damage->original = reinterpret_cast<void*>(&FakeLogFromEax);
             *heal->original   = reinterpret_cast<void*>(&FakeLogFromEax);
+            *energy->original = reinterpret_cast<void*>(&FakeLogFromEax);
 
             Body missLog;
             missLog.U32(116).U64(0xF130000000000001ull).U8(0).U32(1).U64(0xF130000000000002ull).U8(3);
@@ -3014,9 +3807,23 @@ namespace
                       g_keptEdi == 0x0D0D0D0Du,
                   "and the caller gets the answer, EBX, ESI and EDI back");
 
+            Body energizeLog;
+            energizeLog.Packed(0xF130000000000001ull).Packed(0xF130000000000002ull).U32(29166).U32(0)
+                .U32(300);
+            store = energizeLog.Store();
+            g_received.clear();
+            CallLog(energy->detour, true, &store, 13u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 13u,
+                  "Combat.HandleSpellLogEnergizeLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatEnergize) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
             *miss->original   = nullptr;
             *damage->original = nullptr;
             *heal->original   = nullptr;
+            *energy->original = nullptr;
         }
 
         *update->original  = nullptr;
@@ -3126,6 +3933,12 @@ int main(int argc, char** argv)
     CheckCombat();
     CheckUiEvent();
     CheckScriptError();
+    CheckWorldZoneMouseoverClick();
+    CheckConsoleVar();
+    CheckPlayerMoveMoneyLevel();
+    CheckGlue();
+    CheckChat();
+    CheckEnergize();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckOneSidedShim();

@@ -810,6 +810,12 @@ type CGPlayerData WoW/Source/Object/Player.h CGPlayerData
   sizeof(m_playerVisibleItems)            -                                            # the bound of the visible-item slot
   m_playerChosenTitle                     -
 
+# The local player's block, which its m_player points at: the descriptor block above, then the
+# fields only the local player carries.
+type CGPlayerLocalData WoW/Source/Object/Player.h CGPlayerLocalData
+  sizeof                                  -
+  m_playerFieldCoinage                    -                                            # binding player_money
+
 type VisibleItem_C WoW/Source/Object/ObjectClient/VisibleItem_C.h VisibleItem_C
   sizeof                                  -                                            # the stride of m_playerVisibleItems
   m_itemId                                -
@@ -1233,3 +1239,31 @@ type PendingSpellCast WoW/Source/Magic/MagicClient/Spell_C.h PendingSpellCast
   m_data.m_caster                         -                                            # binding pending_cast_caster
   m_data.m_spellId                        -                                            # binding pending_cast_spell_id
   m_data.m_castCount                      -                                            # binding pending_cast_count
+
+# =============================================================================================
+# The third wave's seams: the console, the clicks, the movement block (binding/consolevar.def,
+# binding/gameui.def, binding/unit.def)
+# =============================================================================================
+
+type CVar Engine/Source/ConsoleBase/ConsoleVar.h CVar
+  sizeof                                  -
+  m_key.m_str                             -                                            # binding cvar_name: the hash key of the variable
+  m_stringValue.m_str                     -                                            # binding cvar_value
+  m_flags                                 -                                            # binding cvar_flags
+
+type CTerrainClickEvent WoW/Source/Ui/GameUI.h CTerrainClickEvent
+  sizeof                                  -
+  m_guid                                  -                                            # binding terrain_click_guid
+  m_point.x                               -                                            # binding terrain_click_x
+  m_point.y                               -                                            # binding terrain_click_y
+  m_point.z                               -                                            # binding terrain_click_z
+  m_button                                -                                            # binding terrain_click_button
+
+type CSpriteClickEvent WoW/Source/Ui/GameUI.h CSpriteClickEvent
+  sizeof                                  -
+  m_guid                                  -                                            # binding sprite_click_guid
+  m_button                                -                                            # binding sprite_click_button
+
+type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
+  sizeof                                  -
+  m_flags                                 -                                            # binding unit_movement_flags

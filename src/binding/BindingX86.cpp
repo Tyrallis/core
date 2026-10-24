@@ -241,6 +241,26 @@ namespace wxl::core::binding
         return IsClient() ? *reinterpret_cast<const uint8_t*>(WXL_STATIC("CGGameUI::m_loggingIn")) : 0;
     }
 
+    // --- glue.def: the login screens' state -------------------------------------------------
+
+    const char* glue_current_screen(void)
+    {
+        // A char[64] static: its address is the string.
+        return IsClient() ? reinterpret_cast<const char*>(WXL_STATIC("CGlueMgr::m_currentScreen")) : nullptr;
+    }
+
+    int32_t login_server_type(const void* login)
+    {
+        // Login::GetLoginServerType is the vtable's slot 50 (+0xC8): ClientServices::
+        // GetLoginServerType calls it there (0x004D9FF2 `mov eax,[edx+0xc8]`), and the slot holds
+        // 0x008E5250 (`xor eax,eax; ret`) in GruntLogin's vtable at 0x00A94928 and 0x008C8DE0
+        // (`mov eax,1; ret`) in BattlenetLogin's at 0x00A94768.
+        if (!IsClient() || !login) return -1;
+        using ServerTypeFn = int32_t(__fastcall*)(const void* self, void* edx);
+        const void* const* vtable = Read<const void* const*>(login, 0);
+        return reinterpret_cast<ServerTypeFn>(const_cast<void*>(vtable[50]))(login, nullptr);
+    }
+
     // --- script.def: the client's Lua, called as the C functions they are ---------------------
 
     void* script_state(void)

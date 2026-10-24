@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Login domain: a seam on Login, the client's side of the logon server's protocol.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including login.def"
+#endif
+
+// Takes the realm list, positioned at its count: a word, then per realm the type, the lock
+// flag, the flags, the name and the address as strings, the population, the account's
+// character count, the category, then the realm id as a byte from a Grunt logon server, or the
+// region, the battlegroup, the realm id and the build as dwords from Battle.net, and the
+// version when the flags say one follows. Hands it to the glue's LoginResponse, which parses it
+// in the layout Login::GetLoginServerType names into the list the realm screen shows. Two
+// callers: the Grunt link's CMD_REALM_LIST, which validated the whole list first, and
+// BattlenetLogin::BuildRealmListResult, which writes the list from Battle.net's realms and
+// does not override this. A virtual member of Login overriding Grunt::ClientResponse, its
+// argument on the stack: thiscall, reached only through its vtable and ending in `ret 4`. Runs
+// on the logon connection's thread, where the link reads its data. Before asks the login its
+// server type (binding login_server_type) and raises GlueRealmList with the count, then
+// GlueRealm per entry in order, none for a list cut short.
+WXL_SEAM_BEFORE(Login, RealmListResult, "Login::RealmListResult", void, thiscall, (void* self, void* msg))
+WXL_SEAM_RAISES(Login, RealmListResult, GlueRealmList)
+WXL_SEAM_RAISES(Login, RealmListResult, GlueRealm)

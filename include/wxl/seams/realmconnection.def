@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The RealmConnection domain: seams on RealmConnection, the connection to the world server
+// before a character is in it -- the login's result, the character list, the request to enter.
+//
+// Every row is a non-static member: thiscall, `self` first. The handlers are reached from the
+// connection's event queue, which the client's own loop polls, so they run on the main thread.
+// Each body reads the message from its cursor, without moving it, and raises nothing for a
+// message cut short, except where a row says the client goes on.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including realmconnection.def"
+#endif
+
+// The handler of SMSG_AUTH_RESPONSE: the result byte, then for AUTH_OK (12) and
+// AUTH_WAIT_QUEUE (27) the billing block when the message holds it, and for the queue its
+// position and the free-migration flag. The billing test is the client's: the bytes left less
+// the queue's five, unsigned, so a queue message with fewer than five left still reads the
+// block. A read that runs out leaves its value and the ones after it; the glue is told the
+// result all the same. Records them on the connection and tells the glue. Before raises
+// GlueAuthResult whenever the result byte is there, with what the client's reads would find,
+// the members the message ran out before left at 0.
+WXL_SEAM_BEFORE(RealmConnection, HandleAuthResponse, "RealmConnection::HandleAuthResponse", int32_t, thiscall, (void* self, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(RealmConnection, HandleAuthResponse, GlueAuthResult)
+
+// The handler of SMSG_CHAR_ENUM: a count byte, then per character the guid, the name, the
+// race, class, sex and looks, the level, the zone, the map, the position, the guild, the
+// flags, the pet and the 23 equipment slots. A count above ten is refused as a whole. Fills
+// the connection's list and hands it to the glue. Before raises GlueCharacterList with the
+// count, then GlueCharacter per entry in order, none when the list is cut short.
+WXL_SEAM_BEFORE(RealmConnection, HandleCharEnum, "RealmConnection::HandleCharEnum", int32_t, thiscall, (void* self, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(RealmConnection, HandleCharEnum, GlueCharacterList)
+WXL_SEAM_RAISES(RealmConnection, HandleCharEnum, GlueCharacter)
+
+// Sends CMSG_PLAYER_LOGIN with the character's guid: the one request to enter the world,
+// reached from the glue once the character selection confirmed. A WOWGUID by value is its
+// eight bytes. Before raises GlueEnterWorld.
+WXL_SEAM_BEFORE(RealmConnection, RequestCharacterLogin, "RealmConnection::RequestCharacterLogin", void, thiscall, (void* self, uint64_t guid, int32_t a2))
+WXL_SEAM_RAISES(RealmConnection, RequestCharacterLogin, GlueEnterWorld)

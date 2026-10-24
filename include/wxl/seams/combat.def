@@ -61,8 +61,18 @@ WXL_SEAM_RAISES(Combat, HandleSpellHealLog, CombatHeal)
 
 // SMSG_PERIODICAURALOG: the target and the caster as packed guids, the spell id, then a count
 // of entries each led by its aura type: damage (3, 89), heal (8, 20), energize (21, 24) or
-// drain (64); the client stops at any other. Before raises CombatDamage or CombatHeal per
-// damage or heal entry, in order, up to where the client would stop.
+// drain (64); the client stops at any other. Before raises CombatDamage, CombatHeal or
+// CombatEnergize per entry, in order, up to where the client would stop.
 WXL_SEAM_BEFORE(Combat, HandlePeriodicAuraLog, "CombatLog::HandlePeriodicAuraLog", int32_t, cdecl, (void* msg, int32_t time_offset))
 WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatDamage)
 WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatHeal)
+WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatEnergize)
+
+// SMSG_SPELLENERGIZELOG: the target and the caster as packed guids, the spell id, the power
+// type and the amount. Before raises CombatEnergize.
+//
+// regparm: the message in EAX, the time offset on the stack. Evidence: 0x006D3DF0 (`mov esi,eax`
+// at 0x006D3DFB) and its callers, `mov eax,[ebp+0x14]; push 0` at 0x006D3EF3 and `mov eax,esi`
+// at 0x006D4187, each cleaning one dword after the call.
+WXL_SEAM_BEFORE(Combat, HandleSpellLogEnergizeLog, "CombatLog::HandleSpellLogEnergizeLog", int32_t, regparm, (void* msg, int32_t time_offset))
+WXL_SEAM_RAISES(Combat, HandleSpellLogEnergizeLog, CombatEnergize)

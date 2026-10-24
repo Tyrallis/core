@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Chat domain: seams on ChatFrame.cpp and ChatFrame_Scripts.cpp -- what the server says
+// to the chat, and what the local player says through the interface.
+//
+// Every row is cdecl: a static member of CGChat with external linkage, a handler reached only
+// through the handler table, and the two script functions whose address is taken for the
+// script function table. The handlers read the message from its cursor without moving it, and
+// raise nothing for a message cut short.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including chat.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including chat.def"
+#endif
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including chat.def"
+#endif
+
+// Parses one chat message and shows it: the type, the language, the sender's guid and a
+// dword, then what the type adds -- a creature's name and the target for the monster types, a
+// GM's name on a GM message, the channel's name for a channel message, the target's guid, the
+// text, the chat tag, an achievement id. Then filters: a message from an ignored player
+// (unless a GM's), a monster's said to an ignored one, a whisper the stranger filter refuses
+// and a message not read to its end are dropped, and a foreign whisper becomes a whisper. What
+// is left goes to AddChatMessage, once. Two callers, the handlers of
+// SMSG_MESSAGECHAT and SMSG_GM_MESSAGECHAT, which differ only in is_gm. Before reads what the
+// message carries and keeps it for AddChatMessage; After forgets it. Neither raises: the
+// client's own decision, the call to AddChatMessage, does.
+WXL_SEAM(Chat, ChatMessageReceived, "CGChat::ChatMessageReceived", int32_t, cdecl, (void* msg, uint8_t is_gm))
+
+// Shows one line in the chat frames: the client's own messages (system notices, loot, money,
+// ...) and the received messages ChatMessageReceived let through, with the chat type the client
+// settled on. Then its own filters: an addon message goes to CHAT_MSG_ADDON, a line whose
+// sender's name is not cached yet is queued and added again once it is (with a copy of the
+// text), the spam filter and the UTF-8 check drop theirs. Before raises ChatMessage when the call is the one ChatMessageReceived makes for
+// the message it read -- the same text, from inside it -- with the type it is handed, and
+// nothing for the client's own lines.
+WXL_SEAM_BEFORE(Chat, AddChatMessage, "CGChat::AddChatMessage", void, cdecl, (const char* text, int32_t type, const char* sender_name, uint32_t language, const char* channel_name, const char* target_name, const char* flags, uint64_t sender_guid, uint32_t sender_unk, uint64_t target_guid, int32_t achievement_id, uint8_t is_gm, const void* conversation))
+WXL_SEAM_RAISES(Chat, AddChatMessage, ChatMessage)
+
+// The script's SendChatMessage(text [, type] [, language] [, target]): checks the player can
+// speak, the arguments, the type's conditions (a target for a whisper, a group for party
+// chat, ...), then builds CMSG_MESSAGECHAT and sends it. Every message typed in the chat edit
+// box and every one an addon sends end here. Gate reads the arguments off the Lua stack and
+// raises ChatSend; taking the call when a handler suppressed it answers no result, which is
+// what the function answers for a message it did not send.
+WXL_SEAM_GATE(Chat, Script_SendChatMessage, "Script_SendChatMessage", int32_t, cdecl, (void* state))
+WXL_SEAM_RAISES(Chat, Script_SendChatMessage, ChatSend)
+
+// The script's SendAddonMessage(prefix, text [, type] [, target]): joins the prefix and the
+// text with a tab and sends them as CMSG_MESSAGECHAT in the addon language. Gate raises
+// ChatSend with addon set, and takes the call as above.
+WXL_SEAM_GATE(Chat, Script_SendAddonMessage, "Script_SendAddonMessage", int32_t, cdecl, (void* state))
+WXL_SEAM_RAISES(Chat, Script_SendAddonMessage, ChatSend)
+
+// The handler of SMSG_LOG_XPGAIN: the source's guid, the amount, the kind byte, for a kill
+// the rested bonus and the group multiplier, then the refer-a-friend flag. Logs the gain to
+// the chat. Before raises PlayerXpGain.
+WXL_SEAM_BEFORE(Chat, Packet_SMSG_LOG_XPGAIN, "Packet_SMSG_LOG_XPGAIN", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Chat, Packet_SMSG_LOG_XPGAIN, PlayerXpGain)

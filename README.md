@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.5-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.6-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -293,7 +293,24 @@ source. Everything else observes.
 | `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)` (regparm: EDI), where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
 | `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatDamage` before |
 | `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatHeal` before |
-| `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` or `CombatHeal` before, per damage or heal entry, up to where the client stops |
+| `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage`, `CombatHeal` or `CombatEnergize` before, per entry, up to where the client stops |
+| `Combat.HandleSpellLogEnergizeLog` | `CombatLog::HandleSpellLogEnergizeLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX), where `SMSG_SPELLENERGIZELOG` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatEnergize` before |
+| `GameUI.NewZoneFeedback` | `CGGameUI::NewZoneFeedback(int32_t area_id, int32_t subzone_id, int32_t wmo_group_id, const char* zone_text, const char* subzone_text, const char* real_zone_text, int32_t inside)`, the one place the client learns the player's zone | `ZoneChanged` before, when the ids or the texts differ from what was last announced |
+| `GameUI.HandleObjectTrackChange` | `CGGameUI::HandleObjectTrackChange(uint64_t guid, uint64_t prev_guid)` | `MouseoverChanged` before, once per change of the object under the mouse |
+| `GameUI.HandleTerrainClick`, `GameUI.HandleSpriteClick` | `CGGameUI::HandleTerrainClick(const CTerrainClickEvent*)`, `CGGameUI::HandleSpriteClick(const CSpriteClickEvent*)`, the two ends of a click the world frame resolved | `WorldClick` before: the hit point and the game object for the terrain, the object and its position for a model |
+| `ConsoleVar.InternalSet` | `CVar::InternalSet(const char* value, bool set_value, bool set_reset, bool set_default, bool set_needs_save)`, where every set of a console variable ends | `CVarChanged` before, when the call will change the value |
+| `Unit.SendMovementUpdate` | `CGUnit_C::SendMovementUpdate(uint32_t time, uint32_t msg_id, float value, uint32_t index, uint64_t transport, uint8_t seat)` (the six-argument overload, at 0x0071F0C0), where every movement message of the local player is built and sent | `PlayerMoveStart` before for a start, a jump, an ascent or a descent, `PlayerMoveStop` for a stop or a landing |
+| `Player.OnUpdateMoney` | `OnUpdateMoney(uint64_t guid, uint32_t offset, uint32_t count, const void* value, void* param)`, the mirror handler of `PLAYER_FIELD_COINAGE` | `PlayerMoneyChanged` before, with the previous value the mirror hands over and the one the field holds |
+| `Player.Packet_Group_9` | `Packet_Group_9(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_LEVEL_UP_INFO` among the local player's other messages | `PlayerLevelUp` before, for that opcode |
+| `Chat.Packet_SMSG_LOG_XPGAIN` | `Packet_SMSG_LOG_XPGAIN(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `PlayerXpGain` before |
+| `Glue.UpdateCurrentScreen` | `CGlueMgr::UpdateCurrentScreen(const char* screen)`, which every glue screen change goes through | `GlueScreenChanged` before, with the screen being left |
+| `RealmConnection.HandleAuthResponse` | `RealmConnection::HandleAuthResponse(uint32_t msg_id, uint32_t time, CDataStore* msg)` | `GlueAuthResult` before |
+| `RealmConnection.HandleCharEnum` | `RealmConnection::HandleCharEnum(uint32_t msg_id, uint32_t time, CDataStore* msg)` | `GlueCharacterList` before, then `GlueCharacter` per entry; none of them for a list cut short |
+| `RealmConnection.RequestCharacterLogin` | `RealmConnection::RequestCharacterLogin(uint64_t guid, int32_t a2)`, the one request to enter the world | `GlueEnterWorld` before |
+| `Login.RealmListResult` | `Login::RealmListResult(CDataStore* msg)`, the realm list as the Grunt logon link validated it or as the Battle.net login built it, read in the layout the login's server type names; on the logon connection's thread | `GlueRealmList` before, then `GlueRealm` per entry |
+| `Chat.ChatMessageReceived` | `CGChat::ChatMessageReceived(CDataStore* msg, bool is_gm)`, where `SMSG_MESSAGECHAT` and `SMSG_GM_MESSAGECHAT` both end, and where the client drops what it will not show | nothing itself: Before reads the message, After forgets it |
+| `Chat.AddChatMessage` | `CGChat::AddChatMessage(const char* text, int32_t type, ...)`, every line the chat frames show | `ChatMessage` before, for the line `ChatMessageReceived` lets through, with the type the client shows it under |
+| `Chat.Script_SendChatMessage`, `Chat.Script_SendAddonMessage` (gated) | `Script_SendChatMessage(lua_State*)`, `Script_SendAddonMessage(lua_State*)`, the script functions every message from the interface goes through | `ChatSend` at the gate, with the script's arguments; suppressing it answers no result and nothing is sent |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:

@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Glue domain of the client binding: the login screens' own state, and the logon
+// connection behind them.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including glue.def"
+#endif
+
+// The name of the glue screen shown: CGlueMgr::m_currentScreen, a 64-byte buffer that only
+// CGlueMgr::UpdateCurrentScreen writes. Empty before the first screen; null outside the client.
+WXL_BINDING(glue_current_screen, const char*, (void), (), 0)
+
+// The kind of logon server a login object talks to: Login::GetLoginServerType, 0 for a Grunt
+// logon server (GruntLogin), 1 for Battle.net (BattlenetLogin). The client reads the realm list
+// by it: a Battle.net list carries the region, the battlegroup, the realm id and the build as
+// dwords where a Grunt list carries the realm id as a byte. -1 for a null login or outside the
+// client.
+WXL_BINDING(login_server_type, int32_t, (const void* login), (login), -1)

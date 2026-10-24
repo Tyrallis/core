@@ -44,3 +44,8 @@ WXL_BINDING_FIELD_VIA(unit_created_by, uint64_t, CGUnit_C, m_unit, CGUnitData, m
 // Spell seams for the messages that name a unit without its spell (a delay, a channel update).
 WXL_BINDING_FIELD(unit_casting_spell_id, uint32_t, CGUnit_C, m_castingSpellId, 0)
 WXL_BINDING_FIELD(unit_channel_spell_id, uint32_t, CGUnit_C, m_channelSpellId, 0)
+
+// The movement flags of the unit's movement block (forward 1, backward 2, strafe left 4,
+// strafe right 8, ..., falling 0x800, swimming 0x200000, flying 0x1000000), as the client
+// keeps them while it moves the unit.
+WXL_BINDING_FIELD_VIA(unit_movement_flags, uint32_t, CGUnit_C, m_movement, CMovementShared, m_flags, 0)

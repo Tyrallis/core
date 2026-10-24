@@ -8,6 +8,9 @@
 #ifndef WXL_SEAM_AFTER
 #error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including unit.def"
 #endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including unit.def"
+#endif
 
 // Runs when the unit's health reaches zero: the player's own OnDeath for a player, the attack
 // state cleared, the death animation, the target dropped, the interact icon removed. After
@@ -25,3 +28,14 @@ WXL_SEAM_RAISES(Unit, OnAuraAdded, UnitAuraChanged)
 // The counterpart: the aura left the unit's slots. After raises UnitAuraChanged with removed set.
 WXL_SEAM_AFTER(Unit, OnAuraRemoved, "CGUnit_C::OnAuraRemoved", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
 WXL_SEAM_RAISES(Unit, OnAuraRemoved, UnitAuraChanged)
+
+// Sends one movement message of the unit the player controls: builds the MSG_MOVE_* named by
+// msg_id over the unit's movement block and hands it to the connection. Every movement the
+// local player sends goes through it -- the input's starts and stops, the floodsafe turns and
+// pitches, the heartbeats, the acks -- from ProcessLocalMoveEvent and the floodsafe handlers.
+// The one-argument overload of the same name (0x00724E70) forwards here; the address picks
+// this one. A non-static member, its six arguments on the stack: thiscall. Before raises PlayerMoveStart for a start, a jump, an ascent or a
+// descent, PlayerMoveStop for a stop or a landing, and nothing for the rest.
+WXL_SEAM_BEFORE(Unit, SendMovementUpdate, "CGUnit_C::SendMovementUpdate@0x0071F0C0", int32_t, thiscall, (void* self, uint32_t time, uint32_t msg_id, float value, uint32_t index, uint64_t transport, uint8_t seat))
+WXL_SEAM_RAISES(Unit, SendMovementUpdate, PlayerMoveStart)
+WXL_SEAM_RAISES(Unit, SendMovementUpdate, PlayerMoveStop)

@@ -1,18 +1,41 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 WarcraftXL
 //
-// The Player domain: seams on CGPlayer_C, the client's player characters.
-//
-// Every row is a non-static member: thiscall, `self` first.
+// The Player domain: seams on Player_C.cpp, the client's player characters: a member of
+// CGPlayer_C, and the handlers the file registers for the local player's messages and fields.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including player.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including player.def"
 #endif
 
 // The mirror handler of PLAYER_VISIBLE_ITEM_n: runs after the server wrote a visible equipment
 // slot, with the slot and the field's previous value. Returns early when only the enchant
 // changed; otherwise refreshes the character's components and, for the local player, the
 // action bar. Before compares the old and the new item id; After raises EquipmentChanged when
-// they differ, with the new id (0 for a cleared slot) and the player's handle.
+// they differ, with the new id (0 for a cleared slot) and the player's handle. A non-static
+// member: thiscall, `self` first.
 WXL_SEAM(Player, UpdateInventoryComponent, "CGPlayer_C::UpdateInventoryComponent", void, thiscall, (void* self, int32_t slot, const void* old_item))
 WXL_SEAM_RAISES(Player, UpdateInventoryComponent, EquipmentChanged)
+
+// The mirror handler of PLAYER_FIELD_COINAGE, registered on the local player's object when it
+// enters the world: runs after the server wrote the field, with the player's guid, the field's
+// offset and size, and its previous value by address. Plays the coin sound, refreshes the
+// trainer and fires PLAYER_MONEY. A free function whose address is taken for the handler
+// table, the five arguments on the stack: cdecl. It reads none of them, so its own code shows
+// nothing; CallMirrorFunctions calls it through the handler's pointer at 0x004D5254 after
+// pushing the six dwords and cleans 0x18. Before raises PlayerMoneyChanged with the previous
+// value and the one the field now holds.
+WXL_SEAM_BEFORE(Player, OnUpdateMoney, "OnUpdateMoney", int32_t, cdecl, (uint64_t guid, uint32_t offset, uint32_t count, const void* value, void* param))
+WXL_SEAM_RAISES(Player, OnUpdateMoney, PlayerMoneyChanged)
+WXL_SEAM_WITNESS(Player, OnUpdateMoney, 0x004D5254)
+
+// The handler of SMSG_LEVEL_UP_INFO (the level, the health added, the seven powers and the
+// five stats), among the other messages of the local player it serves (the bank, the minimap
+// ping, the cinematic trigger, the random roll, ...). Reached only through the handler table,
+// with the four arguments every handler takes on the stack: cdecl. Before reads the message from its cursor and raises PlayerLevelUp for
+// that opcode, and nothing for the others.
+WXL_SEAM_BEFORE(Player, Packet_Group_9, "Packet_Group_9", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_Group_9, PlayerLevelUp)

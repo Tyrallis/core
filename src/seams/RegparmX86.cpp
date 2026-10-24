@@ -3,7 +3,7 @@
 //
 // The thunks that let a seam stand in front of a function whose arguments arrive in registers.
 //
-// Seven functions of build 12340 take arguments in registers: MSVC saw each one's every caller
+// Eight functions of build 12340 take arguments in registers: MSVC saw each one's every caller
 // and passed what it liked where it liked, whatever the function's linkage. Each thunk here was
 // written against that function's first instructions and against every one of its callers; the
 // register each argument arrives in is recorded above the thunk with the addresses it was read
@@ -13,7 +13,7 @@
 // touch them -- EAX and ECX are scratch, so the first C++ call would lose them. Call the seam's
 // Before with them, if the row declares one. Put them back exactly as they came. Run the
 // original. Call After, if the row declares one. Return the stack as the function's own
-// convention leaves it: these seven clean nothing, so the five that take stack arguments leave
+// convention leaves it: these eight clean nothing, so the six that take stack arguments leave
 // them to the caller, as the callers' `add esp` shows they expect. A function that answers
 // something answers in EAX, which nothing after the original's call touches.
 //
@@ -60,6 +60,10 @@ static void* g_damageOriginal = nullptr;
 static void(__cdecl* g_healBefore)(void*, int32_t) =
     &wxl::seam::Combat::HandleSpellHealLog::Before;
 static void* g_healOriginal = nullptr;
+
+static void(__cdecl* g_energizeBefore)(void*, int32_t) =
+    &wxl::seam::Combat::HandleSpellLogEnergizeLog::Before;
+static void* g_energizeOriginal = nullptr;
 
 // --- Event.DispatchUpdate -----------------------------------------------------------------
 // IEvtDispatchUpdate @0x0047DB70: the context arrives in EDI and nothing else does. Its body
@@ -292,6 +296,39 @@ __declspec(naked) static void HealThunk()
     }
 }
 
+// --- Combat.HandleSpellLogEnergizeLog -----------------------------------------------------
+// CombatLog::HandleSpellLogEnergizeLog @0x006D3DF0: `mov esi,eax` at 0x006D3DFB, the same shape.
+// Its callers: `mov eax,[ebp+0x14]; push 0` at 0x006D3EF3 (cleaned at 0x006D3EFD) and `push edi;
+// mov eax,esi` at 0x006D4186 (cleaned at 0x006D41E3).
+__declspec(naked) static void EnergizeThunk()
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push eax                        // [ebp-04h]: the message
+        push esi
+        push edi
+        push ebx
+
+        push dword ptr [ebp+08h]        // time_offset
+        push dword ptr [ebp-04h]        // msg
+        call dword ptr [g_energizeBefore]
+        add  esp, 08h
+
+        push dword ptr [ebp+08h]
+        mov  eax, dword ptr [ebp-04h]
+        call dword ptr [g_energizeOriginal]
+        add  esp, 04h
+
+        pop  ebx
+        pop  edi
+        pop  esi
+        mov  esp, ebp
+        pop  ebp
+        ret
+    }
+}
+
 namespace
 {
     const wxl::core::seams::regparm::Row kRows[] = {
@@ -304,6 +341,8 @@ namespace
         { "Combat.HandleSpellNonMeleeDamageLog", reinterpret_cast<void*>(&DamageThunk),
           &g_damageOriginal },
         { "Combat.HandleSpellHealLog", reinterpret_cast<void*>(&HealThunk), &g_healOriginal },
+        { "Combat.HandleSpellLogEnergizeLog", reinterpret_cast<void*>(&EnergizeThunk),
+          &g_energizeOriginal },
     };
 }
 

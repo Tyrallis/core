@@ -3,11 +3,14 @@
 //
 // The GameUI domain: seams on CGGameUI, the game interface's own state.
 //
-// Both rows are static members: cdecl, no `this`. A WOWGUID is passed by value as its eight
-// bytes, which a uint64_t carries.
+// Every row is a static member: cdecl, no `this`. A WOWGUID is passed by value as its eight
+// bytes, which a uint64_t carries; a click or track event, passed by reference, is a pointer.
 
 #ifndef WXL_SEAM_AFTER
 #error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including gameui.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including gameui.def"
 #endif
 
 // The player's target is CGGameUI::m_lockedTarget, written in two places: CGGameUI::Target sets
@@ -28,3 +31,39 @@ WXL_SEAM_RAISES(GameUI, SendTarget, TargetChanged)
 // announced once, by SendTarget, as previous to current.
 WXL_SEAM_AFTER(GameUI, ClearTarget, "CGGameUI::ClearTarget", void, cdecl, (uint64_t guid, int32_t a2))
 WXL_SEAM_RAISES(GameUI, ClearTarget, TargetChanged)
+
+// The rows below are static members of CGGameUI with external linkage, their arguments on the
+// stack: cdecl.
+
+// The one place the client learns the player's zone: called by the area list when the zone,
+// the subzone or the map object the player is in changed, with the ids, the texts and whether
+// the player is inside. Writes CGGameUI's zone state and fires ZONE_CHANGED_NEW_AREA for a new
+// area id, ZONE_CHANGED or ZONE_CHANGED_INDOORS for a text that changed. Before raises
+// ZoneChanged when the ids or the texts differ from what was last announced, with the state
+// the client is about to adopt. It leaves by a tail jump, so no `ret` says who cleans; its one
+// caller pushes the seven at 0x0078F1DD and cleans them with the dword of the call before.
+WXL_SEAM_BEFORE(GameUI, NewZoneFeedback, "CGGameUI::NewZoneFeedback", void, cdecl, (int32_t area_id, int32_t subzone_id, int32_t wmo_group_id, const char* zone_text, const char* subzone_text, const char* real_zone_text, int32_t inside))
+WXL_SEAM_RAISES(GameUI, NewZoneFeedback, ZoneChanged)
+WXL_SEAM_WITNESS(GameUI, NewZoneFeedback, 0x0078F1DD)
+
+// The object the mouse is over moved from prev_guid to guid (either may be zero): clears the
+// previous highlight and tooltip, highlights the new object, fires UPDATE_MOUSEOVER_UNIT for
+// a unit. Two callers: the world frame's track event, and the auto-mouseover. Before raises
+// MouseoverChanged when guid differs from the object last announced, from that object to this
+// one.
+WXL_SEAM_BEFORE(GameUI, HandleObjectTrackChange, "CGGameUI::HandleObjectTrackChange", void, cdecl, (uint64_t guid, uint64_t prev_guid))
+WXL_SEAM_RAISES(GameUI, HandleObjectTrackChange, MouseoverChanged)
+
+// A click that landed on the terrain or a map object (a CTerrainClickEvent: the hit point, the
+// game object's guid when the hit was one, the button): clears the cursor and runs the terrain
+// click. One caller, the world frame's default action. Before raises WorldClick with the point,
+// the object when the guid names one in view, and the button.
+WXL_SEAM_BEFORE(GameUI, HandleTerrainClick, "CGGameUI::HandleTerrainClick", int32_t, cdecl, (const void* evt))
+WXL_SEAM_RAISES(GameUI, HandleTerrainClick, WorldClick)
+
+// A click that landed on an object's model (a CSpriteClickEvent: the guid and the button):
+// clears the cursor and runs the left or right click on the object. One caller, the world
+// frame's default action. Before raises WorldClick with the object and, for its point, the
+// object's position.
+WXL_SEAM_BEFORE(GameUI, HandleSpriteClick, "CGGameUI::HandleSpriteClick", int32_t, cdecl, (const void* evt))
+WXL_SEAM_RAISES(GameUI, HandleSpriteClick, WorldClick)

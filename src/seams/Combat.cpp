@@ -222,10 +222,47 @@ namespace
             return true;
         }
         case kAuraPeriodicEnergize:
-        case kAuraObsModPower: return in.Skip(8);
-        case kAuraPeriodicManaLeech: return in.Skip(12);
+        case kAuraObsModPower:
+        case kAuraPeriodicManaLeech:
+        {
+            wxl_combat_energize_args args{};
+            const bool               drain = auraType == kAuraPeriodicManaLeech;
+            if (!in.U32(args.power_type) || !in.U32(args.amount)) return false;
+            if (drain && !in.F32(args.multiplier)) return false;
+            if (!host) return true;
+            args.source_guid = caster;
+            args.source      = HandleFor(caster);
+            args.target_guid = target;
+            args.target      = HandleFor(target);
+            args.spell_id    = spellId;
+            args.periodic    = WXL_TRUE;
+            args.drain       = drain ? WXL_TRUE : WXL_FALSE;
+            host->Raise(WXL_EV_CombatEnergize, &args);
+            return true;
+        }
         default: return false;
         }
+    }
+}
+
+namespace wxl::seam::Combat::HandleSpellLogEnergizeLog
+{
+    void WXL_CALL Before(void* msg, int32_t time_offset)
+    {
+        (void)time_offset;
+
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host) return;
+
+        MessageReader            in(msg);
+        wxl_combat_energize_args args{};
+        if (!in.PackedGuid(args.target_guid) || !in.PackedGuid(args.source_guid) ||
+            !in.U32(args.spell_id) || !in.U32(args.power_type) || !in.U32(args.amount))
+            return;
+
+        args.source = HandleFor(args.source_guid);
+        args.target = HandleFor(args.target_guid);
+        host->Raise(WXL_EV_CombatEnergize, &args);
     }
 }
 
