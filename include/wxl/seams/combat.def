@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Combat domain: seams on what the server reports of fights -- the handler of the melee
 // messages in UnitCombat_C.cpp, and the CombatLog statics of UnitCombatLog_C.cpp that every

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Spell seams: what the runtime does as the server reports casts, channels and cooldowns,
 // and as the local player asks for a cast or cancels one, on both builds.

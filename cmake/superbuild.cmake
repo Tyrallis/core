@@ -1,7 +1,7 @@
 # The superbuild role of CMakeLists.txt: one child project per architecture, each configured from
 # the same source directory with WXL_CORE_ARCH set and the matching Visual Studio platform, each
 # installing its `core` component into one dist/ folder. Same shape as the SDK's wxl_add_mod.
-# Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
+# Copyright (c) 2026 WarcraftXL. MIT (see LICENSE).
 
 set(WXL_CORE_TARGETS "win-x86;win-x64" CACHE STRING "Architectures to build (win-x86;win-x64).")
 set(WXL_CORE_DIST "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Where every architecture's output is collected.")

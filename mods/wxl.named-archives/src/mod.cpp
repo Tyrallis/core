@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // wxl.named-archives: widens the client's patch-archive directory scan from a single-letter
 // wildcard to an arbitrary one, so an archive or folder can be named "Patch-Interface.MPQ"

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Script domain of the client binding: the client's own Lua 5.1 state and the FrameScript
 // layer over it, as wxl.script drives them.

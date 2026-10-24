@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Spell domain: seams on the client's spell casting, Spell_C.cpp -- what the server tells
 // the client about casts, and what the local player asks for.

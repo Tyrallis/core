@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 WarcraftXL
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 WarcraftXL
 #
 # Self-test for check_conventions.py: a stub binary per failure mode, the local backend's own
 # parts, and every row of the real table against Wow.exe.

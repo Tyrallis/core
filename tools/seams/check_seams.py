@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 WarcraftXL
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 WarcraftXL
 #
 # Checks that every seam declared in core/include/wxl/seams/*.def is wired into the client fork.
 """Verify the x64 realisation of the seam table against the client fork's sources.

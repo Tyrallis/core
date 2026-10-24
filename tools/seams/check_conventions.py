@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 WarcraftXL
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 WarcraftXL
 #
 # Checks every seam row's declared calling convention against Wow.exe 3.3.5a (build 12340).
 """Verify the x86 half of the seam table against the client binary it attaches to.

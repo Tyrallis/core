@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The client binding: every fact the runtime reads out of the client, one row per fact, one
 // domain per file under binding/. ARCHITECTURE.md lists what a row generates and where.

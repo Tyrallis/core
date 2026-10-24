@@ -7,8 +7,8 @@ page is the map.
 
 | Repository | License | What it is |
 |---|---|---|
-| `sdk/` | MIT, with GPL files under `runtime/` and `include/wxl/objects/` | what a mod is written against: the C ABI (`include/wxl/*.h`), the C++ layer (`sdk.hpp`), the mod host every runtime links (`host/`), the shared half of `wxl.object` (`runtime/`) |
-| `core/` | GPL | `WarcraftXL.dll`, the runtime, built for x86 and x64 from one source |
+| `sdk/` | MIT | what a mod is written against: the C ABI (`include/wxl/*.h`), the C++ layer (`sdk.hpp`), the mod host every runtime links (`host/`), the shared half of `wxl.object` (`runtime/`) |
+| `core/` | MIT | `WarcraftXL.dll`, the runtime, built for x86 and x64 from one source |
 | `client/` | upstream's | the recompiled 3.3.5a client, with the calls into the runtime added in its source |
 
 There are two runtimes and one body of logic:

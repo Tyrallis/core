@@ -2,7 +2,7 @@
 # against the SDK like any other mod and buildable on its own. Built from here they land ready to
 # copy in build/<Config>/Mods/<id>/{mod.json,bin/x86/<name>.dll}, and `cmake --install` of the
 # `core` component (what the superbuild runs) collects the same folder into <prefix>/Mods/<id>/.
-# Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
+# Copyright (c) 2026 WarcraftXL. MIT (see LICENSE).
 
 # This tree is the one architecture the client has; wxl_add_mod then declares a real library
 # target instead of a per-architecture superbuild.

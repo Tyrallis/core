@@ -4,7 +4,7 @@
 
 **The runtime that loads WarcraftXL mods into World of Warcraft 3.3.5a**
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
 [![ABI](https://img.shields.io/badge/ABI-0.1.5-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
@@ -327,7 +327,7 @@ tools/offsets/, tools/layouts/   regenerate the tables from the decompiled clien
 
 ## 📄 License
 
-GPLv3. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file.
 

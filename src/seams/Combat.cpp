@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Combat seams: what the runtime does as the server reports attacks, damage, heals and
 // misses, on both builds. Every body reads the message from its cursor, without moving it.

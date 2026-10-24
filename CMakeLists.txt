@@ -3,7 +3,7 @@
 # for the recompiled client (64-bit, linked by the client and started through WarcraftXLInit).
 # The mod host comes from the SDK checkout next door and is built here once per architecture.
 # The patcher, MinHook and the two mods under mods/ carry client addresses and exist on x86 only.
-# Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
+# Copyright (c) 2026 WarcraftXL. MIT (see LICENSE).
 #
 # One CMake tree is one architecture, so this file plays two roles depending on WXL_CORE_ARCH:
 #

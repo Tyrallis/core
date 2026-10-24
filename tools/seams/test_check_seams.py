@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 WarcraftXL
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 WarcraftXL
 #
 # Self-test for check_seams.py: one synthetic tree per failure mode, and one that passes.
 """A checker nobody has seen fail is not known to work. This makes it fail, on purpose, once per
