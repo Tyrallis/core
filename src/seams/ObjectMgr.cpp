@@ -17,6 +17,19 @@
 
 namespace
 {
+    /// Tracks an object the client has built or brought back and announces it with its handle.
+    void Enter(void* object)
+    {
+        wxl_object_args args{};
+        args.object = wxl::core::objects::Track(object);
+        args.guid   = wxl::core::binding::object_guid(object);
+        args.type   = wxl::core::binding::object_type_id(object);
+
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host) return;
+        host->Raise(WXL_EV_ObjectCreate, &args);
+    }
+
     /// Announces an object still tracked and forgets it; nothing for one already gone.
     void Leave(void* object)
     {
@@ -43,16 +56,20 @@ namespace wxl::seam::ObjectMgr::InitObject
 {
     void WXL_CALL After(void* object, const void*, uint32_t)
     {
-        if (!object) return;
+        if (object) Enter(object);
+    }
+}
 
-        wxl_object_args args{};
-        args.object = wxl::core::objects::Track(object);
-        args.guid   = wxl::core::binding::object_guid(object);
-        args.type   = wxl::core::binding::object_type_id(object);
-
-        wxl::host::ModHost* host = wxl::core::Host();
-        if (!host) return;
-        host->Raise(WXL_EV_ObjectCreate, &args);
+namespace wxl::seam::ObjectMgr::GetUpdateObject
+{
+    void WXL_CALL After(void* object, uint64_t, int32_t*)
+    {
+        // Every update of every object passes here, so the common case -- tracked -- is one
+        // lookup. An untracked object is one ObjDelete let go and the update brought back:
+        // `*reenabled` says so too, but not for one that was still on the reenabled list, and
+        // tracking whatever the client hands back untracked covers both.
+        if (!object || wxl::core::objects::IsTracked(object)) return;
+        Enter(object);
     }
 }
 

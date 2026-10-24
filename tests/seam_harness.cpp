@@ -128,9 +128,21 @@ namespace
 
     int32_t WXL_CALL FakeMapId(void) { return g_mapId; }
     const void* WXL_CALL FakeLocalPlayer(void) { return g_localPlayer; }
+
+    /// What the fake client's object manager holds, announced or not: object_by_guid's table.
+    std::vector<FakeObject*> g_held;
+
+    const void* WXL_CALL FakeObjectByGuid(uint64_t guid);
     uint64_t WXL_CALL FakeTargetGuid(void) { return g_targetGuid; }
 
     uint64_t WXL_CALL FakeGuid(const void* object) { return Obj(object)->guid; }
+
+    const void* WXL_CALL FakeObjectByGuid(uint64_t guid)
+    {
+        for (FakeObject* object : g_held)
+            if (object->guid == guid) return object;
+        return nullptr;
+    }
     uint32_t WXL_CALL FakeTypeId(const void* object) { return Obj(object)->typeId; }
     uint32_t WXL_CALL FakeEntry(const void* object) { return Obj(object)->entry; }
     uint32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
@@ -548,6 +560,7 @@ namespace
         init.struct_size            = sizeof init;
         init.map_id                 = &FakeMapId;
         init.local_player_object    = &FakeLocalPlayer;
+        init.object_by_guid         = &FakeObjectByGuid;
         init.ui_target_guid         = &FakeTargetGuid;
         init.object_guid            = &FakeGuid;
         init.object_type_id         = &FakeTypeId;
@@ -929,6 +942,90 @@ namespace
               "DestroyRemovedObject on a tracked object raises ObjectDestroy once");
         Check(api->valid(Only(WXL_EV_ObjectDestroy)->As<wxl_object_args>().object) == WXL_FALSE,
               "and the handle is gone after it");
+    }
+
+    /// GetUpdateObject: an object brought back from the lazy-cleanup set is tracked again with a
+    /// handle of its own and announced; one already tracked raises nothing; from_guid finds what
+    /// the client holds even when no seam announced it.
+    void CheckRevivedObjects()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject wolf;
+        wolf.guid   = 0xF130000000000789ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        wolf.health = 70;
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 8000u);
+        const wxl_handle first = Only(WXL_EV_ObjectCreate) ? Only(WXL_EV_ObjectCreate)->As<wxl_object_args>().object
+                                                           : WXL_HANDLE_NONE;
+        int32_t reenabled = 0;
+        g_received.clear();
+        Check(wxl::core::objects::IsTracked(&wolf), "a created object is tracked");
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        Check(g_received.empty(), "GetUpdateObject on a tracked object raises nothing");
+
+        // Out of range: ObjDelete lets it go to the lazy-cleanup set, its handle goes stale.
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        Check(api->valid(first) == WXL_FALSE && api->from_guid(wolf.guid) == WXL_HANDLE_NONE,
+              "after ObjDelete neither the handle nor the guid resolves");
+
+        // Back in range before the client freed it: GetUpdateObject revives the same object.
+        g_received.clear();
+        reenabled = 1;
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        const Received* revived = Only(WXL_EV_ObjectCreate);
+        Check(revived != nullptr, "GetUpdateObject on a revived object raises ObjectCreate exactly once");
+        if (!revived) return;
+        const wxl_object_args args = revived->As<wxl_object_args>();
+        Check(args.object != WXL_HANDLE_NONE && args.object != first,
+              "with a new handle: one per visibility episode");
+        Check(args.guid == wolf.guid && args.type == WXL_OBJECT_UNIT, "and the object's guid and type");
+        Check(api->valid(args.object) == WXL_TRUE && api->valid(first) == WXL_FALSE,
+              "the new handle resolves and the old one stays stale");
+        Check(api->from_guid(wolf.guid) == args.object, "the guid resolves to the new handle");
+        uint32_t health = 0;
+        Check(api->unit_health(args.object, &health) == WXL_OK && health == 70,
+              "and reads reach the revived object");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        wxl::seam::ObjectMgr::GetUpdateObject::After(nullptr, 0x1234ull, &reenabled);
+        Check(g_received.empty(), "the next update of it raises nothing, nor does an update of nothing");
+
+        // Revived while still on the reenabled list: `*reenabled` stays clear, it is tracked anyway.
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        g_received.clear();
+        reenabled = 0;
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        Check(Only(WXL_EV_ObjectCreate) != nullptr &&
+                  Only(WXL_EV_ObjectCreate)->As<wxl_object_args>().object != args.object,
+              "an untracked object handed back without the reenabled flag is announced too");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        Check(Only(WXL_EV_ObjectDestroy) != nullptr, "and leaves with ObjectDestroy like any other");
+
+        // from_guid through the client: an object the client holds that no seam announced.
+        FakeObject ghost;
+        ghost.guid   = 0xF130000000000999ull;
+        ghost.typeId = WXL_OBJECT_UNIT;
+        g_held.push_back(&ghost);
+        g_received.clear();
+        const wxl_handle found = api->from_guid(ghost.guid);
+        Check(found != WXL_HANDLE_NONE && api->valid(found) == WXL_TRUE,
+              "from_guid resolves a guid the client holds, through ClntObjMgrObjectPtr");
+        Check(g_received.empty(), "tracking it on demand raises nothing");
+        Check(api->from_guid(ghost.guid) == found, "and the next lookup answers the same handle");
+        Check(api->from_guid(0xF130000000000998ull) == WXL_HANDLE_NONE,
+              "a guid the client does not hold resolves to nothing");
+        wxl::seam::ObjectMgr::ObjDelete::Before(&ghost);
+        Check(Only(WXL_EV_ObjectDestroy) != nullptr &&
+                  Only(WXL_EV_ObjectDestroy)->As<wxl_object_args>().object == found,
+              "an object tracked on demand is announced when it leaves");
+        g_held.clear();
+        Check(api->from_guid(ghost.guid) == WXL_HANDLE_NONE, "and is not found once the client let it go");
     }
 
     /// Unit: OnDeath's After raises UnitDeath for a tracked unit; the aura pair raises
@@ -3777,6 +3874,78 @@ namespace
         Check(g_gateCalls == 2, "and the original never ran");
     }
 
+    // --- ObjectMgr.GetUpdateObject's generated detour, against a stand-in of the client's -------
+
+    FakeObject* g_lazyObject  = nullptr; ///< what the stand-in finds in its lazy-cleanup set
+    uint32_t    g_seenGuidLo  = 0, g_seenGuidHi = 0;
+    uint32_t    g_espBefore   = 0, g_espAfter = 0;
+    void*       g_getAnswered = nullptr;
+
+    /// A cdecl function of GetUpdateObject's shape: the guid as two stack dwords, the out-pointer.
+    __declspec(noinline) void* __cdecl FakeGetUpdateObject(uint64_t guid, int32_t* reenabled)
+    {
+        g_seenGuidLo = static_cast<uint32_t>(guid);
+        g_seenGuidHi = static_cast<uint32_t>(guid >> 32);
+        *reenabled   = 0;
+        if (!g_lazyObject || g_lazyObject->guid != guid) return nullptr;
+        *reenabled = 1;
+        return g_lazyObject;
+    }
+
+    /// Calls a detour the way ClntObjMgrReenableObject does at 0x004D6F1D: the pointer and the two
+    /// halves of the guid pushed, the call, `add esp,0xc`; and records ESP on both sides.
+    __declspec(noinline) void CallLikeReenable(void* detour, uint32_t lo, uint32_t hi, int32_t* reenabled)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  eax, reenabled
+            push eax
+            push hi
+            push lo
+            call detour
+            add  esp, 0Ch
+            mov  dword ptr [g_getAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using GetUpdateSeam = wxl::core::seams::DetourOf<wxl::seam::ObjectMgr::GetUpdateObject::Convention,
+                                                     wxl::seam::ObjectMgr::GetUpdateObject::Signature>;
+    using GetUpdateLink = GetUpdateSeam::Link<nullptr, &wxl::seam::ObjectMgr::GetUpdateObject::After>;
+
+    /// The detour AttachX86.cpp generates for the row, called as the client calls the function.
+    void CheckGetUpdateObjectDetour()
+    {
+        FakeObject bear;
+        bear.guid   = 0xF1300000ABCD0042ull;
+        bear.typeId = WXL_OBJECT_UNIT;
+        g_lazyObject = &bear;
+
+        GetUpdateLink::original = Opaque(&FakeGetUpdateObject);
+        void* const detour      = Opaque(reinterpret_cast<void*>(&GetUpdateLink::Detour));
+
+        int32_t reenabled = -1;
+        g_received.clear();
+        CallLikeReenable(detour, static_cast<uint32_t>(bear.guid), static_cast<uint32_t>(bear.guid >> 32),
+                         &reenabled);
+        Check(g_espBefore == g_espAfter, "the GetUpdateObject detour leaves the stack as cdecl's caller expects");
+        Check(g_seenGuidLo == 0xABCD0042u && g_seenGuidHi == 0xF1300000u,
+              "the original receives both halves of the guid in order");
+        Check(g_getAnswered == &bear && reenabled == 1,
+              "the detour answers the original's object and leaves its out-parameter");
+        const Received* created = Only(WXL_EV_ObjectCreate);
+        Check(created != nullptr && created->As<wxl_object_args>().guid == bear.guid,
+              "and After announced the object it brought back");
+
+        g_received.clear();
+        CallLikeReenable(detour, 0x1u, 0x2u, &reenabled);
+        Check(g_getAnswered == nullptr && reenabled == 0 && g_received.empty() && g_espBefore == g_espAfter,
+              "an update of an object the client does not hold answers null and raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&bear);
+        g_lazyObject = nullptr;
+    }
+
     // --- The register thunks, against stand-ins with the client's conventions -------------------
 
     // What a stand-in original found in its registers and on its stack.
@@ -4265,6 +4434,7 @@ int main(int argc, char** argv)
     CheckEventDispatchUpdate();
     CheckWorldPreload();
     CheckObjectMgr();
+    CheckRevivedObjects();
     CheckUnit();
     CheckPlayer();
     CheckGameUI();
@@ -4298,6 +4468,7 @@ int main(int argc, char** argv)
     CheckThiscallShim();
     CheckOneSidedShim();
     CheckThiscallGate();
+    CheckGetUpdateObjectDetour();
     CheckRegparmThunks();
     CheckChatDetours();
 #endif

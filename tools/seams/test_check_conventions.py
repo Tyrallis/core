@@ -632,6 +632,7 @@ GROUND_TRUTH = {
     "ObjectMgr.InitObject":            ("0x004D3FF0", "regparm", ["esi", "eax", "ecx"], 0),
     "ObjectMgr.ObjDelete":             ("0x004D6FC0", "regparm", ["eax"], 0),
     "ObjectMgr.DestroyRemovedObject":  ("0x004D4090", "regparm", ["esi"], 0),
+    "ObjectMgr.GetUpdateObject":       ("0x004D6AE0", "cdecl", [], 3),
     "Unit.OnDeath":                    ("0x00729220", "thiscall", ["ecx"], 0),
     "Unit.OnAuraAdded":                ("0x00727760", "thiscall", ["ecx"], 4),
     "Unit.OnAuraRemoved":              ("0x00722090", "thiscall", ["ecx"], 4),

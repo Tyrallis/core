@@ -10,3 +10,8 @@
 // The CGPlayer_C the local player controls, or null while out of the world:
 // ClntObjMgrGetActivePlayerObj(). Main thread only: the object manager it reads is thread-local.
 WXL_BINDING(local_player_object, const void*, (void), (), 0)
+
+// The object the manager holds under a guid, of any kind, or null: ClntObjMgrObjectPtr(guid,
+// TYPEMASK_OBJECT). The client's own table, not what the runtime tracks: wxl.object's from_guid
+// falls back to it for an object no seam announced. Main thread only, like the row above.
+WXL_BINDING(object_by_guid, const void*, (uint64_t guid), (guid), 0)

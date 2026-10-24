@@ -28,6 +28,7 @@ namespace wxl::core::objects
         bool            Name(void* object, const char*& out, uint32_t& size) const override;
         bool            UnitTarget(void* object, wxl_guid& out) const override;
         void*           LocalPlayer() const override;
+        void*           FindByGuid(wxl_guid guid) const override;
 
 #define WXL_OBJECT_FIELD(kinds, member, Method, type)     \
     bool Method(void* object, type& out) const override \

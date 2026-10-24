@@ -43,6 +43,11 @@ namespace wxl::core::objects
         return const_cast<void*>(binding::local_player_object());
     }
 
+    void* ClientObjects::FindByGuid(wxl_guid guid) const
+    {
+        return const_cast<void*>(binding::object_by_guid(guid));
+    }
+
     bool ClientObjects::Position(void* object, wxl_vec3& out) const
     {
         return binding::object_position(object, &out) == WXL_TRUE;

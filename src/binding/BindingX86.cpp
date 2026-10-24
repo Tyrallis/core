@@ -226,6 +226,16 @@ namespace wxl::core::binding
         return reinterpret_cast<PlayerFn>(WXL_SITE("ClntObjMgrGetActivePlayerObj", 0))();
     }
 
+    const void* object_by_guid(uint64_t guid)
+    {
+        // ClntObjMgrObjectPtr(WOWGUID, TypeMask, const char* file, int line), cdecl: the guid as
+        // two dwords, the mask, and a source position it reads only to report a wrong kind.
+        // TYPEMASK_OBJECT (1) is every kind.
+        using ObjectPtrFn = void*(__cdecl*)(uint64_t guid, uint32_t mask, const char* file, int32_t line);
+        if (!IsClient() || !OnMainThread() || !guid) return nullptr;
+        return reinterpret_cast<ObjectPtrFn>(WXL_SITE("ClntObjMgrObjectPtr", 0))(guid, 1u, "WarcraftXL", 0);
+    }
+
     uint64_t ui_target_guid(void)
     {
         return IsClient() ? *reinterpret_cast<const uint64_t*>(WXL_STATIC("CGGameUI::m_lockedTarget")) : 0;
