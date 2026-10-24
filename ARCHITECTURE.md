@@ -67,7 +67,9 @@ of each table lists its shapes and columns.
    `After` before every return, `Gate` as a test at the top. If the file's library is new to the
    seams, add it to `WXL_SEAM_LIBRARIES` in `client/WarcraftXL/CMakeLists.txt`.
 5. A check in `core/tests/seam_harness.cpp` that drives the body.
-6. A row of hand-verified ground truth in `core/tools/seams/test_check_conventions.py`.
+6. A row of hand-verified ground truth in `core/tools/seams/test_check_conventions.py`, and a
+   `WXL_SEAM_WITNESS` row when the function's own code does not show what it takes (see
+   `core/tools/seams/README.md`).
 7. A line in the seam table of `core/README.md`.
 
 ### A new fact about the client
@@ -122,7 +124,7 @@ Start from `sdk/template/` and follow `sdk/docs/your-first-mod.md`. A Lua mod is
 | `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks |
 | `ctest` in `sdk/build` | the contract, the field table against the args structs, the mod host, the shared `wxl.object`, `wxl.lua` against the host and its editor definitions against the tables, and that the docs quote the examples as they are |
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
-| `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Needs the dawnlight-rag MCP |
+| `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
 
 ## Words
 

@@ -2,28 +2,38 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 WarcraftXL
 #
-# Self-test for check_conventions.py: a stub binary per failure mode, and the real 23 rows.
+# Self-test for check_conventions.py: a stub binary per failure mode, the local backend's own
+# parts, and every row of the real table against Wow.exe.
 """A checker nobody has seen fail is not known to work.
 
-Two halves. The first serves a stub binary over a stub MCP -- a handful of synthetic functions
+Three halves. The first serves a stub binary over a stub MCP -- a handful of synthetic functions
 whose convention is known because this file wrote their instructions -- and asserts that the
-tool reads each one right and says so when the row disagrees. The second points the tool at the
-real client and compares its answer against the 23 rows verified by hand against the
-disassembly; it is skipped, not failed, when the MCP is not up.
+tool reads each one right and says so when the row disagrees. The second takes the local backend
+apart: the objdump parser on a listing of every line shape it has to read, the PE reader, the
+reference scan and the stock check on small images this file writes, and the refusals of the
+command line. The third points the tool at the real Wow.exe ($WXL_WOW_EXE, or --binary) and
+compares its answer for every row against the conventions verified by hand against the
+disassembly; it is skipped, not failed, when no binary is named.
 """
 
+import argparse
 import json
+import os
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
-import urllib.error
-import urllib.request
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CHECKER = HERE / "check_conventions.py"
+
+sys.path.insert(0, str(HERE))
+
+import check_conventions as checker
 
 # --- A stub binary --------------------------------------------------------------------------
 #
@@ -92,6 +102,60 @@ CALLER_FOLDS_ONLY = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "push 2"), (2
                          (5, "call 0x401800"), (2, "push 3"), (5, "call 0x409840"),
                          (3, "add esp, 0xc"), (1, "pop ebp"), (1, "ret"))
 
+# Instructions that write a register without reading it. Each saves the register it uses, as
+# MSVC does, and sets it to a constant: -1, 0, the carry spread, or a product of something else.
+# A rule that took any of them for a read would see an argument arriving in that register.
+CDECL_ALL_ONES = body((1, "push ebp"), (2, "mov ebp, esp"), (3, "mov eax, dword ptr [ebp + 8]"),
+                      (1, "push edi"), (3, "or edi, 0xffffffff"),
+                      (2, "mov dword ptr [eax], edi"), (1, "pop edi"), (1, "pop ebp"), (1, "ret"))
+CDECL_ZEROED = body((1, "push ebp"), (2, "mov ebp, esp"), (1, "push esi"), (1, "push ebx"),
+                    (3, "and esi, 0"), (2, "sub ebx, ebx"), (2, "sbb edx, edx"),
+                    (3, "mov eax, dword ptr [ebp + 8]"), (2, "mov dword ptr [eax], esi"),
+                    (3, "mov dword ptr [eax + 4], ebx"), (3, "mov dword ptr [eax + 8], edx"),
+                    (1, "pop ebx"), (1, "pop esi"), (1, "pop ebp"), (1, "ret"))
+CDECL_SCALED = body((1, "push ebp"), (2, "mov ebp, esp"),
+                    (4, "imul ecx, dword ptr [ebp + 8], 0x1c"), (2, "mov eax, ecx"),
+                    (1, "pop ebp"), (1, "ret"))
+# `or edi, 1` keeps the bits EDI arrived with: that one is a read.
+REGPARM_OR_ONE = body((1, "push ebp"), (2, "mov ebp, esp"), (3, "or edi, 1"),
+                      (2, "mov eax, edi"), (1, "pop ebp"), (1, "ret"))
+
+# A handler reached only through a table of pointers: it reads none of its three, and nothing
+# calls it directly. Its dispatcher pushes one, calls a helper that takes its argument in EAX,
+# pushes two more, calls through a pointer and cleans the three.
+CDECL_DISPATCHED = body((1, "push ebp"), (2, "mov ebp, esp"), (5, "mov eax, 1"), (1, "pop ebp"),
+                        (1, "ret"))
+REGPARM_HELPER = body((2, "mov eax, dword ptr [eax]"), (1, "ret"))
+DISPATCHER = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "test esi, esi"),
+                  (2, "je 0x401f1e"), (2, "push 1"), (3, "mov eax, dword ptr [ebp + 8]"),
+                  (5, "call 0x401e00"), (2, "push 2"), (2, "push 3"),
+                  (3, "mov ecx, dword ptr [esi + 0x10]"), (2, "call ecx"), (3, "add esp, 0xc"),
+                  (1, "pop ebp"), (1, "ret"))
+
+
+def address_of(start, instructions, text):
+    """The address of the first instruction of a stub function that reads `text`."""
+    for size, line in instructions:
+        if line == text:
+            return start
+        start += size
+    raise KeyError(text)
+
+
+DISPATCH_CALL = address_of(0x00401F00, DISPATCHER, "call ecx")
+DISPATCH_PUSH = address_of(0x00401F00, DISPATCHER, "push 3")
+
+# A function that leaves by a tail jump, so no `ret` says who cleans its two. Its one caller
+# pushes them right after a call to a cdecl function of one, and cleans all three at once.
+TAIL_TWO = body((1, "push ebp"), (2, "mov ebp, esp"), (3, "mov eax, dword ptr [ebp + 8]"),
+                (3, "mov ecx, dword ptr [ebp + 0xc]"), (1, "pop ebp"), (5, "jmp 0x409840"))
+CDECL_ONE = body((1, "push ebp"), (2, "mov ebp, esp"), (3, "mov eax, dword ptr [ebp + 8]"),
+                 (1, "pop ebp"), (1, "ret"))
+TAIL_CALLER = body((1, "push ebp"), (2, "mov ebp, esp"), (2, "push 5"), (5, "call 0x402100"),
+                   (2, "push 1"), (2, "push 2"), (5, "call 0x402000"), (3, "add esp, 0xc"),
+                   (1, "pop ebp"), (1, "ret"))
+TAIL_CALL = address_of(0x00402200, TAIL_CALLER, "call 0x402000")
+
 PROGRAM = {
     0x00401000: CDECL_TWO,
     0x00401100: STDCALL_TWO,
@@ -106,6 +170,16 @@ PROGRAM = {
     0x00401900: CALLER_FOLDS_ONLY,
     0x00401A00: CDECL_IGNORES_FIRST,
     0x00401B00: CALLER_FIRST,
+    0x00401C00: CDECL_ALL_ONES,
+    0x00401C40: CDECL_ZEROED,
+    0x00401C80: CDECL_SCALED,
+    0x00401CC0: REGPARM_OR_ONE,
+    0x00401D00: CDECL_DISPATCHED,
+    0x00401E00: REGPARM_HELPER,
+    0x00401F00: DISPATCHER,
+    0x00402000: TAIL_TWO,
+    0x00402100: CDECL_ONE,
+    0x00402200: TAIL_CALLER,
 }
 
 # (name, address, extent)
@@ -115,15 +189,12 @@ SYMBOLS = [("Thing::Plain", 0x00401000, 0x20), ("Thing::Owned", 0x00401100, 0x20
            ("Thing::CallsFolded", 0x00401500, 0x20), ("Thing::Ignores", 0x00401600, 0x20),
            ("Thing::CallsExactly", 0x00401700, 0x20), ("Thing::IgnoresFolded", 0x00401800, 0x20),
            ("Thing::CallsFoldedOnly", 0x00401900, 0x20), ("Thing::IgnoresFirst", 0x00401A00, 0x20),
-           ("Thing::CallsFirst", 0x00401B00, 0x20)]
-
-XREFS = {
-    0x00401000: ["00401404(UNCONDITIONAL_CALL)"],   # inside CALLER_FOLDS, which folds; then
-    0x00401100: [],
-    0x00401200: [],
-    0x00401280: [],
-    0x00401300: [],
-}
+           ("Thing::CallsFirst", 0x00401B00, 0x20), ("Thing::AllOnes", 0x00401C00, 0x20),
+           ("Thing::Zeroed", 0x00401C40, 0x30), ("Thing::Scaled", 0x00401C80, 0x10),
+           ("Thing::OrOne", 0x00401CC0, 0x10), ("Thing::Dispatched", 0x00401D00, 0x10),
+           ("Thing::Helper", 0x00401E00, 0x10), ("Thing::Dispatcher", 0x00401F00, 0x20),
+           ("Thing::Tail", 0x00402000, 0x10), ("Thing::One", 0x00402100, 0x10),
+           ("Thing::TailCaller", 0x00402200, 0x20)]
 
 
 def flatten():
@@ -138,10 +209,12 @@ def flatten():
 
 
 MEMORY = flatten()
-# The call sites, found by walking the stub callers; the tool reads them through ghidra_xrefs.
-for _callee in (0x00401000, 0x00401600, 0x00401800, 0x00401A00):
-    XREFS[_callee] = ["%08x(UNCONDITIONAL_CALL)" % a for a, (_, t) in sorted(MEMORY.items())
-                      if t == "call 0x%x" % _callee]
+# The direct call sites, found by walking the stub functions; the tool reads them through
+# ghidra_xrefs.
+XREFS = {}
+for _address, (_, _text) in sorted(MEMORY.items()):
+    if _text.startswith("call 0x"):
+        XREFS.setdefault(int(_text[5:], 16), []).append("%08x(UNCONDITIONAL_CALL)" % _address)
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -201,7 +274,16 @@ WXL_SEAM(Demo, Owned, "Thing::Owned", void, stdcall, (int32_t a, int32_t b))
 WXL_SEAM(Demo, Member, "Thing::Member", void, thiscall, (void* self, int32_t a))
 WXL_SEAM(Demo, Fast, "Thing::Fast", void, regparm, (void* context, int32_t a))
 WXL_SEAM(Demo, Switch, "Thing::Switch", void, regparm, (void* object, const void* create, uint32_t time))
+WXL_SEAM(Demo, AllOnes, "Thing::AllOnes", void, cdecl, (int32_t* out))
+WXL_SEAM(Demo, Zeroed, "Thing::Zeroed", void, cdecl, (int32_t* out))
+WXL_SEAM(Demo, Scaled, "Thing::Scaled", int32_t, cdecl, (int32_t count))
 '''
+
+DISPATCHED = ('WXL_SEAM(Demo, Dispatched, "Thing::Dispatched", void, cdecl, '
+              '(int32_t a, int32_t b, int32_t c))\n')
+DISPATCHED_WITNESS = "WXL_SEAM_WITNESS(Demo, Dispatched, 0x%08X)\n" % DISPATCH_CALL
+TAIL = 'WXL_SEAM(Demo, Tail, "Thing::Tail", void, cdecl, (int32_t a, int32_t b))\n'
+TAIL_WITNESS = "WXL_SEAM_WITNESS(Demo, Tail, 0x%08X)\n" % TAIL_CALL
 
 THUNKS = '''#include "seams/RegparmX86.hpp"
 
@@ -266,83 +348,281 @@ def build(case, demo_def=DEMO_DEF, thunks=THUNKS):
     (case / "src" / "RegparmX86.cpp").write_text(thunks, encoding="utf-8")
 
 
-def run(case, url, extra=()):
+def run(case, extra=(), env=None):
     return subprocess.run(
         [sys.executable, "-I", str(CHECKER),
          "--seams", str(case / "seams"), "--offsets", str(case / "offsets"),
-         "--thunks", str(case / "src" / "RegparmX86.cpp"), "--mcp", url, *extra],
-        capture_output=True, text=True)
+         "--thunks", str(case / "src" / "RegparmX86.cpp"), *extra],
+        capture_output=True, text=True, env=env)
 
 
-# (label, demo.def, RegparmX86.cpp, exit code, text expected)
+# (label, demo.def, RegparmX86.cpp, exit code, text expected, extra arguments)
 CASES = [
-    ("a correct table", DEMO_DEF, THUNKS, 0, None),
+    ("a correct table", DEMO_DEF, THUNKS, 0, None, ()),
     ("a regparm function declared cdecl",
      DEMO_DEF.replace('"Thing::Fast", void, regparm,', '"Thing::Fast", void, cdecl,'),
-     THUNKS, 1, "declared cdecl, but 0x00401280 is regparm (EDI) + 1 stack dword(s)"),
+     THUNKS, 1, "declared cdecl, but 0x00401280 is regparm (EDI) + 1 stack dword(s)", ()),
     ("a thiscall function declared cdecl",
      DEMO_DEF.replace('"Thing::Member", void, thiscall, (void* self, int32_t a)',
                       '"Thing::Member", void, cdecl, (int32_t a)'),
-     THUNKS, 1, "declared cdecl, but 0x00401200 is thiscall (ECX) + 1 stack dword(s)"),
+     THUNKS, 1, "declared cdecl, but 0x00401200 is thiscall (ECX) + 1 stack dword(s)", ()),
     ("a stdcall function declared cdecl",
      DEMO_DEF.replace('"Thing::Owned", void, stdcall,', '"Thing::Owned", void, cdecl,'),
-     THUNKS, 1, "declared cdecl, but 0x00401100 is stdcall, 2 stack dword(s)"),
+     THUNKS, 1, "declared cdecl, but 0x00401100 is stdcall, 2 stack dword(s)", ()),
     ("a cdecl function declared stdcall",
      DEMO_DEF.replace('"Thing::Plain", void, cdecl,', '"Thing::Plain", void, stdcall,'),
-     THUNKS, 1, "declared stdcall, but 0x00401000 is cdecl, 2 stack dword(s)"),
+     THUNKS, 1, "declared stdcall, but 0x00401000 is cdecl, 2 stack dword(s)", ()),
     ("a parameter dropped",
      DEMO_DEF.replace('"Thing::Plain", void, cdecl, (int32_t a, int32_t b)',
                       '"Thing::Plain", void, cdecl, (int32_t a)'),
-     THUNKS, 1, "the row's parameters fill 1 stack dword(s), but 0x00401000 reads 2"),
+     THUNKS, 1, "the row's parameters fill 1 stack dword(s), but 0x00401000 reads 2", ()),
     ("a parameter invented",
      DEMO_DEF.replace('"Thing::Member", void, thiscall, (void* self, int32_t a)',
                       '"Thing::Member", void, thiscall, (void* self, int32_t a, int32_t b)'),
-     THUNKS, 1, "the row's parameters fill 2 stack dword(s), but 0x00401200 reads 1"),
+     THUNKS, 1, "the row's parameters fill 2 stack dword(s), but 0x00401200 reads 1", ()),
     ("a uint64 counted as one dword",
      DEMO_DEF.replace('"Thing::Plain", void, cdecl, (int32_t a, int32_t b)',
                       '"Thing::Plain", void, cdecl, (uint64_t guid)'),
-     THUNKS, 0, None),
+     THUNKS, 0, None, ()),
     ("a regparm row with the wrong number of registers",
      DEMO_DEF.replace('"Thing::Switch", void, regparm, (void* object, const void* create, '
                       'uint32_t time)',
                       '"Thing::Switch", void, regparm, (void* object, const void* create)'),
-     THUNKS, 1, "takes 3 in registers (ESI, EAX, ECX) and 0 on the stack"),
+     THUNKS, 1, "takes 3 in registers (ESI, EAX, ECX) and 0 on the stack", ()),
     ("a regparm row with no thunk", DEMO_DEF,
      THUNKS.replace('        { "Demo.Fast", reinterpret_cast<void*>(&FastThunk), '
                     '&g_fastOriginal },\n', ""),
-     1, "declared regparm, but RegparmX86.cpp has no thunk for it"),
+     1, "declared regparm, but RegparmX86.cpp has no thunk for it", ()),
     ("a thunk for a row that is not regparm",
      DEMO_DEF.replace('"Thing::Fast", void, regparm,', '"Thing::Fast", void, cdecl,'),
-     THUNKS, 1, "has a thunk for Demo.Fast, but the row declares it cdecl"),
+     THUNKS, 1, "has a thunk for Demo.Fast, but the row declares it cdecl", ()),
     ("a thunk for a row nobody declares", DEMO_DEF,
      THUNKS.replace('{ "Demo.Fast",', '{ "Demo.Ghost",'),
-     1, "has a thunk for Demo.Ghost, which no row declares"),
+     1, "has a thunk for Demo.Ghost, which no row declares", ()),
     ("a thunk restoring the wrong register", DEMO_DEF,
      THUNKS.replace("        mov  edi, dword ptr [ebp-04h]", "        mov  esi, dword ptr [ebp-04h]"),
-     1, "its thunk restores ESI before calling the original, but 0x00401280 reads EDI"),
+     1, "its thunk restores ESI before calling the original, but 0x00401280 reads EDI", ()),
     ("a symbol the offsets table does not carry",
      DEMO_DEF.replace('"Thing::Plain"', '"Thing::Vanished"'),
-     THUNKS, 1, "no function named Thing::Vanished in functions.def"),
+     THUNKS, 1, "no function named Thing::Vanished in functions.def", ()),
     # A cdecl event handler that ignores its parameters reads none of them, but they are on the
     # stack: the caller pushed them and takes them back. The caller's count decides -- and only
     # an exact one does.
     ("a cdecl handler that ignores what its caller hands it",
      DEMO_DEF + 'WXL_SEAM(Demo, Ignores, "Thing::Ignores", void, cdecl, '
                 '(const void* data, void* param))\n',
-     THUNKS, 0, None),
+     THUNKS, 0, None, ()),
     ("the same, with no caller that cleans exactly what it declares",
      DEMO_DEF + 'WXL_SEAM(Demo, IgnoresFolded, "Thing::IgnoresFolded", void, cdecl, '
                 '(const void* data, void* param))\n',
-     THUNKS, 1, "the row's parameters fill 2 stack dword(s), but 0x00401800 reads 0"),
+     THUNKS, 1, "the row's parameters fill 2 stack dword(s), but 0x00401800 reads 0", ()),
     ("a parameter invented on a handler that ignores its own",
      DEMO_DEF + 'WXL_SEAM(Demo, Ignores, "Thing::Ignores", void, cdecl, '
                 '(const void* data, void* param, int32_t extra))\n',
-     THUNKS, 1, "the row's parameters fill 3 stack dword(s), but 0x00401600 reads 0"),
+     THUNKS, 1, "the row's parameters fill 3 stack dword(s), but 0x00401600 reads 0", ()),
     ("the same evidence at a caller's first call, which the walk over-counts",
      DEMO_DEF + 'WXL_SEAM(Demo, IgnoresFirst, "Thing::IgnoresFirst", void, cdecl, '
                 '(const void* data, void* param))\n',
-     THUNKS, 1, "pushes 3 and cleans 8"),
+     THUNKS, 1, "pushes 3 and cleans 8", ()),
+    # Writes that do not read: `or r, -1`, `and r, 0`, `sub r, r`, `sbb r, r` and the
+    # three-operand `imul` leave the table above agreeing; `or r, 1` is still a read.
+    ("`or r, 1` reads the register it sets",
+     DEMO_DEF + 'WXL_SEAM(Demo, OrOne, "Thing::OrOne", int32_t, cdecl, ())\n',
+     THUNKS, 1, "declared cdecl, but 0x00401CC0 is regparm (EDI) + 0 stack dword(s)", ()),
+    # A witness: a call site the row declares, read like a found one.
+    ("a handler reached only through a pointer, without a witness",
+     DEMO_DEF + DISPATCHED, THUNKS, 1,
+     "the row's parameters fill 3 stack dword(s), but 0x00401D00 reads 0", ()),
+    ("the same, with its dispatcher's indirect call as its witness",
+     DEMO_DEF + DISPATCHED + DISPATCHED_WITNESS, THUNKS, 0, "pushes all 3 and cleans them",
+     ("-v",)),
+    ("a witness that hands it fewer than the row declares",
+     DEMO_DEF + DISPATCHED.replace("int32_t c)", "int32_t c, int32_t d)") + DISPATCHED_WITNESS,
+     THUNKS, 1, "the row's parameters fill 4 stack dword(s), but its witness hands it 3", ()),
+    ("a witness that is not a call",
+     DEMO_DEF + DISPATCHED + "WXL_SEAM_WITNESS(Demo, Dispatched, 0x%08X)\n" % DISPATCH_PUSH,
+     THUNKS, 1, "its witness at 0x%08X cannot be read: the instruction there is `push 3`"
+     % DISPATCH_PUSH, ()),
+    ("a witness for a row nobody declares",
+     DEMO_DEF + "WXL_SEAM_WITNESS(Demo, Ghost, 0x%08X)\n" % DISPATCH_CALL,
+     THUNKS, 1, "a witness for Demo.Ghost, which no row declares", ()),
+    ("a witness on a row its caller does not clean for",
+     DEMO_DEF + "WXL_SEAM_WITNESS(Demo, Owned, 0x00401404)\n",
+     THUNKS, 1, "a witness proves a call its caller cleans for, but the row declares stdcall",
+     ()),
+    ("a function that leaves by a tail jump, without a witness",
+     DEMO_DEF + TAIL, THUNKS, 0, "the binary does not settle the convention", ("-v",)),
+    ("the same, with its caller as its witness, the cleanup folding the call before",
+     DEMO_DEF + TAIL + TAIL_WITNESS, THUNKS, 0, "takes them back, so it is cdecl", ("-v",)),
+    ("the same, declared stdcall",
+     DEMO_DEF + TAIL.replace("cdecl", "stdcall") + TAIL_WITNESS, THUNKS, 1,
+     "a witness proves a call its caller cleans for, but the row declares stdcall", ()),
 ]
+
+
+# --- The local backend's parts ----------------------------------------------------------------
+
+# Every line shape llvm-objdump 19 prints for Wow.exe: the headers, a short and a long encoding
+# (the long one runs into the tab), a symbolised branch, a negative immediate, a scaled index, a
+# prefix on its own line, a prefix before its mnemonic, and bytes it cannot decode.
+OBJDUMP_LISTING = """
+Wow.exe:\tfile format coff-i386
+
+Disassembly of section .text:
+
+00401000 <.text>:
+  806200: 55                           \tpush\tebp
+  806201: 8b ec                        \tmov\tebp, esp
+  806210: e8 8b 1b 0b 00               \tcall\t0x8b7da0 <.text+0x4b6da0>
+  8062ac: f7 85 50 fd ff ff 04 04 00 00\ttest\tdword ptr [ebp - 0x2b0], 0x404
+  42597c: c7 84 85 ac fe ff ff 00 00 00 00     \tmov\tdword ptr [ebp + 4*eax - 0x154], 0x0
+  8062b8: 83 cf ff                     \tor\tedi, -0x1
+  40472e: f0                           \tlock
+  40472f: 0f b1 0e                     \tcmpxchg\tdword ptr [esi], ecx
+  40bbdf: f3 ab                        \trep\t\tstosd\tdword ptr es:[edi], eax
+  40cc3e: 8f e4 8b                     \t<unknown>
+  690220: c2 04 00                     \tret\t0x4
+"""
+
+OBJDUMP_EXPECTED = [
+    (0x806200, 1, "push", "ebp"),
+    (0x806201, 2, "mov", "ebp, esp"),
+    (0x806210, 5, "call", "0x8b7da0"),
+    (0x8062AC, 10, "test", "dword ptr [ebp - 0x2b0], 0x404"),
+    (0x42597C, 11, "mov", "dword ptr [ebp + eax*4 - 0x154], 0x0"),
+    (0x8062B8, 3, "or", "edi, -0x1"),
+    (0x40472E, 4, "cmpxchg", "dword ptr [esi], ecx"),
+    (0x40BBDF, 2, "stosd", "dword ptr es:[edi], eax"),
+    (0x40CC3E, 3, "(bad)", ""),
+    (0x690220, 3, "ret", "0x4"),
+]
+
+# A small image of real machine code at 0x00401000: a cdecl function of two, a caller that
+# pushes two and cleans them, a jump to the function, and a stray E8 that targets nowhere.
+SYNTHETIC_CODE = bytes.fromhex(
+    "55 8b ec 8b 45 08 03 45 0c 5d c3"          # 0x401000 push ebp; ...; pop ebp; ret
+    "cc cc cc cc cc"                            # 0x40100B padding
+    "55 8b ec 6a 02 6a 01 e8 e4 ff ff ff"       # 0x401010 push 2; push 1; call 0x401000
+    "83 c4 08 5d c3"                            # 0x40101C add esp, 8; pop ebp; ret
+    "e9 da ff ff ff"                            # 0x401021 jmp 0x401000
+    "e8 00 00 00 40")                           # 0x401026 bytes that decode as a far call
+
+
+def write_pe(path, code, timestamp=0x12345678, text_size=None):
+    """A PE32 image with one .text section holding `code` at 0x00401000."""
+    text_size = text_size or len(code)
+    raw_size = (text_size + 0x1FF) & ~0x1FF
+    header = bytearray(0x200)
+    header[0:2] = b"MZ"
+    struct.pack_into("<I", header, 0x3C, 0x40)
+    header[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", header, 0x44, 0x14C, 1, timestamp, 0, 0, 0xE0, 0x102)
+    optional = 0x58
+    struct.pack_into("<H", header, optional, 0x10B)
+    struct.pack_into("<I", header, optional + 16, 0x1000)                 # entry point
+    struct.pack_into("<I", header, optional + 28, 0x00400000)             # image base
+    struct.pack_into("<II", header, optional + 32, 0x1000, 0x200)         # alignments
+    struct.pack_into("<I", header, optional + 56, 0x1000 + ((text_size + 0xFFF) & ~0xFFF))
+    struct.pack_into("<I", header, optional + 60, 0x200)                  # headers
+    struct.pack_into("<I", header, optional + 92, 16)
+    section = optional + 0xE0
+    header[section:section + 8] = b".text\0\0\0"
+    struct.pack_into("<IIII", header, section + 8, text_size, 0x1000, raw_size, 0x200)
+    struct.pack_into("<I", header, section + 36, 0x60000020)
+    body = code + b"\xcc" * (raw_size - len(code))
+    Path(path).write_bytes(bytes(header) + body)
+
+
+def local_cases(temp, report):
+    """The objdump parser, the PE reader, the reference scan, the stock check, the refusals."""
+    got = [(i.addr, i.size, i.mn, i.ops) for i in checker.parse_objdump(OBJDUMP_LISTING)]
+    report("the objdump parser reads every line shape", got == OBJDUMP_EXPECTED,
+                      "\n".join(map(str, OBJDUMP_EXPECTED)), "\n".join(map(str, got)))
+
+    # The instruction rules, on objdump's own spelling of them.
+    for label, line, reads in [
+            ("`or r, -1` writes without reading", "or\tedi, -0x1", set()),
+            ("`or r, 0xffffffff` writes without reading", "or\tedi, 0xffffffff", set()),
+            ("`or r8, 0xff` writes without reading", "or\tal, 0xff", set()),
+            ("`and r, 0` writes without reading", "and\tesi, 0x0", set()),
+            ("`sub r, r` writes without reading", "sub\tebx, ebx", set()),
+            ("`imul r, m, imm` reads only its source", "imul\tecx, dword ptr [edx + 0x8], 0x1c",
+             {"edx"}),
+            ("`or r, 1` reads", "or\tedi, 0x1", {"edi"}),
+            ("`and r, 0xff` reads", "and\tesi, 0xff", {"esi"})]:
+        listing = "  401000: 90 90 90\t%s\n  401003: c3\tret\n" % line
+        facts = checker.read_callee(checker.parse_objdump(listing))
+        report(label, set(facts.reg_args) == reads, sorted(reads),
+                          str(facts.reg_args))
+
+    objdump = checker.find_objdump(None)
+    image = Path(temp) / "synthetic.exe"
+    write_pe(image, SYNTHETIC_CODE)
+
+    try:
+        checker.LocalBinary(image, objdump or "llvm-objdump")
+        ok, said = False, "it was accepted"
+    except checker.Unusable as trouble:
+        said = str(trouble)
+        ok = "is not Wow.exe 3.3.5a build 12340" in said
+    report("an image that is not 12340 is refused", ok, "a refusal naming the build",
+                      said)
+
+    stock_like = Path(temp) / "patched.exe"
+    write_pe(stock_like, SYNTHETIC_CODE, checker.STOCK["timestamp"], checker.STOCK["text"][1])
+    try:
+        checker.LocalBinary(stock_like, objdump or "llvm-objdump")
+        ok, said = False, "it was accepted"
+    except checker.Unusable as trouble:
+        said = str(trouble)
+        ok = "its .text is not the stock one" in said
+    report("12340's headers over other code are refused", ok,
+                      "a refusal naming .text", said)
+
+    unpatched = Path(temp) / "unpatched.exe"
+    write_pe(unpatched, SYNTHETIC_CODE)
+    binary = checker.LocalBinary(unpatched, objdump or "llvm-objdump", stock=None)
+    refs = binary.xrefs(0x00401000)
+    report("the reference scan finds the call and the jump, and only them",
+                      refs == [(0x00401017, "call"), (0x00401021, "jump")],
+                      "[(0x401017, call), (0x401021, jump)]", str(refs))
+
+    if objdump is None:
+        print("skip the decoding half of the local backend: no llvm-objdump on PATH")
+        return
+    insns = binary.disasm(0x00401000, 0x0040100B)
+    facts = checker.read_callee(insns)
+    report("a function decoded by objdump reads as cdecl, 2 stack dword(s)",
+           facts.convention == "cdecl" and facts.stack_dwords == 2,
+           "cdecl 2", "%s %d (%s)" % (facts.convention, facts.stack_dwords, insns))
+    functions = checker.Functions()
+    functions._extent = {0x00401000: 0x10, 0x00401010: 0x11}
+    functions._starts = sorted(functions._extent)
+    site = checker.read_site(binary, functions, 0x00401000, 0x00401017)
+    # Its caller's first call: the walk back runs into the prologue and counts its `push ebp`.
+    report("its caller, decoded by objdump, pushes 3 counting its prologue and cleans 8",
+           (site.note, site.pushes, site.cleanup) == (None, 3, 8),
+           "(None, 3, 8)", str((site.note, site.pushes, site.cleanup)))
+
+    # The command line refuses rather than guesses.
+    case = Path(temp) / "refusals"
+    build(case)
+    env = {k: v for k, v in os.environ.items() if k != "WXL_WOW_EXE"}
+    for label, extra, wanted in [
+            ("no binary named", (), "no Wow.exe was named"),
+            ("a binary that is not 12340", ("--binary", str(image)),
+             "is not Wow.exe 3.3.5a build 12340"),
+            ("a binary that does not exist", ("--binary", str(Path(temp) / "absent.exe")),
+             "cannot read"),
+            ("--cache without the MCP", ("--binary", str(image), "--cache", "x.json"),
+             "they need --backend mcp")]:
+        result = run(case, extra, env)
+        output = result.stdout + result.stderr
+        report("the local backend refuses %s" % label,
+               result.returncode == 2 and wanted in output, "exit 2, with %r" % wanted, output)
+
+
+# --- The real client ------------------------------------------------------------------------
 
 # What the real binary must say, verified by hand against the disassembly.
 # point: (address, convention, registers, stack dwords)
@@ -425,97 +705,94 @@ GROUND_TRUTH = {
     "Combat.HandlePeriodicAuraLog":    ("0x007531F0", "cdecl", [], 2),
 }
 
-REAL_MCP = "http://127.0.0.1:8077/mcp"
 
+class Tally:
+    """Prints each case's verdict and counts them."""
 
-def mcp_is_up(url):
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": "ghidra_disasm",
-                                  "arguments": {"addr": "0x00401000", "count": 1}}}).encode()
-    request = urllib.request.Request(url, data=body, headers={
-        "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
-    try:
-        urllib.request.urlopen(request, timeout=10).read()
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
+    def __init__(self):
+        self.total = 0
+        self.failures = 0
 
-
-def report(label, ok, expected, output, failures):
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if ok:
-        return failures
-    print("     expected %s" % expected)
-    for line in output.strip().splitlines()[:12]:
-        print("     | " + line)
-    return failures + 1
+    def __call__(self, label, ok, expected, output):
+        self.total += 1
+        print("%-4s %s" % ("ok" if ok else "FAIL", label))
+        if ok:
+            return
+        self.failures += 1
+        print("     expected %s" % expected)
+        for line in output.strip().splitlines()[:12]:
+            print("     | " + line)
 
 
 def main():
-    failures, total = 0, 0
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--binary", default=os.environ.get("WXL_WOW_EXE"),
+                        help="the stock Wow.exe for the real half; default $WXL_WOW_EXE")
+    args = parser.parse_args()
+    report = Tally()
 
     server = HTTPServer(("127.0.0.1", 0), Stub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/mcp" % server.server_address[1]
+    stub = ("--backend", "mcp", "--mcp", url)
 
     with tempfile.TemporaryDirectory() as temp:
-        for index, (label, demo_def, thunks, want_code, want_text) in enumerate(CASES):
-            total += 1
+        for index, (label, demo_def, thunks, want_code, want_text, extra) in enumerate(CASES):
             case = Path(temp) / ("case%02d" % index)
             build(case, demo_def, thunks)
-            result = run(case, url)
+            result = run(case, stub + tuple(extra))
             output = result.stdout + result.stderr
             ok = result.returncode == want_code and (not want_text or want_text in output)
-            failures = report(label, ok, "exit %d%s" % (want_code, ", with %r" % want_text
-                                                        if want_text else ""), output, failures)
+            report(label, ok, "exit %d%s" % (want_code, ", with %r" % want_text
+                                             if want_text else ""), output)
 
         # The tool must say so and leave, not crash, when the MCP is not there.
-        total += 1
         case = Path(temp) / "unreachable"
         build(case)
-        result = run(case, "http://127.0.0.1:1/mcp")
+        result = run(case, ("--backend", "mcp", "--mcp", "http://127.0.0.1:1/mcp"))
         output = result.stdout + result.stderr
-        ok = result.returncode == 2 and "the ghidra MCP is not usable" in output
-        failures = report("the MCP unreachable", ok, "exit 2, with the MCP named", output,
-                          failures)
-    server.shutdown()
+        report("the MCP unreachable",
+               result.returncode == 2 and "the ghidra MCP at http://127.0.0.1:1/mcp did not "
+                                          "answer" in output,
+               "exit 2, with the MCP named", output)
+        server.shutdown()
+
+        local_cases(temp, report)
 
     # --- the real client ---
-    if not mcp_is_up(REAL_MCP):
-        print("\nskip the 23 real rows: %s did not answer" % REAL_MCP)
-        print("\n%d case(s), %d failure(s)" % (total, failures))
-        return 1 if failures else 0
+    if not args.binary:
+        print("\nskip the real rows: name a stock Wow.exe with --binary or $WXL_WOW_EXE")
+        print("\n%d case(s), %d failure(s)" % (report.total, report.failures))
+        return 1 if report.failures else 0
 
-    result = subprocess.run([sys.executable, "-I", str(CHECKER), "--json"],
-                            capture_output=True, text=True)
+    started = time.monotonic()
+    result = subprocess.run([sys.executable, "-I", str(CHECKER), "--json",
+                             "--binary", args.binary], capture_output=True, text=True)
+    wall = time.monotonic() - started
     try:
         answer = json.loads(result.stdout)
     except ValueError:
-        print("FAIL the 23 real rows: the tool printed no JSON")
+        print("FAIL the real rows: the tool printed no JSON")
         print((result.stdout + result.stderr)[:2000])
         return 1
-    total += 1
-    failures = report("the real table has no disagreement", not answer["problems"],
-                      "no problem", "\n".join(answer["problems"]), failures)
+    report("the real table has no disagreement", not answer["problems"],
+           "no problem", "\n".join(answer["problems"]))
 
     rows = {row["point"]: row for row in answer["rows"]}
     for point, (address, convention, registers, stack) in GROUND_TRUTH.items():
-        total += 1
         row = rows.get(point)
         got = None if row is None else (row["address"], row["convention"],
                                         row["registers"], row["stack_dwords"])
-        ok = got == (address, convention, registers, stack)
-        failures = report("%s reads as %s %s %d" % (point, convention,
-                                                    ",".join(registers) or "-", stack),
-                          ok, "%s" % ((address, convention, registers, stack),), str(got),
-                          failures)
+        report("%s reads as %s %s %d" % (point, convention, ",".join(registers) or "-", stack),
+               got == (address, convention, registers, stack),
+               "%s" % ((address, convention, registers, stack),), str(got))
     for point in sorted(set(rows) - set(GROUND_TRUTH)):
-        total += 1
-        failures = report("%s is a row the ground truth does not cover" % point, False,
-                          "a line for it in GROUND_TRUTH", "", failures)
+        report("%s is a row the ground truth does not cover" % point, False,
+               "a line for it in GROUND_TRUTH", "")
 
-    print("\n%d case(s), %d failure(s), full run %.1fs" % (total, failures, answer["seconds"]))
-    return 1 if failures else 0
+    print("\n%d case(s), %d failure(s); the %d real rows in %.1fs (%.1fs with the start)"
+          % (report.total, report.failures, len(rows), answer["seconds"], wall))
+    return 1 if report.failures else 0
 
 
 if __name__ == "__main__":

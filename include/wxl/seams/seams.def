@@ -9,6 +9,7 @@
 //   WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params)   observes its return: After
 //   WXL_SEAM_GATE(domain, name, symbol, ret, conv, params)    decides the call: Gate
 //   WXL_SEAM_RAISES(domain, name, event)                      an event the seam's body raises
+//   WXL_SEAM_WITNESS(domain, name, call)                      a call site the binary check reads
 //
 // Before runs when the function is entered and After when it returns; neither changes the call.
 // A seam declares only the sides its body uses: on x64 each side is a call the fork's source has
@@ -41,7 +42,15 @@
 // WXL_SEAM_RAISES rows follow their seam and name the event without WXL_EV_. Both runtimes publish
 // their union as the events they raise, and check_seams.py checks each against the seam's body.
 //
-// Include with the four row shapes defined; WXL_SEAM_RAISES defaults to nothing.
+// WXL_SEAM_WITNESS rows follow their seam and give the x86 address of a `call` instruction that
+// reaches the function, for a cdecl function whose own code does not show what it takes: one
+// reached only through a pointer, which reads fewer arguments than it is handed, or one that
+// leaves by a tail jump, with no `ret` to say who cleans. check_conventions.py reads the pushes
+// before that call and the cleanup after it, and fails the row unless they add up to its stack
+// parameters. Nothing else reads them.
+//
+// Include with the four row shapes defined; WXL_SEAM_RAISES and WXL_SEAM_WITNESS default to
+// nothing.
 
 // No defaults: a consumer that skips a shape says so by defining it to nothing.
 #ifndef WXL_SEAM
@@ -60,6 +69,10 @@
 #ifndef WXL_SEAM_RAISES
     #define WXL_SEAM_RAISES(domain, name, event)
     #define WXL_SEAM_RAISES_DEFAULTED
+#endif
+#ifndef WXL_SEAM_WITNESS
+    #define WXL_SEAM_WITNESS(domain, name, call)
+    #define WXL_SEAM_WITNESS_DEFAULTED
 #endif
 
 #include "wxl/seams/world.def"
@@ -87,4 +100,8 @@
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES
     #undef WXL_SEAM_RAISES_DEFAULTED
+#endif
+#ifdef WXL_SEAM_WITNESS_DEFAULTED
+    #undef WXL_SEAM_WITNESS
+    #undef WXL_SEAM_WITNESS_DEFAULTED
 #endif
