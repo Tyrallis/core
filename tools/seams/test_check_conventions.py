@@ -739,10 +739,17 @@ GROUND_TRUTH = {
     "Login.RealmListResult":           ("0x00465F10", "thiscall", ["ecx"], 1),
     # ChatMessageReceived: OnMessageChat (0x0050EBA6) pushes 0 and msg and cleans 8.
     # AddChatMessage: ChatMessageReceived pushes fifteen dwords and cleans 0x3C after the call at
-    # 0x0050C3AA. The script functions are lua_CFunctions; LOG_XPGAIN reads its message at
-    # [ebp+0x14].
+    # 0x0050C3AA. QueueChatText: AddChatMessage pushes seventeen dwords at 0x0050AD82 and cleans
+    # 0x44. ~PENDINGCHAT: `mov esi,ecx` (0x00501711) before any read, a bare `ret`, and DeleteNode
+    # (0x00503114) sets ECX and pushes nothing. RecordChat: AddChatMessage pushes ten dwords at
+    # 0x0050A8A5 and cleans them with SendChatEvent's in one `add esp,0x50` (0x0050A8DA), and
+    # its body reads [ebp+8]. The script functions are lua_CFunctions; LOG_XPGAIN reads its
+    # message at [ebp+0x14].
     "Chat.ChatMessageReceived":        ("0x0050BE70", "cdecl", [], 2),
     "Chat.AddChatMessage":             ("0x00509DD0", "cdecl", [], 15),
+    "Chat.QueueChatText":              ("0x00502D00", "cdecl", [], 17),
+    "Chat.DestroyPendingChat":         ("0x00501710", "thiscall", ["ecx"], 0),
+    "Chat.RecordChat":                 ("0x004FDD80", "cdecl", [], 10),
     "Chat.Script_SendChatMessage":     ("0x0050D170", "cdecl", [], 1),
     "Chat.Script_SendAddonMessage":    ("0x00500560", "cdecl", [], 1),
     "Chat.Packet_SMSG_LOG_XPGAIN":     ("0x0050C720", "cdecl", [], 4),
