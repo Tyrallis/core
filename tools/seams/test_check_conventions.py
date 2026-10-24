@@ -633,6 +633,11 @@ GROUND_TRUTH = {
     "ObjectMgr.ObjDelete":             ("0x004D6FC0", "regparm", ["eax"], 0),
     "ObjectMgr.DestroyRemovedObject":  ("0x004D4090", "regparm", ["esi"], 0),
     "ObjectMgr.GetUpdateObject":       ("0x004D6AE0", "cdecl", [], 3),
+    # The shared side of the object manager: neither reads anything on the stack. InitializeShared
+    # has no frame and ends in `ret` at 0x004D4B20, called with nothing pushed at 0x004055D4;
+    # DestroyShared reads only [ebp-N] and ends in `ret` at 0x004D5D6A, called at 0x0040665F.
+    "ObjectMgr.InitializeShared":      ("0x004D4AC0", "cdecl", [], 0),
+    "ObjectMgr.DestroyShared":         ("0x004D5C80", "cdecl", [], 0),
     "Unit.OnDeath":                    ("0x00729220", "thiscall", ["ecx"], 0),
     "Unit.OnAuraAdded":                ("0x00727760", "thiscall", ["ecx"], 4),
     "Unit.OnAuraRemoved":              ("0x00722090", "thiscall", ["ecx"], 4),
