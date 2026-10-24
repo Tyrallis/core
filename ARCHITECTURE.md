@@ -88,7 +88,9 @@ of each table lists its shapes and columns.
 3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`. A `FIELD` row whose `member` is the
    fact's name needs nothing more in core; a `READ` row gets its function in
    `core/src/objects/Reads.cpp`.
-4. The method in the C++ facade, `sdk/include/wxl/objects/<kind>.hpp`.
+4. The method in the C++ facade, `sdk/include/wxl/objects/<kind>.hpp`. Its Lua method is named
+   after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
+   would be ambiguous.
 
 ### A new event
 
@@ -144,4 +146,4 @@ The `ctest` suites are Windows executables; from Linux they build with clang-cl 
 | attachment | how one architecture reaches the client (`src/runtime/Attachment*.cpp`) |
 | family | a script class grouping events: `WorldScript`, `RenderScript`, ... |
 | stage | a step of the boot reported to every mod |
-| handle | a mod's reference to a client object; goes stale when the object leaves |
+| handle | a mod's reference to a client object for one visibility episode: from its `ObjectCreate` to its `ObjectDestroy`, then stale; an object that comes back gets a new one, and its guid is what lasts |
