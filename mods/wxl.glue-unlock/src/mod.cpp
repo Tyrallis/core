@@ -83,4 +83,4 @@ namespace
     };
 } // namespace
 
-WXL_MOD(GlueUnlockMod, "wxl.glue-unlock", "Glue unlock", 1)
+WXL_MOD(GlueUnlockMod, "wxl.glue-unlock", "Glue unlock")

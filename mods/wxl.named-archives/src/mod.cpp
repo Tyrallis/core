@@ -102,4 +102,4 @@ namespace
     };
 } // namespace
 
-WXL_MOD(NamedArchivesMod, "wxl.named-archives", "Named archives", 1)
+WXL_MOD(NamedArchivesMod, "wxl.named-archives", "Named archives")

@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.7-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.8-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -223,6 +223,11 @@ subscriptions are dropped (the rest of the dispatch in progress included), its r
 and its unload are skipped, the script functions it registered are taken back, and its binary is
 left mapped rather than unloaded. One that faults in `wxl_mod_query` or `wxl_mod_load` is refused
 instead. The client goes on.
+
+A C++ exception is not a fault and never reaches the guard: the SDK's C++ layer catches it inside
+the mod and logs it (the SDK's `docs/building-a-mod.md`, "What a throw costs"). One that leaves a
+stage or the unload of a `WXL_MOD` mod makes the mod call `wxl_host.disable` with what it threw,
+and the runtime disables it exactly as above.
 
 What the guard does not do: it does not unwind the faulting frames (destructors do not run,
 locks stay held), it does not withdraw the services the mod published (another mod may hold the
