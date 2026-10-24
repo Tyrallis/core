@@ -145,10 +145,11 @@ namespace wxl::core
             cfg.events          = attachment::Events();
             cfg.services        = attachment::Services();
 
-            WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u, target %s, mods in %ls",
+            WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u.%u, target %s, mods in %ls",
                       kRuntimeId, kRuntimeName, static_cast<unsigned>(WXL_CORE_VERSION),
                       static_cast<unsigned>(WXL_ABI_VERSION_MAJOR),
-                      static_cast<unsigned>(WXL_ABI_VERSION_MINOR), cfg.target.c_str(),
+                      static_cast<unsigned>(WXL_ABI_VERSION_MINOR),
+                      static_cast<unsigned>(WXL_ABI_VERSION_FEATURE), cfg.target.c_str(),
                       cfg.mods_directory.c_str());
             for (const wxl::host::PublishedService& service : cfg.services)
                 WLOG_INFO(kTag, "service %s version %u", service.name.c_str(), service.version);

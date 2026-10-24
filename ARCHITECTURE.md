@@ -83,7 +83,8 @@ of each table lists its shapes and columns.
 ### A new object getter for mods
 
 1. The fact, as above.
-2. A member at the end of `wxl_object_api` in `sdk/include/wxl/services/object.h`.
+2. A member at the end of `wxl_object_api` in `sdk/include/wxl/services/object.h`, and
+   `WXL_ABI_VERSION_FEATURE` raised in `abi.h`: something was appended.
 3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`. A `FIELD` row whose `member` is the
    fact's name needs nothing more in core; a `READ` row gets its function in
    `core/src/objects/Reads.cpp`.
@@ -92,8 +93,11 @@ of each table lists its shapes and columns.
 ### A new event
 
 1. A row in `sdk/include/wxl/events.def` with the next free id, its args struct as a block of
-   rows in `fields.def` (or an existing struct), and `WXL_ABI_VERSION_MINOR` raised in `abi.h`.
-   The struct, its reflection and the parameters of its C++ and Lua handlers follow from the rows.
+   rows in `fields.def` (or an existing struct), and `WXL_ABI_VERSION_FEATURE` raised in `abi.h`:
+   an appended event is a new feature, so a mod that subscribes to it asks for that feature in its
+   `mod.json` and an older runtime refuses it. The minor is a stage of the platform and the major
+   a change of meaning (`sdk/include/wxl/abi.h`); neither moves for an event. The struct, its
+   reflection and the parameters of its C++ and Lua handlers follow from the rows.
 2. The seam that raises it, as above.
 
 ### A new mod
