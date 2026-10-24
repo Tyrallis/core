@@ -29,6 +29,9 @@ namespace wxl::core::objects
         bool            UnitTarget(void* object, wxl_guid& out) const override;
         void*           LocalPlayer() const override;
         void*           FindByGuid(wxl_guid guid) const override;
+        uint32_t*       Descriptor(void* object) const override;
+        bool WatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const override;
+        void Report(const char* line) const override;
 
 #define WXL_OBJECT_FIELD(kinds, member, Method, type)     \
     bool Method(void* object, type& out) const override \
@@ -60,4 +63,13 @@ namespace wxl::core::objects
     bool       IsTracked(void* object);
     wxl_handle HandleOf(void* object);
     wxl_handle FromGuid(uint64_t guid);
+
+    /**
+     * @brief Has the client report the changes of one element of a kind's fields, from now on.
+     *
+     * Set on the kind at once while the client is in a world, and again whenever it enters
+     * one; a local element on the active player, whenever the client builds it or brings it
+     * back. The reports become ObjectFieldChanged (seams/ObjectMgr.cpp, which keeps the list).
+     */
+    bool WatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local);
 }

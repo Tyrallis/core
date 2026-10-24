@@ -63,3 +63,23 @@ WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 // callers, 0x004D4919 among them (mov esi,<object> before the call, nothing pushed).
 WXL_SEAM_BEFORE(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)
+
+// Builds the shared side of the object manager as the client enters the world, from
+// ClientInitializeGame: the object heaps on the first call, the expanded field descriptors
+// (MirrorInitialize), the ObjUsage command; the kinds' own mirror handlers are set right after it
+// (CGUnit_C::ClientInitialize and the others). After sets the runtime's mirror handler on every
+// field a mod watches (wxl_object_api's watch_field), which the client's update path then calls
+// for each change; that handler raises ObjectFieldChanged.
+//
+// cdecl, nothing taken: 0x004D4AC0 has no frame, reads no [esp+N] and returns with a bare `ret`
+// (0x004D4B20); its one caller, ClientInitializeGame at 0x004055D4, pushes nothing for it.
+WXL_SEAM_AFTER(ObjectMgr, InitializeShared, "ClntObjMgrInitializeShared", void, cdecl, ())
+WXL_SEAM_RAISES(ObjectMgr, InitializeShared, ObjectFieldChanged)
+
+// Takes it down as the client leaves the world, from ClientDestroyGame: every mirror handler set
+// on a kind's fields is deleted, the runtime's with the client's. Before notes that they are gone,
+// so that the next InitializeShared sets them again and a watch asked for in between waits for it.
+//
+// cdecl, nothing taken: 0x004D5C80 reads no [ebp+N] and returns with a bare `ret` (0x004D5D6A);
+// its one caller, ClientDestroyGame at 0x0040665F, pushes nothing for it.
+WXL_SEAM_BEFORE(ObjectMgr, DestroyShared, "ClntObjMgrDestroyShared", void, cdecl, ())

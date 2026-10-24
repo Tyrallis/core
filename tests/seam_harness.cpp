@@ -81,6 +81,7 @@ namespace
         uint32_t movementFlags  = 0; ///< the movement block's flags
         float    facing         = 0.0f;
         uint32_t money          = 0; ///< the local block's coinage
+        std::vector<uint32_t> block; ///< the descriptor block, empty for none
     };
 
     /// A terrain click and a sprite click, as the GameUI rows read them.
@@ -553,6 +554,39 @@ namespace
         return WXL_TRUE;
     }
 
+    // The descriptor blocks and the mirror handlers, as the field rows see them.
+    void* WXL_CALL FakeDescriptor(const void* object)
+    {
+        FakeObject* fake = const_cast<FakeObject*>(Obj(object));
+        return fake->block.empty() ? nullptr : fake->block.data();
+    }
+
+    /// A mirror handler the runtime set: on a kind, or on one object when `guid` is not 0.
+    struct FakeMirror
+    {
+        uint64_t           guid;
+        uint32_t           type;
+        uint32_t           offset;
+        uint32_t           size;
+        wxl_core_mirror_fn handler;
+        void*              param;
+    };
+    std::vector<FakeMirror> g_mirrors;
+
+    wxl_bool WXL_CALL FakeWatchType(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                                    void* param)
+    {
+        g_mirrors.push_back(FakeMirror{0, type, offset, size, handler, param});
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeWatchOne(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                                   wxl_core_mirror_fn handler, void* param)
+    {
+        g_mirrors.push_back(FakeMirror{guid, type, offset, size, handler, param});
+        return WXL_TRUE;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -628,6 +662,9 @@ namespace
         init.login_server_type      = &FakeLoginServerType;
         init.chat_pending_last      = &FakePendingLast;
         init.pending_chat_text      = &FakePendingText;
+        init.object_descriptor      = &FakeDescriptor;
+        init.object_watch_type      = &FakeWatchType;
+        init.object_watch_one       = &FakeWatchOne;
         return init;
     }
 }
@@ -1026,6 +1063,116 @@ namespace
               "an object tracked on demand is announced when it leaves");
         g_held.clear();
         Check(api->from_guid(ghost.guid) == WXL_HANDLE_NONE, "and is not found once the client let it go");
+    }
+
+    /// The descriptor fields: read_fields and write_fields through the block the client hands
+    /// over; watch_field setting the client's mirror handlers -- on the kinds while in a world,
+    /// again at each InitializeShared, on the active player for its local fields -- and a
+    /// handler's report raising ObjectFieldChanged.
+    void CheckFields()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject me;
+        me.guid   = 0x0000000000000042ull;
+        me.typeId = WXL_OBJECT_PLAYER;
+        me.block.assign(0x52E, 0u);
+        me.block[0x18]  = 5000;
+        me.block[0x27A] = 100; // PLAYER_XP
+        FakeObject troll;
+        troll.guid   = 0x0000000000000043ull;
+        troll.typeId = WXL_OBJECT_PLAYER;
+        troll.block.assign(0x52E, 0u);
+        FakeObject wolf;
+        wolf.guid   = 0xF130000000000555ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        wolf.block.assign(0x94, 0u);
+        wolf.block[0x18] = 70;
+        g_held = {&me, &troll, &wolf};
+
+        g_mirrors.clear();
+        wxl::seam::ObjectMgr::DestroyShared::Before(); // out of any world
+        g_received.clear();
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 9000u);
+        wxl::seam::ObjectMgr::InitObject::After(&troll, nullptr, 9001u);
+        const wxl_handle hWolf  = api->from_guid(wolf.guid);
+        const wxl_handle hTroll = api->from_guid(troll.guid);
+
+        uint32_t value = 0;
+        Check(api->field_count(hWolf) == 0x94 && api->read_fields(hWolf, 0x18, 1, &value) == WXL_OK && value == 70,
+              "read_fields reads a unit's block through object_descriptor");
+        Check(api->field_count(hTroll) == 0x144 && api->read_fields(hTroll, 0x27A, 1, &value) == WXL_E_INVALID,
+              "a player other than the active one has no fields past PLAYER_FIELD_PAD_0");
+        const uint32_t sixty = 60;
+        Check(api->write_fields(hWolf, 0x18, 1, &sixty, WXL_FIELD_WRITE_PLAIN) == WXL_OK && wolf.block[0x18] == 60,
+              "write_fields writes the client's dword");
+        Check(api->write_fields(hWolf, 0x95, 1, &sixty, 0) == WXL_E_INVALID,
+              "and refuses a dword past the block");
+
+        // A watch asked for out of a world waits for the next one.
+        Check(api->watch_field(WXL_OBJECT_UNIT, 0x18, 1) == WXL_OK && g_mirrors.empty(),
+              "a watch asked for outside a world sets nothing on the client yet");
+        wxl::seam::ObjectMgr::InitializeShared::After();
+        Check(g_mirrors.size() == 1 && g_mirrors[0].guid == 0 && g_mirrors[0].type == WXL_OBJECT_UNIT &&
+                  g_mirrors[0].offset == (0x18 - 6) * 4 && g_mirrors[0].size == 4,
+              "InitializeShared sets it on the unit's fields, offset from their first");
+        Check(api->watch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == 2 &&
+                  g_mirrors[1].type == WXL_OBJECT_UNKNOWN && g_mirrors[1].offset == 12,
+              "in a world, a new watch is set at once, OBJECT_FIELD_ENTRY on every object's");
+        Check(api->watch_field(WXL_OBJECT_UNIT, 0x10, 2) == WXL_E_UNSUPPORTED && g_mirrors.size() == 2,
+              "a field the client keeps no copy of is refused and sets nothing");
+
+        // The local fields go on the active player, when there is one.
+        Check(api->watch_field(WXL_OBJECT_PLAYER, 0x27A, 1) == WXL_OK && g_mirrors.size() == 2,
+              "PLAYER_XP waits for the active player");
+        g_localPlayer = &me;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9002u);
+        Check(g_mirrors.size() == 3 && g_mirrors[2].guid == me.guid && g_mirrors[2].type == WXL_OBJECT_PLAYER &&
+                  g_mirrors[2].offset == (0x27A - 0x94) * 4,
+              "and is set on it, by guid, when the client builds it");
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9003u);
+        Check(g_mirrors.size() == 3, "once");
+
+        // The client reports a change through the handler it was given.
+        const FakeMirror health = g_mirrors[0];
+        const uint32_t   was    = 70;
+        wolf.block[0x18]        = 55;
+        g_received.clear();
+        health.handler(wolf.guid, health.offset, health.size, &was, health.param);
+        const Received* changed = Only(WXL_EV_ObjectFieldChanged);
+        Check(changed != nullptr, "a report becomes ObjectFieldChanged");
+        if (changed)
+        {
+            const wxl_object_field_args args = changed->As<wxl_object_field_args>();
+            Check(args.object == hWolf && args.type == WXL_OBJECT_UNIT && args.field == 0x18 && args.count == 1 &&
+                      args.old_value == 70 && args.new_value == 55,
+                  "with the object, its type, the field's index, its old value and the new one");
+        }
+        const uint32_t xp = 100;
+        me.block[0x27A]   = 250;
+        g_received.clear();
+        g_mirrors[2].handler(me.guid, g_mirrors[2].offset, g_mirrors[2].size, &xp, g_mirrors[2].param);
+        Check(Only(WXL_EV_ObjectFieldChanged) &&
+                  Only(WXL_EV_ObjectFieldChanged)->As<wxl_object_field_args>().new_value == 250,
+              "the active player's experience too");
+        g_received.clear();
+        health.handler(0x1234ull, health.offset, health.size, &was, health.param);
+        Check(g_received.empty(), "a report on an object the client does not hold raises nothing");
+
+        // Leaving the world drops the client's handlers; the next world gets them again.
+        wxl::seam::ObjectMgr::DestroyShared::Before();
+        g_mirrors.clear();
+        wxl::seam::ObjectMgr::InitializeShared::After();
+        Check(g_mirrors.size() == 2, "the next world's InitializeShared sets the kinds' handlers again");
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9004u);
+        Check(g_mirrors.size() == 3 && g_mirrors[2].guid == me.guid,
+              "and the active player's local ones when the client builds it again");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&troll);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
+        g_held.clear();
     }
 
     /// Unit: OnDeath's After raises UnitDeath for a tracked unit; the aura pair raises
@@ -3946,6 +4093,86 @@ namespace
         g_lazyObject = nullptr;
     }
 
+    // --- The mirror handler and the shared seams, as the client calls them ----------------------
+
+    /// Calls a mirror handler the way CallMirrorFunctions does at 0x004D5254: the param, the old
+    /// value's address, the size, the offset and the guid's two halves pushed, `call ecx`,
+    /// `add esp, 0x18`; and records ESP on both sides.
+    __declspec(noinline) void CallLikeMirror(void* handler, uint32_t lo, uint32_t hi, uint32_t at,
+                                             uint32_t bytes, const void* old_value, void* param)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push param
+            push old_value
+            push bytes
+            push at
+            push hi
+            push lo
+            mov  ecx, handler
+            call ecx
+            add  esp, 18h
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour of a function that takes nothing, as ClientInitializeGame calls
+    /// ClntObjMgrInitializeShared at 0x004055D4: nothing pushed, nothing cleaned.
+    __declspec(noinline) void CallWithNothing(void* detour)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    uint32_t g_sharedCalls = 0;
+    __declspec(noinline) void __cdecl FakeInitializeShared() { ++g_sharedCalls; }
+
+    using SharedSeam = wxl::core::seams::DetourOf<wxl::seam::ObjectMgr::InitializeShared::Convention,
+                                                  wxl::seam::ObjectMgr::InitializeShared::Signature>;
+    using SharedLink = SharedSeam::Link<nullptr, &wxl::seam::ObjectMgr::InitializeShared::After>;
+
+    void CheckMirrorDetours()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+        FakeObject            boar;
+        boar.guid   = 0xF130000000000777ull;
+        boar.typeId = WXL_OBJECT_UNIT;
+        boar.block.assign(0x94, 0u);
+        boar.block[0x18] = 40;
+        g_held = {&boar};
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 9100u);
+
+        // The detour the row generates, called as the client calls the function: After runs and
+        // sets the watched fields' handlers.
+        wxl::seam::ObjectMgr::DestroyShared::Before();
+        g_mirrors.clear();
+        SharedLink::original = Opaque(&FakeInitializeShared);
+        CallWithNothing(Opaque(reinterpret_cast<void*>(&SharedLink::Detour)));
+        Check(g_espBefore == g_espAfter && g_sharedCalls == 1,
+              "the InitializeShared detour runs the original and leaves the stack as it found it");
+        Check(!g_mirrors.empty() && g_mirrors[0].type == WXL_OBJECT_UNIT && g_mirrors[0].offset == (0x18 - 6) * 4,
+              "and its After sets the watched fields' handlers");
+
+        // The runtime's handler, called through its pointer with the client's convention.
+        uint32_t was = 45;
+        g_received.clear();
+        CallLikeMirror(Opaque(reinterpret_cast<void*>(g_mirrors[0].handler)), static_cast<uint32_t>(boar.guid),
+                       static_cast<uint32_t>(boar.guid >> 32), g_mirrors[0].offset, g_mirrors[0].size, &was,
+                       g_mirrors[0].param);
+        Check(g_espBefore == g_espAfter, "the mirror handler leaves the stack as CallMirrorFunctions expects");
+        const Received* changed = Only(WXL_EV_ObjectFieldChanged);
+        Check(changed && changed->As<wxl_object_field_args>().object == api->from_guid(boar.guid) &&
+                  changed->As<wxl_object_field_args>().old_value == 45 &&
+                  changed->As<wxl_object_field_args>().new_value == 40,
+              "and reads the guid's halves, the offset, the size, the old value and its param in order");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+        g_held.clear();
+    }
+
     // --- The register thunks, against stand-ins with the client's conventions -------------------
 
     // What a stand-in original found in its registers and on its stack.
@@ -4435,6 +4662,7 @@ int main(int argc, char** argv)
     CheckWorldPreload();
     CheckObjectMgr();
     CheckRevivedObjects();
+    CheckFields();
     CheckUnit();
     CheckPlayer();
     CheckGameUI();
@@ -4469,6 +4697,7 @@ int main(int argc, char** argv)
     CheckOneSidedShim();
     CheckThiscallGate();
     CheckGetUpdateObjectDetour();
+    CheckMirrorDetours();
     CheckRegparmThunks();
     CheckChatDetours();
 #endif

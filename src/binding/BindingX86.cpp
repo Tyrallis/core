@@ -236,6 +236,39 @@ namespace wxl::core::binding
         return reinterpret_cast<ObjectPtrFn>(WXL_SITE("ClntObjMgrObjectPtr", 0))(guid, 1u, "WarcraftXL", 0);
     }
 
+    wxl_bool object_watch_type(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                               void* param)
+    {
+        // ClntObjMgrSetTypeMirrorHandler(OBJECT_TYPE_ID, fieldOffset, fieldSize, MIRRORHANDLERFUNC,
+        // param, HANDLER_PRIORITY, alwaysFire), cdecl: it reads [ebp+8]..[ebp+0x20] and returns
+        // with a bare `ret` (0x004D5C13); CGUnit_C::ClientInitialize pushes seven dwords, calls,
+        // and `add esp, 0x1c` (0x006E4648-0x006E465E). Priority 0 links the handler after those
+        // already on the field; alwaysFire 0 calls it only when the bytes changed.
+        using SetTypeFn = void(__cdecl*)(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                                         void* param, int32_t priority, int32_t always);
+        if (!IsClient() || !OnMainThread() || !handler) return WXL_FALSE;
+        reinterpret_cast<SetTypeFn>(WXL_SITE("ClntObjMgrSetTypeMirrorHandler", 0))(type, offset, size, handler,
+                                                                                    param, 0, 0);
+        return WXL_TRUE;
+    }
+
+    wxl_bool object_watch_one(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                              wxl_core_mirror_fn handler, void* param)
+    {
+        // ClntObjMgrSetObjMirrorHandler(WOWGUID, OBJECT_TYPE_ID, fieldOffset, fieldSize,
+        // MIRRORHANDLERFUNC, param, HANDLER_PRIORITY, alwaysFire), cdecl: the guid as two dwords
+        // at [ebp+8] and [ebp+0xC], the rest to [ebp+0x28], a bare `ret` (0x004D5B33); the
+        // explored-zones handler's setter at 0x00547120-0x00547143 pushes seven dwords and the
+        // active player's guid (edx:eax), calls, and `add esp, 0x24`. It does nothing for a guid
+        // the manager does not hold, which is asked first.
+        using SetObjFn = void(__cdecl*)(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                                        wxl_core_mirror_fn handler, void* param, int32_t priority, int32_t always);
+        if (!handler || !object_by_guid(guid)) return WXL_FALSE;
+        reinterpret_cast<SetObjFn>(WXL_SITE("ClntObjMgrSetObjMirrorHandler", 0))(guid, type, offset, size, handler,
+                                                                                  param, 0, 0);
+        return WXL_TRUE;
+    }
+
     uint64_t ui_target_guid(void)
     {
         return IsClient() ? *reinterpret_cast<const uint64_t*>(WXL_STATIC("CGGameUI::m_lockedTarget")) : 0;

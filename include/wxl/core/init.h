@@ -31,6 +31,14 @@ extern "C" {
 /// of a global set through the script rows of the binding. Answers how many results it pushed.
 typedef int32_t(WXL_CALL* wxl_script_native_fn)(void* state);
 
+/// A function the client's object manager calls when an update changed a field it was set on,
+/// as its MIRRORHANDLERFUNC: the object's guid, the field's byte offset from its kind's first
+/// field and its size in bytes, the copy of its old bytes the client kept, and the param it was
+/// set with. On x86 the client calls it cdecl, the guid as two dwords (CallMirrorFunctions,
+/// `call ecx; add esp, 0x18` at 0x004D5254). What it answers is not read.
+typedef int32_t(WXL_CALL* wxl_core_mirror_fn)(uint64_t guid, uint32_t offset, uint32_t size,
+                                              const void* old_value, void* param);
+
 /// One string per row of wxl/core/binding.def, "name: ret (params)", in table order. The
 /// client hands its copy over in wxl_core_init and the runtime compares it with its own, so a
 /// client built from a different table is refused by name instead of having its accessors

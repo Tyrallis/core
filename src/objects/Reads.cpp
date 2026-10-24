@@ -5,8 +5,13 @@
 
 #include "objects/Objects.hpp"
 
+#include "common/Log.hpp"
+#include "runtime/Core.hpp"
+
 #include <cstdlib>
 #include <cstring>
+#include <set>
+#include <string>
 
 namespace
 {
@@ -46,6 +51,24 @@ namespace wxl::core::objects
     void* ClientObjects::FindByGuid(wxl_guid guid) const
     {
         return const_cast<void*>(binding::object_by_guid(guid));
+    }
+
+    uint32_t* ClientObjects::Descriptor(void* object) const
+    {
+        return static_cast<uint32_t*>(binding::object_descriptor(object));
+    }
+
+    bool ClientObjects::WatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const
+    {
+        return objects::WatchElement(kind, first, dwords, local);
+    }
+
+    void ClientObjects::Report(const char* line) const
+    {
+        // Each refusal once: a mod that asks the same wrong thing every frame writes one line.
+        static std::set<std::string> said;
+        if (said.size() >= 256 || !said.insert(line).second) return;
+        WLOG_WARN(kTag, "wxl.object: %s", line);
     }
 
     bool ClientObjects::Position(void* object, wxl_vec3& out) const
