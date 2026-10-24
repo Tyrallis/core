@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.8-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.9-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -181,7 +181,7 @@ What a mod can reach **today**, by build:
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
-| `wxl.object` (world objects) | yes | yes |
+| `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers | the same |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
 | `wxl.storage` | yes: exists, size, read, open/read_at/close, mount_archive | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
@@ -270,6 +270,8 @@ source. Everything else observes.
 | `ObjectMgr.GetUpdateObject` | `GetUpdateObject(uint64_t guid, int32_t* reenabled)`, the lookup every update of an object goes through | `ObjectCreate` after, with a new handle, for an object the client brought back from its lazy-cleanup set (it never passes `InitObject` again) |
 | `ObjectMgr.ObjDelete` | `ObjDelete(void* object)` (regparm: EAX) | `ObjectDestroy` before |
 | `ObjectMgr.DestroyRemovedObject` | `DestroyRemovedObject(void* object)` (regparm: ESI) | `ObjectDestroy` before, for an object still tracked |
+| `ObjectMgr.InitializeShared` | `ClntObjMgrInitializeShared()`, as the client enters a world | after: sets the mirror handler of every watched field on its kind, which raises `ObjectFieldChanged` when an update changes it |
+| `ObjectMgr.DestroyShared` | `ClntObjMgrDestroyShared()`, as the client leaves it and drops every kind's mirror handlers | nothing; notes the handlers gone until the next `InitializeShared` |
 | `Unit.OnDeath` | `CGUnit_C::OnDeath()` | `UnitDeath` after |
 | `Unit.OnAuraAdded`, `Unit.OnAuraRemoved` | `CGUnit_C::OnAuraAdded/OnAuraRemoved(uint32_t index, uint8_t a3, void* aura, int32_t spell_id)` | `UnitAuraChanged` after |
 | `Player.UpdateInventoryComponent` | `CGPlayer_C::UpdateInventoryComponent(int32_t slot, const void* old_item)` | `EquipmentChanged` after, when the item id moved |
@@ -374,6 +376,7 @@ mods/                            the mods above                                (
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
 tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
+tools/fields/                    regenerate the SDK's update-field table from the decompiled client
 ```
 
 ## 🔧 Troubleshooting
