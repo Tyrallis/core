@@ -2642,6 +2642,18 @@ namespace
         g_shimAfter = self == g_shimSelf ? result + a + b : -1;
     }
 
+    /// A function pointer read back through a volatile slot, so the optimiser cannot see which
+    /// function it holds. The shim checks call across conventions on purpose (a __fastcall detour
+    /// as the __thiscall it stands in for, a __thiscall original through the detour's __fastcall
+    /// pointer); a call whose callee the optimiser can see with another convention than the
+    /// call's own is undefined to it, and it drops the call and everything after it.
+    template <class Fn>
+    Fn Opaque(Fn fn)
+    {
+        Fn volatile slot = fn;
+        return slot;
+    }
+
     using ShimSeam = wxl::core::seams::DetourOf<wxl::seam::detail::conv_thiscall,
                                                 int32_t(void*, int32_t, int32_t)>;
     using ShimLink = ShimSeam::Link<&ShimBefore, &ShimAfter>;
@@ -2653,10 +2665,10 @@ namespace
     {
         Thing thing;
         auto  member        = &Thing::Add;
-        ShimLink::original  = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimLink::original  = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
 
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
-        const AsThiscall detour = reinterpret_cast<AsThiscall>(&ShimLink::Detour);
+        const AsThiscall detour = Opaque(reinterpret_cast<AsThiscall>(&ShimLink::Detour));
         const int32_t result = detour(&thing, 5, 7);
 
         Check(result == 112, "the thiscall shim returns the original's result (100 + 5 + 7)");
@@ -2674,15 +2686,15 @@ namespace
         auto  member = &Thing::Add;
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
 
-        ShimBeforeLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimBeforeLink::original = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
         g_shimSelf = nullptr, g_shimBefore = 0, g_shimAfter = 0;
-        int32_t result = reinterpret_cast<AsThiscall>(&ShimBeforeLink::Detour)(&thing, 5, 7);
+        int32_t result = Opaque(reinterpret_cast<AsThiscall>(&ShimBeforeLink::Detour))(&thing, 5, 7);
         Check(result == 112 && g_shimBefore == 57 && g_shimAfter == 0,
               "a Before-only detour runs Before and the original, and no After");
 
-        ShimAfterLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimAfterLink::original = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
         g_shimSelf = &thing, g_shimBefore = 0, g_shimAfter = 0;
-        result = reinterpret_cast<AsThiscall>(&ShimAfterLink::Detour)(&thing, 5, 7);
+        result = Opaque(reinterpret_cast<AsThiscall>(&ShimAfterLink::Detour))(&thing, 5, 7);
         Check(result == 112 && g_shimBefore == 0 && g_shimAfter == 112 + 5 + 7,
               "an After-only detour runs the original and After, and no Before");
     }
@@ -2712,10 +2724,10 @@ namespace
         Thing thing;
         auto  member = &Thing::Add;
         ShimGateLink::original =
-            reinterpret_cast<ShimGateSeam::Fn>(*reinterpret_cast<void**>(&member));
+            Opaque(reinterpret_cast<ShimGateSeam::Fn>(*reinterpret_cast<void**>(&member)));
 
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
-        const AsThiscall detour = reinterpret_cast<AsThiscall>(&ShimGateLink::Detour);
+        const AsThiscall detour = Opaque(reinterpret_cast<AsThiscall>(&ShimGateLink::Detour));
 
         g_gateTakes    = false;
         int32_t result = detour(&thing, 5, 7);
@@ -2802,9 +2814,13 @@ namespace
         }
     }
 
+    // The callers below load EBX, ESI and EDI by hand, so each stays a function of its own: inlined
+    // into a caller whose frame is addressed through ESI (a realigned stack), the block would
+    // overwrite that base and every local after it.
+
     /// Calls a thunk the way the combat log statics' callers do: the message in EDI, or in EAX
     /// when `inEax`, and the time offset in one stack slot the caller cleans.
-    void CallLog(void* thunk, bool inEax, void* msg, uint32_t timeOffset)
+    __declspec(noinline) void CallLog(void* thunk, bool inEax, void* msg, uint32_t timeOffset)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2831,7 +2847,7 @@ namespace
 
     /// Calls a thunk the way IEvtDispatchUpdate's caller does: context in EDI, two stack slots
     /// the caller cleans.
-    void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
+    __declspec(noinline) void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2848,7 +2864,7 @@ namespace
     }
 
     /// Calls a thunk the way InitObject's caller does: ESI, EAX and ECX, nothing pushed.
-    void CallWithEsiEaxEcx(void* thunk, void* esiValue, uint32_t eaxValue, uint32_t ecxValue)
+    __declspec(noinline) void CallWithEsiEaxEcx(void* thunk, void* esiValue, uint32_t eaxValue, uint32_t ecxValue)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2864,7 +2880,7 @@ namespace
     }
 
     /// Calls a thunk the way ObjDelete's callers do: the object in EAX, nothing pushed.
-    void CallWithEax(void* thunk, void* eaxValue)
+    __declspec(noinline) void CallWithEax(void* thunk, void* eaxValue)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
