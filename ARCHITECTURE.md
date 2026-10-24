@@ -130,6 +130,9 @@ Start from `sdk/template/` and follow `sdk/docs/your-first-mod.md`. A Lua mod is
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
 | `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
 
+The `ctest` suites are Windows executables; from Linux they build with clang-cl and run under Wine
+("Run the tests from Linux" in `core/README.md` and `sdk/README.md`).
+
 ## Words
 
 | Word | Means |

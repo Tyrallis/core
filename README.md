@@ -102,6 +102,33 @@ cmake -S . -B build/x86 -G "Visual Studio 18 2026" -A Win32 -DWXL_CORE_ARCH=win-
 `WXL_CORE_TARGETS` selects which architectures the driver builds; `WXL_CORE_DIST` moves the
 collection directory.
 
+### Run the tests from Linux
+
+The seam harness is a Windows executable. From Linux it builds with clang-cl and runs under Wine,
+one architecture per tree. Give the driver a toolchain file that drives clang-cl and lld-link
+against the MSVC CRT and the Windows SDK (which [xwin](https://github.com/Jake-Shadle/xwin)
+downloads), and an emulator for ctest to run the harness with, both as environment variables so
+that the per-architecture tree the driver configures gets them too (CMake 3.28 or newer):
+
+```sh
+export CMAKE_TOOLCHAIN_FILE=<toolchain for i686-pc-windows-msvc>
+export CMAKE_CROSSCOMPILING_EMULATOR=<path to the wrapper below>
+cmake -S . -B build-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DWXL_CORE_TARGETS=win-x86
+cmake --build build-x86
+ctest --test-dir build-x86/win-x86 --output-on-failure
+```
+
+The harness lives in the architecture's own tree, `win-x86` or `win-x64` under the driver's. The
+wrapper runs its arguments under Wine; 32-bit Wine is needed for x86:
+
+```sh
+#!/bin/sh
+export WINEDEBUG="${WINEDEBUG:--all}"
+exec wine "$@"
+```
+
+The SDK's suites run the same way; its README says how to give them LuaJIT.
+
 ## 📦 Installing
 
 ### Into the stock client (32-bit)
