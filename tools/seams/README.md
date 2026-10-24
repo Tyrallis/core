@@ -153,8 +153,8 @@ python core/tools/seams/check_conventions.py --cache mcp.json   # then --offline
 Python 3, standard library only; it speaks the MCP's HTTP transport itself. It exits 0 when every
 row agrees, 1 with one line per disagreement otherwise, and 2 when it cannot start -- a missing
 offsets table, or an MCP that does not answer, which it names rather than crashing on. A full run
-is around 90 MCP calls and a second and a half. Start the stack with `infra/deploy/rag-up.ps1`
-then `infra/deploy/mcp-up.ps1`, or point `--mcp` elsewhere.
+is around 90 MCP calls. It asks the ghidra module of https://mcp.kiji.dev with the bearer token in
+`KIJI_MCP_TOKEN` (a key granted that module), or another endpoint given with `--mcp`.
 
 ## What it does not prove
 

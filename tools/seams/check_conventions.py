@@ -8,7 +8,7 @@
 check_seams.py compares the table with the C++ that implements it. Nothing compares the table
 with Wow.exe, and a row that names the wrong convention produces a detour that clobbers a
 register the original reads, or cleans a stack the caller also cleans. This reads the function's
-prologue and its call sites out of the binary through the dawnlight-rag ghidra MCP, derives the
+prologue and its call sites out of the binary through the ghidra MCP, derives the
 convention and the argument count from the instructions, and fails when the row disagrees.
 
 The x64 side is direct source calls with no convention of its own, so only x86 is checked.
@@ -17,6 +17,7 @@ See README.md next to it.
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -200,10 +201,11 @@ class Unreachable(Exception):
 
 
 class Mcp:
-    """The dawnlight-rag MCP over its HTTP transport, with an optional on-disk cache."""
+    """The ghidra MCP over its HTTP transport, with an optional on-disk cache."""
 
-    def __init__(self, url, cache_path=None, offline=False):
+    def __init__(self, url, cache_path=None, offline=False, token=None):
         self.url = url
+        self.token = token
         self.offline = offline
         self.cache_path = cache_path
         self.cache = {}
@@ -220,10 +222,12 @@ class Mcp:
                               % (tool, arguments))
         body = {"jsonrpc": "2.0", "id": self.calls + 1, "method": "tools/call",
                 "params": {"name": tool, "arguments": arguments}}
-        request = urllib.request.Request(
-            self.url, data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "Accept": "application/json, text/event-stream"})
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json, text/event-stream"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        request = urllib.request.Request(self.url, data=json.dumps(body).encode("utf-8"),
+                                         headers=headers)
         try:
             raw = urllib.request.urlopen(request, timeout=120).read().decode("utf-8")
         except (urllib.error.URLError, OSError) as trouble:
@@ -862,8 +866,8 @@ def main(argv=None):
                         help="the directory holding the generated functions.def")
     parser.add_argument("--thunks", type=Path, default=core / "src" / "seams" / "RegparmX86.cpp",
                         help="the hand-written regparm thunks")
-    parser.add_argument("--mcp", default="http://127.0.0.1:8077/mcp",
-                        help="the dawnlight-rag MCP endpoint")
+    parser.add_argument("--mcp", default="https://mcp.kiji.dev/ghidra/mcp",
+                        help="the ghidra MCP endpoint; its bearer token is read from $KIJI_MCP_TOKEN")
     parser.add_argument("--cache", type=Path, default=None,
                         help="a file to read and write the MCP's answers through")
     parser.add_argument("--offline", action="store_true",
@@ -902,7 +906,7 @@ def main(argv=None):
 
     thunks = read_thunks(args.thunks.resolve(), problems)
 
-    mcp = Mcp(args.mcp, args.cache, args.offline)
+    mcp = Mcp(args.mcp, args.cache, args.offline, os.environ.get("KIJI_MCP_TOKEN"))
     started = time.monotonic()
     findings = []
     try:
@@ -910,8 +914,8 @@ def main(argv=None):
             findings.append(check_row(mcp, functions, row, args.max_callers))
     except Unreachable as trouble:
         print("check_conventions: the ghidra MCP is not usable: %s" % trouble, file=sys.stderr)
-        print("  start it with infra/deploy/rag-up.ps1 then infra/deploy/mcp-up.ps1, or point "
-              "--mcp at it", file=sys.stderr)
+        print("  set KIJI_MCP_TOKEN to a key granted the ghidra module, or point --mcp elsewhere",
+              file=sys.stderr)
         mcp.save()
         return 2
     elapsed = time.monotonic() - started
