@@ -398,6 +398,31 @@ GROUND_TRUTH = {
     "Item.UseItem":                    ("0x00708C20", "thiscall", ["ecx"], 2),
     "FrameScript.vSignalEvent":        ("0x0081AC90", "cdecl", [], 3),
     "FrameScript.HandleError":         ("0x00819730", "cdecl", [], 1),
+    # The channel, resume, delay and cooldown handlers, and the melee one, are reached only
+    # through the handler table (Spell_C__SystemInitialize 0x008101BA-0x008102A5,
+    # UnitCombatClientInitialize 0x00756BE3-) and read their message at [ebp+0x14]; each ends
+    # in a bare `ret`. Spell_C_CancelSpell reads its cast at [ebp+8], its three flags up to
+    # [ebp+0x14], ends in `ret` at 0x00806389, and its caller 0x008063C8 pushes 4 and cleans
+    # 0x10; the `or edi, -1` at 0x008062B8 writes EDI after the `push edi` at 0x00806245.
+    "Spell.Packet_MSG_CHANNEL_START":  ("0x00801C90", "cdecl", [], 4),
+    "Spell.Packet_MSG_CHANNEL_UPDATE": ("0x00801DB0", "cdecl", [], 4),
+    "Spell.Packet_SMSG_UNIT_SPELLCAST_START": ("0x008020C0", "cdecl", [], 4),
+    "Spell.Packet_SMSG_SPELL_DELAYED": ("0x00801B80", "cdecl", [], 4),
+    "Spell.Packet_SMSG_SPELL_COOLDOWN": ("0x00806DD0", "cdecl", [], 4),
+    "Spell.Packet_SMSG_ITEM_COOLDOWN": ("0x00807060", "cdecl", [], 4),
+    "Spell.Packet_Group_31":           ("0x00804010", "cdecl", [], 4),
+    "Spell.CancelSpell":               ("0x00806200", "cdecl", [], 4),
+    "Combat.Packet_Group_29":          ("0x00756800", "cdecl", [], 4),
+    # The combat log statics take their message in a register and the time offset alone on the
+    # stack, cleaned by the caller. SpellLogMiss: `mov edi, [ebp+0x14]; push 0; call` at
+    # 0x006D3204, `mov edi, esi; call` at 0x006D419B, EDI read at 0x006D30A0. NonMeleeDamageLog
+    # and HealLog: `mov eax, [ebp+0x14]; push 0; call` at 0x006D3C13 and 0x006D3DD3, `mov eax,
+    # esi` at 0x006D41CC and 0x006D4191, `mov esi, eax` at 0x006D384B and 0x006D3C3B.
+    # PeriodicAuraLog takes both on the stack: `push edi; push esi; call; add esp, 8` at 0x006D41BF.
+    "Combat.HandleSpellLogMiss":       ("0x006D3090", "regparm", ["edi"], 1),
+    "Combat.HandleSpellNonMeleeDamageLog": ("0x006D3840", "regparm", ["eax"], 1),
+    "Combat.HandleSpellHealLog":       ("0x006D3C30", "regparm", ["eax"], 1),
+    "Combat.HandlePeriodicAuraLog":    ("0x007531F0", "cdecl", [], 2),
 }
 
 REAL_MCP = "http://127.0.0.1:8077/mcp"
