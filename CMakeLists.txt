@@ -15,6 +15,7 @@
 #       build/dist/bin/x86/wxl-core-patcher.exe
 #       build/dist/bin/x64/WarcraftXL.dll
 #       build/dist/Mods/<id>/{mod.json,bin/x86/<name>.dll}
+#       build/dist/Mods/wxl.lua/{mod.json,LICENSE-LuaJIT.txt,bin/x86/wxl-lua.dll,bin/x64/wxl-lua.dll}
 #
 #   - win-x86 or win-x64 (a child, or a tree configured by hand with the matching -A Win32 or
 #     -A x64): the real targets of that one architecture, in build/<Config>/.
@@ -25,6 +26,7 @@ project(wxl-core VERSION 0.2.0 LANGUAGES NONE)
 set(WXL_CORE_ARCH "" CACHE STRING
     "Architecture of this build tree (win-x86 or win-x64). Set by the superbuild; empty builds every target.")
 option(WXL_CORE_MODS "Build the mods under mods/ (x86 only: both require wxl.patch)" ON)
+option(WXL_CORE_LUA "Build wxl.lua, the runtime of the Lua mods, from the SDK and ship it in Mods/" ON)
 
 set(WXL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sdk" CACHE PATH "Path to a checkout of WarcraftXL/sdk")
 if(NOT EXISTS "${WXL_SDK_DIR}/include/wxl/abi.h")
@@ -250,6 +252,11 @@ list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness)
 foreach(target IN LISTS WXL_CORE_WARNED_TARGETS)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
 endforeach()
+
+# --- wxl.lua, on both architectures: the Lua mods run on either runtime ----------------------------
+if(WXL_CORE_LUA)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/wxl_lua.cmake")
+endif()
 
 # --- The mods this runtime ships -------------------------------------------------------------------
 if(WXL_CORE_MODS AND WXL_CORE_X86)

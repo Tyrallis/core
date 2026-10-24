@@ -91,7 +91,13 @@ build/dist/
     bin/x64/WarcraftXL.dll
     Mods/wxl.glue-unlock/{mod.json,bin/x86/glue-unlock.dll}
     Mods/wxl.named-archives/{mod.json,bin/x86/named-archives.dll}
+    Mods/wxl.lua/{mod.json,LICENSE-LuaJIT.txt,bin/x86/wxl-lua.dll,bin/x64/wxl-lua.dll}
 ```
+
+`Mods/wxl.lua/` is the runtime of the Lua mods, built from the SDK's `lua/` for each architecture,
+so that a Lua mod runs with nothing else to build. The first configure downloads LuaJIT, which it
+embeds, at a fixed commit and builds it with the Visual Studio in use. `-DWXL_CORE_LUA=OFF` leaves
+it out.
 
 ### Build one
 
@@ -118,6 +124,11 @@ cmake --build build-x86
 ctest --test-dir build-x86/win-x86 --output-on-failure
 ```
 
+`wxl.lua` cannot build LuaJIT there (it uses LuaJIT's `msvcbuild.bat`): give it a static LuaJIT
+built for the architecture, `-DWXL_LUAJIT_LIBRARY=<dir>/lua51.lib -DWXL_LUAJIT_INCLUDE_DIR=<dir>`
+for one architecture, or `WXL_LUAJIT_LIBRARY_X86`, `WXL_LUAJIT_INCLUDE_DIR_X86` and their `_X64`
+twins for both. The SDK's README, "Run the tests from Linux", builds one.
+
 The harness lives in the architecture's own tree, `win-x86` or `win-x64` under the driver's. The
 wrapper runs its arguments under Wine; 32-bit Wine is needed for x86:
 
@@ -142,7 +153,8 @@ The SDK's suites run the same way; its README says how to give them LuaJIT.
    It writes `Wow.exe.orig` beside it and is idempotent: run it again and it says so, byte for
    byte. Pass a second path to write elsewhere and leave the input alone.
 4. Copy the mods you want into `Mods/`, each as its own folder with a `mod.json` and
-   `bin/x86/<name>.dll`.
+   `bin/x86/<name>.dll`, and `build/dist/Mods/wxl.lua/` with them for Lua mods, which are folders
+   with an `init.lua`.
 5. Launch. The log is `Logs/WarcraftXL.log`, beside the executable.
 
 A client already patched by an earlier WarcraftXL only needs the trampoline added; the patcher
