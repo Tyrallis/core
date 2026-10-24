@@ -4,16 +4,23 @@
 // The Chat domain: seams on ChatFrame.cpp and ChatFrame_Scripts.cpp -- what the server says
 // to the chat, and what the local player says through the interface.
 //
-// Every row is cdecl: a static member of CGChat with external linkage, a handler reached only
-// through the handler table, and the two script functions whose address is taken for the
-// script function table. The handlers read the message from its cursor without moving it, and
-// raise nothing for a message cut short.
+// Every row but one is cdecl: the static members of CGChat with external linkage, a handler
+// reached only through the handler table, and the two script functions whose address is taken
+// for the script function table. PENDINGCHAT's destructor is a member: thiscall. The handlers
+// read the message from its cursor without moving it, and raise nothing for a message cut short.
+//
+// A received message raises at the client's own decisions: ChatMessage at RecordChat, the
+// commit of a line; ChatAddonMessage at CHAT_MSG_ADDON, which FrameScript.vSignalEvent sees
+// fired while AddChatMessage adds an addon message.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including chat.def"
 #endif
 #ifndef WXL_SEAM_BEFORE
 #error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including chat.def"
+#endif
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including chat.def"
 #endif
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including chat.def"
@@ -28,18 +35,41 @@
 // is left goes to AddChatMessage, once. Two callers, the handlers of
 // SMSG_MESSAGECHAT and SMSG_GM_MESSAGECHAT, which differ only in is_gm. Before reads what the
 // message carries and keeps it for AddChatMessage; After forgets it. Neither raises: the
-// client's own decision, the call to AddChatMessage, does.
+// client's own decisions further on do.
 WXL_SEAM(Chat, ChatMessageReceived, "CGChat::ChatMessageReceived", int32_t, cdecl, (void* msg, uint8_t is_gm))
 
-// Shows one line in the chat frames: the client's own messages (system notices, loot, money,
-// ...) and the received messages ChatMessageReceived let through, with the chat type the client
-// settled on. Then its own filters: an addon message goes to CHAT_MSG_ADDON, a line whose
-// sender's name is not cached yet is queued and added again once it is (with a copy of the
-// text), the spam filter and the UTF-8 check drop theirs. Before raises ChatMessage when the call is the one ChatMessageReceived makes for
-// the message it read -- the same text, from inside it -- with the type it is handed, and
-// nothing for the client's own lines.
+// Adds one line to the chat: the client's own messages (system notices, loot, money, ...) and
+// the received messages ChatMessageReceived let through, with the chat type the client settled
+// on. It looks the names up in the name cache, then decides: a line whose sender's or target's
+// name is not cached yet, or any line while the world is still loading, goes to QueueChatText
+// and is added again from that copy once the name is known (CGChat::NameQueryCallback,
+// CGChat::ProcessPendingChatQueue); an addon message (language 0xFFFFFFFF) goes to the interface
+// as CHAT_MSG_ADDON; the UTF-8 check and the spam filter drop theirs; what is left is committed
+// through RecordChat. Before tells which message a call adds -- the one ChatMessageReceived read
+// (the same text, from inside it), one of those the client queued (the same text, its copy), or
+// none, a line of the client's own -- for the seams below; it raises nothing itself.
 WXL_SEAM_BEFORE(Chat, AddChatMessage, "CGChat::AddChatMessage", void, cdecl, (const char* text, int32_t type, const char* sender_name, uint32_t language, const char* channel_name, const char* target_name, const char* flags, uint64_t sender_guid, uint32_t sender_unk, uint64_t target_guid, int32_t achievement_id, uint8_t is_gm, const void* conversation))
-WXL_SEAM_RAISES(Chat, AddChatMessage, ChatMessage)
+
+// Keeps a line AddChatMessage cannot show yet: a PENDINGCHAT appended to CGChat::s_pendingChat
+// with copies of the strings. One caller, AddChatMessage (0x0050AD82), which pushes seventeen
+// dwords and cleans 0x44. After keeps what the message ChatMessageReceived read carries for the
+// copy, so that the line raises when the client adds it again; nothing for the client's own lines.
+WXL_SEAM_AFTER(Chat, QueueChatText, "CGChat::QueueChatText", void, cdecl, (const char* text, int32_t type, const char* sender_name, const char* target_name, uint32_t language, const char* channel_name, const char* flags, int32_t queued, int32_t unused, uint64_t sender_guid, uint32_t sender_unk, uint64_t target_guid, int32_t achievement_id, uint8_t is_gm, const void* conversation))
+
+// Frees a queued line, once the client added it again or gave up on it (a name query that
+// failed, the chat shut down). Called by every path that frees one: s_pendingChat's DeleteNode
+// and its inlined copies in NameQueryCallback and ProcessPendingChatQueue, and the list's Clear.
+// Before forgets what QueueChatText kept for it.
+WXL_SEAM_BEFORE(Chat, DestroyPendingChat, "PENDINGCHAT::~PENDINGCHAT", void, thiscall, (void* self))
+
+// Records a committed line in the chat history (CGChat::m_chatHistory, what a report of the
+// player quotes) and numbers it: the line as the chat frames get it, its final type, the name it
+// shows, the line id. One caller, AddChatMessage (0x0050A8A5), past every filter and right
+// before SendChatEvent hands the line to the frames as CHAT_MSG_*; ten dwords pushed, cleaned
+// with SendChatEvent's in one `add esp,0x50`. Before raises ChatMessage when the line is that of
+// a message of the server, received now or queued before.
+WXL_SEAM_BEFORE(Chat, RecordChat, "CGChat::RecordChat", void, cdecl, (const char* text, int32_t type, const char* sender_name, uint64_t sender_guid, uint32_t sender_unk, uint32_t zone_channel_id, const char* channel_name, uint32_t line_id, const void* player))
+WXL_SEAM_RAISES(Chat, RecordChat, ChatMessage)
 
 // The script's SendChatMessage(text [, type] [, language] [, target]): checks the player can
 // speak, the arguments, the type's conditions (a target for a whisper, a group for party

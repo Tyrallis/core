@@ -1267,3 +1267,11 @@ type CSpriteClickEvent WoW/Source/Ui/GameUI.h CSpriteClickEvent
 type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
   sizeof                                  -
   m_flags                                 -                                            # binding unit_movement_flags
+
+# =============================================================================================
+# The chat's held lines (binding/chat.def)
+# =============================================================================================
+
+type PENDINGCHAT WoW/Source/Ui/ChatFrame.h PENDINGCHAT
+  sizeof                                  -                                            # QueueChatText allocates 0xD8 (0x00502D0E)
+  m_text                                  -                                            # binding pending_chat_text (0x00502DA9 stores the copy)

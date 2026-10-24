@@ -183,6 +183,22 @@ namespace
         return login ? static_cast<const FakeLogin*>(login)->serverType : -1;
     }
 
+    /// A line the chat holds, as PENDINGCHAT keeps it: the copy of its text.
+    struct FakePendingChat
+    {
+        const char* text = nullptr;
+    };
+
+    /// The tail of the chat's held lines: the one a test just queued.
+    const FakePendingChat* g_pendingLast = nullptr;
+
+    const void* WXL_CALL FakePendingLast() { return g_pendingLast; }
+
+    const char* WXL_CALL FakePendingText(const void* line)
+    {
+        return line ? static_cast<const FakePendingChat*>(line)->text : nullptr;
+    }
+
     wxl_bool WXL_CALL FakeVisibleItemId(const void* object, uint32_t slot, int32_t* out)
     {
         if (slot >= 19) return WXL_FALSE;
@@ -597,6 +613,8 @@ namespace
         init.cvar_flags             = &FakeCVarFlags;
         init.glue_current_screen    = &FakeGlueScreen;
         init.login_server_type      = &FakeLoginServerType;
+        init.chat_pending_last      = &FakePendingLast;
+        init.pending_chat_text      = &FakePendingText;
         return init;
     }
 }
@@ -3047,7 +3065,8 @@ namespace
         watch.strings = { std::string(chat.sender_name.data, chat.sender_name.size),
                           std::string(chat.target_name.data, chat.target_name.size),
                           std::string(chat.channel.data, chat.channel.size),
-                          std::string(chat.text.data, chat.text.size) };
+                          std::string(chat.text.data, chat.text.size),
+                          std::string(chat.shown_text.data, chat.shown_text.size) };
     }
 
     /// What the chat-send handler saw and whether it suppressed the message.
@@ -3071,19 +3090,49 @@ namespace
         if (watch.suppress) *send.suppressed = WXL_TRUE;
     }
 
-    /// What the client does with a message it shows: ChatMessageReceived reads it, hands
-    /// AddChatMessage the text where it lies in the message and the type it settled on, and
-    /// returns. A null `text` is a message the client drops: no AddChatMessage.
+    /// What the client does with a message it reads, up to AddChatMessage handing over the text
+    /// where it lies in the message. A null `text` is a message ChatMessageReceived drops.
+    const char* AddReceived(FakeStore& store, const char* text, int32_t shown_type, uint64_t sender_guid,
+                            uint8_t is_gm, uint32_t language = 0)
+    {
+        if (!text) return nullptr;
+        const uint8_t* at = std::search(store.data, store.data + store.size, text, text + strlen(text));
+        const char*    in = reinterpret_cast<const char*>(at);
+        wxl::seam::Chat::AddChatMessage::Before(in, shown_type, nullptr, language, nullptr, nullptr, "", sender_guid, 0,
+                                                0, 0, is_gm, nullptr);
+        return in;
+    }
+
+    /// The client committing the line AddChatMessage is adding: RecordChat with the line as
+    /// the frames get it.
+    void Commit(const char* shown, int32_t type, uint64_t sender_guid, uint32_t line_id,
+                const char* sender_name = nullptr)
+    {
+        wxl::seam::Chat::RecordChat::Before(shown, type, sender_name, sender_guid, 0, 0, nullptr, line_id, nullptr);
+    }
+
+    /// The client holding the line AddChatMessage is adding: QueueChatText appends `line`.
+    void Hold(FakePendingChat& line, const char* copy, int32_t type, uint64_t sender_guid, uint32_t language = 0)
+    {
+        line.text     = copy;
+        g_pendingLast = &line;
+        wxl::seam::Chat::QueueChatText::After(copy, type, nullptr, nullptr, language, nullptr, "", 0, 0, sender_guid, 0,
+                                              0, 0, 0, nullptr);
+    }
+
+    /// The client adding a held line again from its copy.
+    void AddHeld(const FakePendingChat& line, int32_t type, uint64_t sender_guid, uint32_t language = 0)
+    {
+        wxl::seam::Chat::AddChatMessage::Before(line.text, type, nullptr, language, nullptr, nullptr, "", sender_guid, 0,
+                                                0, 0, 0, nullptr);
+    }
+
+    /// A message the client reads and shows at once: read, added, committed.
     void ReceiveChat(FakeStore& store, uint8_t is_gm, const char* text, int32_t shown_type,
                      uint64_t sender_guid)
     {
         wxl::seam::Chat::ChatMessageReceived::Before(&store, is_gm);
-        if (text)
-        {
-            const uint8_t* at = std::search(store.data, store.data + store.size, text, text + strlen(text));
-            wxl::seam::Chat::AddChatMessage::Before(reinterpret_cast<const char*>(at), shown_type, nullptr, 0,
-                                                    nullptr, nullptr, "", sender_guid, 0, 0, 0, is_gm, nullptr);
-        }
+        if (AddReceived(store, text, shown_type, sender_guid, is_gm)) Commit(text, shown_type, sender_guid, 1);
         wxl::seam::Chat::ChatMessageReceived::After(1, &store, is_gm);
     }
 
@@ -3105,13 +3154,14 @@ namespace
         g_received.clear();
         ReceiveChat(store, 0, "Lok'tar", 1, orc.guid);
         const Received* said = Only(WXL_EV_ChatMessage);
-        Check(said != nullptr, "Chat.AddChatMessage raises ChatMessage once for a say the client shows");
+        Check(said != nullptr, "Chat.RecordChat raises ChatMessage once for a say the client shows");
         if (said)
         {
             const wxl_chat_args args = said->As<wxl_chat_args>();
             Check(args.type == 1 && args.language == 7 && args.sender == orcHandle && args.sender_guid == orc.guid &&
-                      args.tag == 0 && args.gm == WXL_FALSE && watch.strings[3] == "Lok'tar" && watch.strings[0].empty(),
-                  "with the type, the language, the sender, the text and no name");
+                      args.tag == 0 && args.gm == WXL_FALSE && args.line_id == 1 && watch.strings[3] == "Lok'tar" &&
+                      watch.strings[4] == "Lok'tar" && watch.strings[0].empty(),
+                  "with the type, the language, the sender, the text, the line and no name");
         }
         Check(store.read == 0u, "reading the message left the store's cursor where it was");
 
@@ -3172,22 +3222,113 @@ namespace
                   watch.strings[0] == "Thrall" && watch.strings[3] == "psst",
               "a foreign whisper is raised as the whisper the client shows");
 
-        // A message the client drops (an ignored sender): read, never shown, never raised.
+        // A message ChatMessageReceived drops (an ignored sender): read, never added, never raised.
         store = say.Store();
         g_received.clear();
         ReceiveChat(store, 0, nullptr, 0, orc.guid);
         Check(g_received.empty(), "a message the client drops raises nothing");
 
+        // A line AddChatMessage drops (the spam filter, the UTF-8 check): added, never committed.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Check(g_received.empty(), "Chat.AddChatMessage raises nothing itself");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Commit("Lok'tar", 1, orc.guid, 2);
+        Check(g_received.empty(), "a line the client's own filters drop is never raised, not even by a later commit");
+
+        // The line as the frames get it: the name from the cache, the final type, the line id,
+        // the text translated and filtered.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Commit("Kek'ta", 10, orc.guid, 77, "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().type == 10 &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 77 && watch.strings[0] == "Thrall" &&
+                  watch.strings[3] == "Lok'tar" && watch.strings[4] == "Kek'ta",
+              "the committed line carries its final type, its number, the name it shows and the text as shown");
+
         // The client's own lines raise nothing, inside a received message or outside one.
         g_received.clear();
         wxl::seam::Chat::AddChatMessage::Before("You are now AFK.", 0, nullptr, 0, nullptr, nullptr, "", 0, 0, 0, 0,
                                                 0, nullptr);
+        Commit("You are now AFK.", 0, 0, 3);
         store = say.Store();
         wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
         wxl::seam::Chat::AddChatMessage::Before("Lok'tar", 1, nullptr, 0, nullptr, nullptr, "", orc.guid, 0, 0, 0, 0,
                                                 nullptr);
+        Commit("Lok'tar", 1, orc.guid, 4);
         wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
         Check(g_received.empty(), "a line that is not the received message's own text raises nothing");
+
+        // A line the client holds until it knows the name: nothing while it is held, the line
+        // once the client adds its copy again and commits it, with the name it then shows.
+        FakePendingChat held;
+        char            copy[] = "Lok'tar";
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        store = FakeStore{};
+        Check(g_received.empty(), "Chat.QueueChatText: a line the client holds raises nothing yet");
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 5, "Thrall");
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 5 &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().language == 7 && watch.strings[0] == "Thrall" &&
+                  watch.strings[3] == "Lok'tar",
+              "the held line raises when the client adds it again, with what the message carried and the name");
+        g_received.clear();
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 6);
+        Check(g_received.empty(), "and only once");
+
+        // Held, added again and held again (the name still unknown), then shown.
+        FakePendingChat again;
+        char            secondCopy[] = "Lok'tar";
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        AddHeld(held, 1, orc.guid);
+        Hold(again, secondCopy, 1, orc.guid);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        AddHeld(again, 1, orc.guid);
+        Commit(secondCopy, 1, orc.guid, 7);
+        wxl::seam::Chat::DestroyPendingChat::Before(&again);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 7,
+              "a line held twice raises once, when it is shown");
+
+        // Held, then given up on (a name query that failed): freed, never shown, never raised,
+        // even if a later line comes with a copy at the same address.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 8);
+        Check(g_received.empty(), "Chat.DestroyPendingChat: a held line the client frees raises nothing");
+
+        // The client's own line, held: nothing kept, nothing raised.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before(copy, 0, nullptr, 0, nullptr, nullptr, "", orc.guid, 0, 0, 0, 0,
+                                                nullptr);
+        Hold(held, copy, 0, orc.guid);
+        AddHeld(held, 0, orc.guid);
+        Commit(copy, 0, orc.guid, 9);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(g_received.empty(), "a line of the client's own, held and shown, raises nothing");
+        g_pendingLast = nullptr;
         g_host->Events().Unsubscribe(sub);
 
         // The gates: the script's arguments off the Lua stack, suppressed or not.
@@ -3359,6 +3500,111 @@ namespace
         Check(watch.calls == 3, "an index outside the installed table raises nothing");
 
         g_host->Events().Unsubscribe(sub);
+        wxl::seam::FrameScript::Destroy::Before();
+        g_vm.live = false;
+    }
+
+    void WXL_CALL OnChatAddon(void* user, const void* args)
+    {
+        StrWatch&                  watch = *static_cast<StrWatch*>(user);
+        const wxl_chat_addon_args& addon = *static_cast<const wxl_chat_addon_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(addon.prefix.data, addon.prefix.size),
+                          std::string(addon.text.data, addon.text.size),
+                          std::string(addon.channel.data, addon.channel.size),
+                          std::string(addon.sender_name.data, addon.sender_name.size) };
+    }
+
+    /// CHAT_MSG_ADDON fired as AddChatMessage fires it: the prefix, the text, the channel and
+    /// the sender's name.
+    void DeliverAddon(const char* prefix, const char* text, const char* channel, const char* sender)
+    {
+        Fire(1, "%s%s%s%s", prefix, text, channel, sender);
+    }
+
+    void CheckChatAddon()
+    {
+        g_vm.live       = true;
+        g_uiLoggingIn   = 1;
+        g_uiInitialized = 0;
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        static const char* names[] = { "CHAT_MSG_SAY", "CHAT_MSG_ADDON" };
+        wxl::seam::FrameScript::CreateEvents::After(names, 2);
+
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABDull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+        const wxl_handle orcHandle = wxl::core::objects::HandleOf(&orc);
+
+        StrWatch               watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_ChatAddonMessage, &OnChatAddon, &watch, 0);
+
+        // A party addon message: the addon language, the prefix and the text joined by a tab.
+        Body party;
+        party.U8(2).U32(0xFFFFFFFFu).U64(orc.guid).U32(0).U64(0).Sized("MyAddon\tping").U8(0);
+        FakeStore store = party.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Check(g_received.empty(), "an addon message raises nothing before the client delivers it");
+        DeliverAddon("MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        const Received* addon = Only(WXL_EV_ChatAddonMessage);
+        Check(addon != nullptr && Count(WXL_EV_ChatMessage) == 0,
+              "FrameScript.vSignalEvent raises ChatAddonMessage once at CHAT_MSG_ADDON, and no ChatMessage");
+        if (addon)
+        {
+            const wxl_chat_addon_args args = addon->As<wxl_chat_addon_args>();
+            Check(args.type == 2 && args.sender == orcHandle && args.sender_guid == orc.guid && args.gm == WXL_FALSE &&
+                      watch.strings[0] == "MyAddon" && watch.strings[1] == "ping" && watch.strings[2] == "PARTY" &&
+                      watch.strings[3] == "Thrall",
+                  "with the type, the sender and the strings the interface receives");
+        }
+
+        // An addon message the client holds for the sender's name, delivered when it adds the copy.
+        FakePendingChat held;
+        char            copy[] = "MyAddon\tping";
+        store = party.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Hold(held, copy, 2, orc.guid, 0xFFFFFFFFu);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_received.empty(), "a held addon message raises nothing yet");
+        AddHeld(held, 2, orc.guid, 0xFFFFFFFFu);
+        DeliverAddon("MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(Only(WXL_EV_ChatAddonMessage) && watch.strings[3] == "Thrall",
+              "and is raised when the client delivers it, with the name it then has");
+
+        // CHAT_MSG_ADDON outside a received addon message, and another event inside one.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before("Own\tline", 2, nullptr, 0xFFFFFFFFu, nullptr, nullptr, "", 0, 0, 0, 0,
+                                                0, nullptr);
+        DeliverAddon("Own", "line", "PARTY", "");
+        store = party.Store();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Fire(0, "%s%s%s%s", "MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Count(WXL_EV_ChatAddonMessage) == 0,
+              "an addon line of the client's own, or another event, raises no ChatAddonMessage");
+
+        // A chat line is not an addon message: CHAT_MSG_ADDON cannot be its outcome.
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("hello").U8(0);
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "hello", 1, orc.guid, 0, 7);
+        DeliverAddon("hello", "", "UNKNOWN", "");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Count(WXL_EV_ChatAddonMessage) == 0, "a message in a spoken language raises no ChatAddonMessage");
+
+        g_pendingLast = nullptr;
+        g_host->Events().Unsubscribe(sub);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
         wxl::seam::FrameScript::Destroy::Before();
         g_vm.live = false;
     }
@@ -3832,6 +4078,114 @@ namespace
         *destroy->original = nullptr;
         wxl::core::stages::Restart();
     }
+
+    // --- The chat's commit points, through the detours the attachment generates --------------
+
+    /// What a stand-in for a client function was handed, to show a detour passed it on intact.
+    struct OriginalSaw
+    {
+        const void* self   = nullptr;
+        const char* text   = nullptr;
+        uint64_t    guid   = 0;
+        uint32_t    lineId = 0;
+        int32_t     calls  = 0;
+    };
+
+    OriginalSaw g_originalSaw;
+
+    /// PENDINGCHAT's destructor: a member with nothing on the stack.
+    struct FakeLineNode
+    {
+        void __thiscall Destroy() { g_originalSaw.self = this, ++g_originalSaw.calls; }
+    };
+
+    void __cdecl FakeRecordChat(const char* text, int32_t, const char*, uint64_t sender_guid, uint32_t, uint32_t,
+                                const char*, uint32_t line_id, const void*)
+    {
+        g_originalSaw.text = text, g_originalSaw.guid = sender_guid, g_originalSaw.lineId = line_id;
+        ++g_originalSaw.calls;
+    }
+
+    void __cdecl FakeQueueChatText(const char* text, int32_t, const char*, const char*, uint32_t, const char*,
+                                   const char*, int32_t, int32_t, uint64_t sender_guid, uint32_t, uint64_t, int32_t,
+                                   uint8_t, const void* conversation)
+    {
+        g_originalSaw.text = text, g_originalSaw.guid = sender_guid, g_originalSaw.self = conversation;
+        ++g_originalSaw.calls;
+    }
+
+    /// The x86 detours of the three new chat rows, called the way AddChatMessage and the list's
+    /// DeleteNode call the functions: the guids split over two stack dwords, `this` in ECX.
+    void CheckChatDetours()
+    {
+        namespace Chat = wxl::seam::Chat;
+        using wxl::core::seams::DetourOf;
+        using Record = DetourOf<Chat::RecordChat::Convention, Chat::RecordChat::Signature>::Link<
+            &Chat::RecordChat::Before, nullptr>;
+        using Queue = DetourOf<Chat::QueueChatText::Convention, Chat::QueueChatText::Signature>::Link<
+            nullptr, &Chat::QueueChatText::After>;
+        using DestroySeam = DetourOf<Chat::DestroyPendingChat::Convention, Chat::DestroyPendingChat::Signature>;
+        using Destroy     = DestroySeam::Link<&Chat::DestroyPendingChat::Before, nullptr>;
+
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABEull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("Zug zug").U8(0);
+        FakeStore store = say.Store();
+        g_received.clear();
+        g_originalSaw = OriginalSaw{};
+        Record::original = Opaque(&FakeRecordChat);
+        Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Zug zug", 1, orc.guid, 0);
+        Opaque(reinterpret_cast<void(__cdecl*)(const char*, int32_t, const char*, uint64_t, uint32_t, uint32_t,
+                                               const char*, uint32_t, const void*)>(&Record::Detour))(
+            "Zug zug", 1, "Thrall", orc.guid, 0, 0, nullptr, 31u, nullptr);
+        Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.guid == orc.guid && g_originalSaw.lineId == 31u,
+              "Chat.RecordChat's detour hands the original every argument, the guid's two halves in place");
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 31u &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().sender_guid == orc.guid,
+              "and its Before raises ChatMessage with them");
+
+        FakePendingChat line;
+        char            copy[] = "Zug zug";
+        line.text     = copy;
+        g_pendingLast = &line;
+        g_originalSaw = OriginalSaw{};
+        Queue::original = Opaque(&FakeQueueChatText);
+        store = say.Store();
+        g_received.clear();
+        Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Zug zug", 1, orc.guid, 0);
+        Opaque(reinterpret_cast<void(__cdecl*)(const char*, int32_t, const char*, const char*, uint32_t, const char*,
+                                               const char*, int32_t, int32_t, uint64_t, uint32_t, uint64_t, int32_t,
+                                               uint8_t, const void*)>(&Queue::Detour))(
+            copy, 1, nullptr, nullptr, 7, nullptr, "", 0, 0, orc.guid, 0, 0, 0, 0, &line);
+        Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.text == copy && g_originalSaw.guid == orc.guid &&
+                  g_originalSaw.self == &line,
+              "Chat.QueueChatText's detour hands the original all seventeen dwords");
+
+        auto member         = &FakeLineNode::Destroy;
+        g_originalSaw       = OriginalSaw{};
+        Destroy::original   = Opaque(reinterpret_cast<DestroySeam::Fn>(*reinterpret_cast<void**>(&member)));
+        Opaque(reinterpret_cast<void(__thiscall*)(const FakePendingChat*)>(&Destroy::Detour))(&line);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.self == &line,
+              "Chat.DestroyPendingChat's detour runs the destructor with `this` in ECX");
+        g_received.clear();
+        AddHeld(line, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 32u);
+        Check(g_received.empty(), "and its Before forgot the held line, which the client then frees");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
+        g_pendingLast     = nullptr;
+        Record::original  = nullptr;
+        Queue::original   = nullptr;
+        Destroy::original = nullptr;
+    }
 #endif
 }
 
@@ -3932,6 +4286,7 @@ int main(int argc, char** argv)
     CheckSpellCancel();
     CheckCombat();
     CheckUiEvent();
+    CheckChatAddon();
     CheckScriptError();
     CheckWorldZoneMouseoverClick();
     CheckConsoleVar();
@@ -3944,6 +4299,7 @@ int main(int argc, char** argv)
     CheckOneSidedShim();
     CheckThiscallGate();
     CheckRegparmThunks();
+    CheckChatDetours();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

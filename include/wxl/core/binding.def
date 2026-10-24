@@ -84,6 +84,7 @@
 #include "wxl/core/binding/spell.def"
 #include "wxl/core/binding/glue.def"
 #include "wxl/core/binding/consolevar.def"
+#include "wxl/core/binding/chat.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

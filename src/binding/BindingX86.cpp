@@ -261,6 +261,23 @@ namespace wxl::core::binding
         return reinterpret_cast<ServerTypeFn>(const_cast<void*>(vtable[50]))(login, nullptr);
     }
 
+    // --- chat.def: the lines the chat holds -------------------------------------------------
+
+    const void* chat_pending_last(void)
+    {
+        // TSList::Tail as stpl.h writes it: the terminator's m_prevLink, that link's m_prevLink,
+        // and its m_next unless the low bit marks the terminator. The list is the link offset
+        // (+0), then the terminator: m_prevLink (+4), m_next (+8). QueueChatText reads the same
+        // m_prevLink to append (0x00502D68 `mov ecx,[0x00AC7D40]`).
+        if (!IsClient()) return nullptr;
+        const void* list       = reinterpret_cast<const void*>(WXL_STATIC("CGChat::s_pendingChat"));
+        const void* last       = Read<const void*>(list, 4);
+        const void* beforeLast = last ? Read<const void*>(last, 0) : nullptr;
+        if (!beforeLast) return nullptr;
+        const std::uintptr_t next = Read<std::uintptr_t>(beforeLast, 4);
+        return (next & 1u) ? nullptr : reinterpret_cast<const void*>(next);
+    }
+
     // --- script.def: the client's Lua, called as the C functions they are ---------------------
 
     void* script_state(void)

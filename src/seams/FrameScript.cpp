@@ -9,6 +9,7 @@
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
+#include "seams/Chat.hpp"
 #include "services/ScriptService.hpp"
 
 #include "wxl/events.h"
@@ -153,6 +154,11 @@ namespace wxl::seam::FrameScript::vSignalEvent
 {
     void WXL_CALL Before(uint32_t index, const char* format, void* args)
     {
+        // CHAT_MSG_ADDON is where the client delivers an addon message of the server.
+        wxl_chat_addon_args addon{};
+        if (wxl::core::seams::chat::AddonDelivered(index, format, args, addon))
+            if (wxl::host::ModHost* host = wxl::core::Host()) host->Raise(WXL_EV_ChatAddonMessage, &addon);
+
         // The client fires events all the time; the arguments are rendered only for a mod
         // that listens, and the name comes from the table the service was handed, so an
         // index outside it is an event nothing can be told about.

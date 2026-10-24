@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.6-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.7-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -280,7 +280,7 @@ source. Everything else observes.
 | `Spell.SpellFailed` | `Spell_C_SpellFailed(PendingSpellCast* cast, const SpellRec* spell, int32_t reason, int32_t misc1, int32_t misc2, bool reset_cooldown)` | `SpellCastFailed` before: the local player's cast refused by the server or by the client's own checks |
 | `Spell.CastSpell` (gated) | `Spell_C_CastSpell(CGUnit_C* caster, int32_t spell_id, const CGItem_C* item, uint64_t target, PendingSpellCast* cast, bool confirmed)` | `SpellCastRequest` at the gate; refusing it answers false and nothing is sent |
 | `Item.UseItem` (gated) | `CGItem_C::UseItem(const uint64_t* target, int32_t confirmed)` | `ItemUseRequest` at the gate; refusing it answers 0 and the item's spell is never asked for |
-| `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%` |
+| `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%`; `ChatAddonMessage` before `CHAT_MSG_ADDON` fired for an addon message of the server |
 | `FrameScript.HandleError` | `FrameScript_HandleError(lua_State* state)`, the error handler of every protected call | `ScriptError` before, with the error value as the VM left it |
 | `Spell.Packet_MSG_CHANNEL_START` | `Packet_MSG_CHANNEL_START(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelStart` before, for a channel of some length |
 | `Spell.Packet_MSG_CHANNEL_UPDATE` | `Packet_MSG_CHANNEL_UPDATE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelUpdate` before, or `SpellChannelStop` when no time is left, with the channel's spell as the client holds it on the unit |
@@ -309,7 +309,10 @@ source. Everything else observes.
 | `RealmConnection.RequestCharacterLogin` | `RealmConnection::RequestCharacterLogin(uint64_t guid, int32_t a2)`, the one request to enter the world | `GlueEnterWorld` before |
 | `Login.RealmListResult` | `Login::RealmListResult(CDataStore* msg)`, the realm list as the Grunt logon link validated it or as the Battle.net login built it, read in the layout the login's server type names; on the logon connection's thread | `GlueRealmList` before, then `GlueRealm` per entry |
 | `Chat.ChatMessageReceived` | `CGChat::ChatMessageReceived(CDataStore* msg, bool is_gm)`, where `SMSG_MESSAGECHAT` and `SMSG_GM_MESSAGECHAT` both end, and where the client drops what it will not show | nothing itself: Before reads the message, After forgets it |
-| `Chat.AddChatMessage` | `CGChat::AddChatMessage(const char* text, int32_t type, ...)`, every line the chat frames show | `ChatMessage` before, for the line `ChatMessageReceived` lets through, with the type the client shows it under |
+| `Chat.AddChatMessage` | `CGChat::AddChatMessage(const char* text, int32_t type, ...)`, every line added to the chat | nothing itself: Before tells which received message the call adds, the one `ChatMessageReceived` read or one the client held, by the text it is handed |
+| `Chat.QueueChatText` | `CGChat::QueueChatText(...)`, where the client holds a line until it knows a name or the world has loaded | nothing itself: After keeps the message for the held copy |
+| `Chat.DestroyPendingChat` | `PENDINGCHAT::~PENDINGCHAT()`, a held line freed, added again or given up on | nothing itself: Before forgets what was kept for it |
+| `Chat.RecordChat` | `CGChat::RecordChat(const char* text, int32_t type, ...)`, the commit of a line past every filter, right before the chat frames get it | `ChatMessage` before, for a line of a received message: its final type, the name it shows, its line id, its text as shown |
 | `Chat.Script_SendChatMessage`, `Chat.Script_SendAddonMessage` (gated) | `Script_SendChatMessage(lua_State*)`, `Script_SendAddonMessage(lua_State*)`, the script functions every message from the interface goes through | `ChatSend` at the gate, with the script's arguments; suppressing it answers no result and nothing is sent |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
