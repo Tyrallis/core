@@ -20,7 +20,7 @@ from pathlib import Path
 SEAM_ROW = re.compile(r"\bWXL_SEAM(_GATE|_BEFORE|_AFTER)?\s*\(", re.MULTILINE)
 RAISES_ROW = re.compile(r"\bWXL_SEAM_RAISES\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)")
 EVENT_ROW = re.compile(r"\bWXL_EVENT\s*\(\s*\w+\s*,\s*(\w+)\s*,")
-RAISE_CALL = re.compile(r"\bRaise\s*\(\s*WXL_EV_(\w+)")
+RAISE_CALL = re.compile(r"\bRaise(?:To)?\s*\(\s*WXL_EV_(\w+)")
 INCLUDE_DEF = re.compile(r'^\s*#\s*include\s+"wxl/seams/([A-Za-z0-9_]+\.def)"', re.MULTILINE)
 
 

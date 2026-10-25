@@ -606,6 +606,39 @@ namespace
         return WXL_TRUE;
     }
 
+    /// Takes a handler back as the client does: the first one set with that function and param.
+    wxl_bool Unset(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        for (auto it = g_mirrors.begin(); it != g_mirrors.end(); ++it)
+        {
+            if (it->guid != guid || it->type != type || it->offset != offset || it->handler != handler ||
+                it->param != param)
+                continue;
+            g_mirrors.erase(it);
+            return WXL_TRUE;
+        }
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeUnwatchType(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        return Unset(0, type, offset, handler, param);
+    }
+
+    wxl_bool WXL_CALL FakeUnwatchOne(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                     void* param)
+    {
+        return Unset(guid, type, offset, handler, param);
+    }
+
+    /// The changes a mod other than the harness received, by the handler it subscribed.
+    std::vector<wxl_object_field_args> g_modChanges;
+
+    void WXL_CALL OnModFieldChanged(void*, const void* args)
+    {
+        g_modChanges.push_back(*static_cast<const wxl_object_field_args*>(args));
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -687,6 +720,8 @@ namespace
         init.object_descriptor      = &FakeDescriptor;
         init.object_watch_type      = &FakeWatchType;
         init.object_watch_one       = &FakeWatchOne;
+        init.object_unwatch_type    = &FakeUnwatchType;
+        init.object_unwatch_one     = &FakeUnwatchOne;
         return init;
     }
 }
@@ -1189,6 +1224,74 @@ namespace
         wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9004u);
         Check(g_mirrors.size() == 3 && g_mirrors[2].guid == me.guid,
               "and the active player's local ones when the client builds it again");
+
+        // A watch belongs to the mod that asked for it, and only that mod receives its changes.
+        // Mod 7 subscribes like any mod; the harness, which is nobody's code, watched the rest.
+        constexpr wxl::host::ModHost::ModToken kMod = 7;
+        const wxl_subscription modSub =
+            g_host->Events().Subscribe(WXL_EV_ObjectFieldChanged, &OnModFieldChanged, nullptr, 0, kMod);
+        const auto asMod = [&](auto call) {
+            const wxl::host::ModHost::ModToken previous = g_host->SwapCurrentMod(kMod);
+            const wxl_result                   result   = call();
+            g_host->SwapCurrentMod(previous);
+            return result;
+        };
+        const size_t before = g_mirrors.size();
+        Check(asMod([&] { return api->watch_field(WXL_OBJECT_UNIT, 0x20, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "a mod's watch of UNIT_FIELD_MAXHEALTH sets one handler on the client");
+        const FakeMirror maxHealth = g_mirrors.back();
+        const uint32_t   wasMax    = 90;
+        wolf.block[0x20]           = 120;
+        g_received.clear();
+        g_modChanges.clear();
+        maxHealth.handler(wolf.guid, maxHealth.offset, maxHealth.size, &wasMax, maxHealth.param);
+        Check(g_modChanges.size() == 1 && g_modChanges[0].field == 0x20 && g_modChanges[0].new_value == 120 &&
+                  Count(WXL_EV_ObjectFieldChanged) == 0,
+              "its change reaches that mod's handler and no one else's");
+        const FakeMirror healthNow = g_mirrors[0];
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.empty() && Count(WXL_EV_ObjectFieldChanged) == 1,
+              "and a change the mod did not watch reaches only who watched it");
+
+        Check(asMod([&] { return api->watch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "a second mod's watch of a watched field sets no second handler");
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.size() == 1 && Count(WXL_EV_ObjectFieldChanged) == 1, "and both receive it");
+        Check(asMod([&] { return api->unwatch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "giving one watch back keeps the handler the other still needs");
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.empty() && Count(WXL_EV_ObjectFieldChanged) == 1, "and the other goes on receiving");
+        Check(asMod([&] { return api->unwatch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK,
+              "giving back what is not watched is no mistake");
+        Check(api->unwatch_field(WXL_OBJECT_UNIT, 0x19, 2) == WXL_OK &&
+                  api->unwatch_field(WXL_OBJECT_UNIT, 0x95, 1) == WXL_E_INVALID,
+              "unwatch_field checks its range as watch_field does");
+
+        Check(wxl::core::objects::Service().WatchCount(kMod) == 1, "the mod holds one watch");
+        wxl::core::objects::Service().DropWatches(kMod);
+        Check(wxl::core::objects::Service().WatchCount(kMod) == 0 && g_mirrors.size() == before,
+              "a mod that goes gives back every watch, and the handler no one needs leaves the client");
+        g_modChanges.clear();
+        maxHealth.handler(wolf.guid, maxHealth.offset, maxHealth.size, &wasMax, maxHealth.param);
+        Check(g_modChanges.empty(), "a report still in flight for it raises nothing");
+
+        Check(api->unwatch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == before - 1,
+              "the last watch of OBJECT_FIELD_ENTRY takes its handler off the kind");
+        Check(api->unwatch_field(WXL_OBJECT_PLAYER, 0x27A, 1) == WXL_OK && g_mirrors.size() == before - 2 &&
+                  std::none_of(g_mirrors.begin(), g_mirrors.end(), [&](const FakeMirror& m) { return m.guid == me.guid; }),
+              "and the last watch of PLAYER_XP its handler off the active player");
+        Check(api->watch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == before - 1,
+              "watching again sets it again");
+        g_host->Events().Unsubscribe(modSub);
 
         wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
         wxl::seam::ObjectMgr::ObjDelete::Before(&troll);
@@ -2126,6 +2229,36 @@ namespace
         Check(data.serve_table(Str("Only.dbc"), Str("Interface\\Only.txt")) == WXL_OK,
               "a table served from a folder's file is accepted");
         data.restore_table(Str("Only.dbc"));
+
+        // A folder is the mod's that added it: removed by it, or when it goes.
+        constexpr wxl::host::ModHost::ModToken kMod = 9;
+        const auto asMod = [&](auto call) {
+            const wxl::host::ModHost::ModToken previous = g_host->SwapCurrentMod(kMod);
+            const wxl_result                   result   = call();
+            g_host->SwapCurrentMod(previous);
+            return result;
+        };
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_OK &&
+                  open("Interface\\Only.txt", flags) == "Interface\\Only.txt" && flags == 0,
+              "a folder removed serves nothing from then on");
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_E_NOT_FOUND &&
+                  api.remove_search_path(Str("")) == WXL_E_INVALID,
+              "removing it again finds nothing; no name is invalid");
+        Check(asMod([&] { return api.add_search_path(Str(low.c_str()), 0); }) == WXL_OK &&
+                  open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+              "a mod adds the folder again");
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_E_NOT_FOUND &&
+                  open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+              "and no other mod's code removes it for that mod");
+        Check(asMod([&] { return api.remove_search_path(Str((low + "\\").c_str())); }) == WXL_OK,
+              "its own code does, by another spelling of the same folder");
+        asMod([&] { return api.add_search_path(Str(low.c_str()), 0); });
+        const int rescans = g_rescans;
+        storage::RemoveSearchPathsOf(kMod);
+        Check(open("Interface\\Only.txt", flags) == "Interface\\Only.txt" && g_rescans == rescans,
+              "a mod that goes takes its folders with it, with no scan of the client's files");
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp",
+              "and leaves the other folders");
 
         storage::ForgetSearchPaths();
         Check(open("Interface\\Icons\\Mine.blp", flags) == "Interface\\Icons\\Mine.blp",

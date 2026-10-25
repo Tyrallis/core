@@ -270,6 +270,33 @@ namespace wxl::core::binding
         return WXL_TRUE;
     }
 
+    wxl_bool object_unwatch_type(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        // ClntObjMgrUnsetTypeMirrorHandler(OBJECT_TYPE_ID, fieldOffset, MIRRORHANDLERFUNC, param),
+        // cdecl: it reads [ebp+8]..[ebp+0x14] and returns with a bare `ret` (0x004D5C70);
+        // CGUnit_C::UnregisterMirrorHandlers pushes four dwords, calls, and `add esp, 0x10`
+        // (0x00741FF6-0x00742008).
+        using UnsetTypeFn = void(__cdecl*)(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param);
+        if (!IsClient() || !OnMainThread() || !handler) return WXL_FALSE;
+        reinterpret_cast<UnsetTypeFn>(WXL_SITE("ClntObjMgrUnsetTypeMirrorHandler", 0))(type, offset, handler, param);
+        return WXL_TRUE;
+    }
+
+    wxl_bool object_unwatch_one(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                void* param)
+    {
+        // ClntObjMgrUnsetObjMirrorHandler(WOWGUID, OBJECT_TYPE_ID, fieldOffset, MIRRORHANDLERFUNC,
+        // param), cdecl: the guid as two dwords at [ebp+8] and [ebp+0xC], the rest to [ebp+0x1C],
+        // a bare `ret` (0x004D5B9B). It does nothing for a guid the manager does not hold, which is
+        // asked first.
+        using UnsetObjFn = void(__cdecl*)(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                          void* param);
+        if (!handler || !object_by_guid(guid)) return WXL_FALSE;
+        reinterpret_cast<UnsetObjFn>(WXL_SITE("ClntObjMgrUnsetObjMirrorHandler", 0))(guid, type, offset, handler,
+                                                                                      param);
+        return WXL_TRUE;
+    }
+
     uint64_t ui_target_guid(void)
     {
         return IsClient() ? *reinterpret_cast<const uint64_t*>(WXL_STATIC("CGGameUI::m_lockedTarget")) : 0;

@@ -14,6 +14,7 @@
 #include "wxl/host/mod_host.hpp"
 #include "wxl/objects/fields.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -21,11 +22,12 @@ namespace
 {
     // --- the watched fields ------------------------------------------------------------------
     //
-    // What wxl.object's watch_field asked for, element by element, for as long as the runtime
-    // runs. The client drops the handlers set on a kind's fields as it leaves the world
-    // (DestroyShared) and the ones on the active player when that object goes, so they are set
-    // again: on the kinds when the next world's InitializeShared has run, on the active player
-    // when the client builds it or brings it back. Main thread only, like the object manager.
+    // The elements some mod's watch covers, as wxl.object's service asked for them, until the
+    // last watch of one is given back. The client drops the handlers set on a kind's fields as
+    // it leaves the world (DestroyShared) and the ones on the active player when that object
+    // goes, so they are set again: on the kinds when the next world's InitializeShared has run,
+    // on the active player when the client builds it or brings it back. Main thread only, like
+    // the object manager.
 
     struct Element
     {
@@ -40,7 +42,13 @@ namespace
     const void*          g_localObject  = nullptr; ///< the active player the local ones are on
     bool                 g_anyLocal     = false;
 
-    /// The client's report of a change: the event, when a watch asked for it on that object.
+    /// Whether a mod receives a change: its own watch covers the element on that object.
+    bool WatchesIt(void* user, uint32_t mod)
+    {
+        return wxl::core::objects::Service().Delivers(mod, *static_cast<const wxl_object_field_args*>(user));
+    }
+
+    /// The client's report of a change: the event, to the mods whose watch covers it.
     int32_t WXL_CALL OnFieldChanged(uint64_t guid, uint32_t offset, uint32_t size, const void* old_value,
                                     void* param)
     {
@@ -51,7 +59,7 @@ namespace
         wxl_object_field_args args{};
         if (wxl::core::objects::Service().FieldChange(guid, kind, owner->first + offset / 4u, size / 4u,
                                                       old_value, args))
-            host->Raise(WXL_EV_ObjectFieldChanged, &args);
+            host->RaiseTo(WXL_EV_ObjectFieldChanged, &args, &WatchesIt, &args);
         return 0;
     }
 
@@ -149,6 +157,33 @@ namespace wxl::core::objects
         g_anyLocal = true;
         if (g_localObject) SetOnPlayer(element, g_localObject);
         else LocalPlayerSeen(binding::local_player_object());
+        return true;
+    }
+
+    bool UnwatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local)
+    {
+        const auto known = std::find_if(g_elements.begin(), g_elements.end(), [&](const Element& e) {
+            return e.kind == kind && e.first == first && e.dwords == dwords && e.local == local;
+        });
+        if (known == g_elements.end()) return false;
+        const Element element = *known;
+        g_elements.erase(known);
+        g_anyLocal = std::any_of(g_elements.begin(), g_elements.end(), [](const Element& e) { return e.local; });
+
+        // Out of the world the client holds none of them: DestroyShared dropped the kinds', the
+        // active player took its own with it. In it, the client unlinks the handler, or marks
+        // it to go after the call when it is the one reporting right now.
+        if (!local)
+        {
+            if (g_sharedUp)
+                binding::object_unwatch_type(static_cast<uint32_t>(kind), OffsetOf(element), &OnFieldChanged,
+                                             ParamOf(element));
+        }
+        else if (g_localObject)
+        {
+            binding::object_unwatch_one(binding::object_guid(g_localObject), static_cast<uint32_t>(kind),
+                                        OffsetOf(element), &OnFieldChanged, ParamOf(element));
+        }
         return true;
     }
 }

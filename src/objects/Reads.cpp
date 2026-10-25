@@ -63,6 +63,11 @@ namespace wxl::core::objects
         return objects::WatchElement(kind, first, dwords, local);
     }
 
+    bool ClientObjects::UnwatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const
+    {
+        return objects::UnwatchElement(kind, first, dwords, local);
+    }
+
     void ClientObjects::Report(const char* line) const
     {
         // Each refusal once: a mod that asks the same wrong thing every frame writes one line.

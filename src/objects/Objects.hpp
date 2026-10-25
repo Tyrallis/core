@@ -31,6 +31,7 @@ namespace wxl::core::objects
         void*           FindByGuid(wxl_guid guid) const override;
         uint32_t*       Descriptor(void* object) const override;
         bool WatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const override;
+        bool UnwatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const override;
         void Report(const char* line) const override;
 
 #define WXL_OBJECT_FIELD(kinds, member, Method, type)     \
@@ -69,7 +70,12 @@ namespace wxl::core::objects
      *
      * Set on the kind at once while the client is in a world, and again whenever it enters
      * one; a local element on the active player, whenever the client builds it or brings it
-     * back. The reports become ObjectFieldChanged (seams/ObjectMgr.cpp, which keeps the list).
+     * back. The reports become ObjectFieldChanged (seams/ObjectMgr.cpp, which keeps the list),
+     * raised to the mods whose watch covers them.
      */
     bool WatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local);
+
+    /// Takes the element's handler back from the client and stops setting it again: no mod
+    /// watches it any more.
+    bool UnwatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local);
 }

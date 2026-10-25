@@ -75,6 +75,7 @@ namespace
     {
         std::string directory; ///< absolute, backslashes, no trailing separator
         int32_t     priority;
+        uint32_t    mod;       ///< the host's token for the mod that added it
         bool        outside_warned = false;
     };
 
@@ -264,45 +265,94 @@ namespace
         return WXL_OK;
     }
 
-    /**
-     * @brief A folder joins the search: absolute, or relative to the current directory, which
-     * is the client's folder once the client has set its paths.
-     *
-     * Adding a folder again changes its priority. The client is told to scan its loose files
-     * again at its next open, so a file put in a folder since is found too.
-     */
-    wxl_result WXL_CALL AddSearchPath(wxl_str directory, int32_t priority)
+    /// A folder as the search path keeps it: absolute against the current directory, which is
+    /// the client's folder once the client has set its paths; backslashes, no trailing one.
+    bool Absolute(wxl_str directory, std::string& out)
     {
         std::string asked = Backslashed(Path(directory));
         while (asked.size() > 1 && asked.back() == '\\') asked.pop_back();
-        if (asked.empty()) return WXL_E_INVALID;
+        if (asked.empty()) return false;
 
         char        full[MAX_PATH * 2];
         const DWORD length = ::GetFullPathNameA(asked.c_str(), sizeof full, full, nullptr);
-        if (!length || length >= sizeof full) return WXL_E_INVALID;
-        std::string absolute(full, length);
-        while (absolute.size() > 3 && absolute.back() == '\\') absolute.pop_back();
+        if (!length || length >= sizeof full) return false;
+        out.assign(full, length);
+        while (out.size() > 3 && out.back() == '\\') out.pop_back();
+        return true;
+    }
+
+    /**
+     * @brief A folder joins the search, for the mod that asks.
+     *
+     * Adding a folder again changes its priority; another mod's entry for the same folder is
+     * its own. The client is told to scan its loose files again at its next open, so a file put
+     * in a folder since is found too.
+     */
+    wxl_result WXL_CALL AddSearchPath(wxl_str directory, int32_t priority)
+    {
+        std::string absolute;
+        if (!Absolute(directory, absolute)) return WXL_E_INVALID;
         if (!IsDirectory(absolute))
         {
             WLOG_WARN(kTag, "search path %s: no such folder", absolute.c_str());
             return WXL_E_NOT_FOUND;
         }
 
+        const uint32_t mod = Asking();
         {
             std::lock_guard<std::mutex> lock(g_pathsLock);
             const auto same = std::find_if(g_paths.begin(), g_paths.end(), [&](const SearchFolder& known) {
-                return _stricmp(known.directory.c_str(), absolute.c_str()) == 0;
+                return known.mod == mod && _stricmp(known.directory.c_str(), absolute.c_str()) == 0;
             });
             if (same != g_paths.end()) g_paths.erase(same);
             const auto at = std::find_if(g_paths.begin(), g_paths.end(),
                                          [&](const SearchFolder& known) { return known.priority < priority; });
-            g_paths.insert(at, SearchFolder{absolute, priority});
+            g_paths.insert(at, SearchFolder{absolute, priority, mod});
             g_pathCount.store(static_cast<uint32_t>(g_paths.size()), std::memory_order_release);
         }
         g_rescan.store(true, std::memory_order_release);
         g_generation.fetch_add(1, std::memory_order_relaxed);
         WLOG_INFO(kTag, "folder %s searched at priority %d", absolute.c_str(), priority);
         return WXL_OK;
+    }
+
+    /// Drops the entries a predicate picks and says so; the count of what went.
+    template <class Pick>
+    size_t DropFolders(Pick pick)
+    {
+        std::vector<std::string> gone;
+        {
+            std::lock_guard<std::mutex> lock(g_pathsLock);
+            for (size_t i = g_paths.size(); i-- > 0;)
+            {
+                if (!pick(g_paths[i])) continue;
+                gone.push_back(g_paths[i].directory);
+                g_paths.erase(g_paths.begin() + static_cast<std::ptrdiff_t>(i));
+            }
+            g_pathCount.store(static_cast<uint32_t>(g_paths.size()), std::memory_order_release);
+        }
+        if (gone.empty()) return 0;
+        // Nothing to tell the client: it reaches a folder's files only through the names an open
+        // is rewritten to, and no open is rewritten into a folder that left. Its table of loose
+        // files keeps their names until its next scan, unreachable by the names it asks for.
+        g_generation.fetch_add(1, std::memory_order_relaxed);
+        for (const std::string& directory : gone) WLOG_INFO(kTag, "folder %s no longer searched", directory.c_str());
+        return gone.size();
+    }
+
+    /// Takes the asking mod's entry for a folder back out of the search.
+    wxl_result WXL_CALL RemoveSearchPath(wxl_str directory)
+    {
+        std::string absolute;
+        if (!Absolute(directory, absolute)) return WXL_E_INVALID;
+        const uint32_t mod     = Asking();
+        bool           removed = false;
+        DropFolders([&](const SearchFolder& known) {
+            if (removed || known.mod != mod || _stricmp(known.directory.c_str(), absolute.c_str()) != 0) return false;
+            removed = true;
+            return true;
+        });
+        return removed ? WXL_OK : WXL_E_NOT_FOUND;
     }
 
     // --- find ---------------------------------------------------------------------------------
@@ -442,6 +492,7 @@ namespace
         &AddSearchPath,
         &MountArchive,
         &Find,
+        &RemoveSearchPath,
     };
 }
 
@@ -461,6 +512,11 @@ namespace wxl::core::services
         }
 
         bool Listing() { return t_listing; }
+
+        void RemoveSearchPathsOf(uint32_t mod)
+        {
+            DropFolders([mod](const SearchFolder& known) { return known.mod == mod; });
+        }
 
         void ForgetSearchPaths()
         {

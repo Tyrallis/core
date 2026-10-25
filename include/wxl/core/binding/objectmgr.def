@@ -31,3 +31,14 @@ WXL_BINDING(object_watch_type, wxl_bool, (uint32_t type, uint32_t offset, uint32
 // active player's local fields (scope local in update_fields.def), whose copy a handler set on
 // the kind would not find. False when the client holds no such object. Main thread only.
 WXL_BINDING(object_watch_one, wxl_bool, (uint64_t guid, uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler, void* param), (guid, type, offset, size, handler, param), WXL_FALSE)
+
+// Takes back a handler object_watch_type set on a kind's fields, by the same type, offset,
+// handler and param: ClntObjMgrUnsetTypeMirrorHandler(type, offset, handler, param), which unlinks
+// it, or marks it to go once the call to it returns when the client is calling it. False when
+// there is no client to ask. Main thread only.
+WXL_BINDING(object_unwatch_type, wxl_bool, (uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param), (type, offset, handler, param), WXL_FALSE)
+
+// The same for a handler object_watch_one set on one object: ClntObjMgrUnsetObjMirrorHandler(guid,
+// type, offset, handler, param). False when the client holds no such object, whose handlers went
+// with it. Main thread only.
+WXL_BINDING(object_unwatch_one, wxl_bool, (uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param), (guid, type, offset, handler, param), WXL_FALSE)

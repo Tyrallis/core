@@ -43,6 +43,9 @@ namespace wxl::core::services
         /// are the runtime's own, not the client's.
         bool Listing();
 
+        /// Takes the folders a mod added out of the search: it is disabled or unloaded.
+        void RemoveSearchPathsOf(uint32_t mod);
+
         /// Forgets the search path. Called on the way out, and by the harness.
         void ForgetSearchPaths();
     }
