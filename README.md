@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.9-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.10-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -181,9 +181,9 @@ What a mod can reach **today**, by build:
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
-| `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers | the same |
+| `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers, each watch its mod's and its changes raised to that mod only, the handler taken back with the last watch | the same |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
-| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path, whose folders (inside the client's folder) the client opens as its own loose files; find, across every mounted archive's listfile and those folders | the same |
+| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens as its own loose files, each its mod's and taken out when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |

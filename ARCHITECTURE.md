@@ -107,6 +107,13 @@ python core/tools/fields/generate_update_fields.py --client <fork> --out <sdk>/i
     --binary <stock Wow.exe>     # optional: compare every table with the binary's own
 ```
 
+The code names (`MaxHealth` for `UNIT_FIELD_MAXHEALTH`) are the client's names with the kind's
+prefix dropped and each word capitalised; `core/tools/fields/words.txt` spells the words the
+client runs together, the way the getters name the same values, and the generator fails on a
+line no field uses. A getter of `object_reads.def` and the field it reads agree in type and, where
+an object has both under one name, in what they read: `sdk/tests/getter_fields.def` pairs them,
+`sdk/tests/runtime.cpp` holds the types to each other and `sdk/tests/lua_tests.cpp` the names.
+
 The fork's build runs it with `--check` (`wxl-fields-check`, beside `wxl-seam-check`) and fails
 when the table is not what the fork gives; `client/WarcraftXL/Binding.cpp` also holds each
 kind's block size to the struct the build compiles. `sdk/tests/reflect.cpp` checks the table
@@ -150,6 +157,14 @@ into `Mods/wxl.lua/` (core's `dist/`, the client's `bin/Win/`).
 - **A faulting mod is disabled, not unloaded.** Its handlers are dropped, its later entry points
   skipped, its binary left mapped. A mod that fails where the guard cannot see -- a C++ exception
   reaching a stage of a `WXL_MOD` mod -- disables itself the same way, through `wxl_host.disable`.
+- **What a mod holds goes with it.** Its open files, its search folders, its field watches, its
+  hooks and its patches are given back when it is disabled or unloaded (`OnModDisabled` in
+  `src/runtime/Core.cpp`, the shutdown in `src/seams/Client.cpp`). The host sees every Lua mod as
+  `wxl.lua`, so `sdk/lua/` keeps which Lua mod holds what and gives it back when that mod closes,
+  reloads or is disabled.
+- **An event can concern some mods only.** `ModHost::RaiseTo` raises it to the subscriptions
+  whose owner a predicate accepts: `ObjectFieldChanged` reaches the mods whose watch covers the
+  field (`ObjectService::Delivers`), and `wxl.lua` passes it on to the Lua mods that watch it.
 - **Client and runtime come from one tree.** `WarcraftXLInit` compares the client's binding rows with
   its own and refuses a client built from a different table.
 
