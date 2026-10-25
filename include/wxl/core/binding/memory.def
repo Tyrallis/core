@@ -32,3 +32,10 @@ WXL_BINDING(archive_of, wxl_bool, (void* archive, wxl_core_archive* out), (archi
 // Tells `fn` every client database of wxl/core/client_dbs.def, in that order, loaded or not;
 // answers how many it told.
 WXL_BINDING(client_dbs, uint32_t, (wxl_core_db_fn fn, void* user), (fn, user), 0)
+
+// MSVC takes a file that expands to nothing outside its opening #ifndef X ... #endif for one
+// guarded by X, and skips it when it is included again with X defined: this table is read
+// several times in one translation unit, under shapes that may leave it empty. A directive
+// after the rows keeps it from looking guarded.
+#ifdef WXL_TABLE_END
+#endif
