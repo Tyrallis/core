@@ -159,6 +159,38 @@ reports of mods and a walk of the address space. `MemoryPressure` is looked for 
 `Gx.ScenePresent`, about once a second while a mod holds a threshold. Lua mods report through
 wxl.lua, which names each one's heap and reports at its own snapshot.
 
+### The profiler
+
+WarcraftXL.dll carries the process's one Tracy client (`deps/tracy`, v0.14.1), compiled with
+`WXL_PROFILE` (default on; off removes it, the service and the host's zones). On demand: nothing
+is sent until a viewer connects to port 8086, and it is started by `profile::Start` on a thread
+of its own from `Core::Start`, never at load, since its clock calibration sleeps and its start
+must not run under the loader lock (`WXL_PROFILE=0` in the environment keeps it off). No crash
+handler (the host's guard owns faults), no system tracing, sampling or call stacks.
+`src/profile/Profile.cpp` is the only file that calls Tracy; three things go through it:
+
+- **The host's zones.** `ModHost::SetProfiler` hands the event bus a `wxl::host::Profiler`
+  (`sdk/host/include/wxl/host/profile.hpp`): each dispatch that reaches a handler is a zone named
+  `On<Event>`, each handler a zone inside it named `<mod id>: On<Event>` in a colour per mod.
+  The bus opens them only while its profiling flag is on, which `Gx.ScenePresent` sets at every
+  present from whether a viewer is connected: with nobody watching, a dispatch pays one load.
+  Zones open after the bus's own check that someone listens, so a seam behind `Listening` and an
+  event nobody handles open none. `wxl.lua` adds a zone per Lua mod inside its own handler.
+- **`wxl.profile`** (`sdk/include/wxl/services/profile.h`, `services/profile.def`): a mod's own
+  zones at locations the runtime keeps for the process's life, text, plots, messages and frame
+  sets. A zone is the connection it was opened under, so one left from an earlier viewer is
+  dropped by the profiler's own check.
+- **The client's zones** (x64): `WarcraftXLZoneBegin`/`End`, exported, behind the one-line macro
+  `WXL_CORE_ZONE` of `include/wxl/core/profile.h`, which the fork uses through
+  `client/WarcraftXL/Profile.h` in its main loop's hot spots (world update and render, models,
+  object updates, the interface, script events).
+
+Every present ends a frame (`Gx.ScenePresent`, both architectures, the loading screen included);
+while a viewer watches and accounting runs, it also plots `storm bytes`, `storm blocks` and
+`accounting tables`. `wxl-core-seam-harness --profile-live` waits for a viewer and sends a hundred
+frames of every kind of zone, which checks the profiler end to end on one architecture without a
+client; `--bench` measures a zone with no viewer.
+
 ## Rules that hold everywhere
 
 - **The boundary is C.** No C++ type, vtable or exception crosses between a mod and a runtime. Every
@@ -200,6 +232,7 @@ wxl.lua, which names each one's heap and reports at its own snapshot.
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
 | `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
 | `python core/tools/fields/generate_update_fields.py --check` | the SDK's update-field table is what the fork gives; with `--binary`, what `Wow.exe`'s own tables hold. Runs in the fork's build |
+| `wxl-core-seam-harness --profile-live`, with Tracy's `tracy-capture -a 127.0.0.1` | the profiler's zones, plots, messages and frames reach a viewer, from a harness under Wine |
 | `python core/tools/dbs/generate_client_dbs.py --check` | `include/wxl/core/client_dbs.def` lists every client database the fork declares, with its file and row size |
 
 The `ctest` suites are Windows executables; from Linux they build with clang-cl and run under Wine

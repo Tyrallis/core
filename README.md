@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.11-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.12-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -185,6 +185,7 @@ What a mod can reach **today**, by build:
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
 | `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens as its own loose files, each its mod's and taken out when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
+| `wxl.profile` | yes: zones, plots, messages and frame sets on the Tracy profiler's timeline, beside the runtime's own zones for every event and mod handler (`WXL_PROFILE`) | the same, and zones in the client's main loop |
 | `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
@@ -383,12 +384,14 @@ src/binding/                     the binding realised: memory reads (x86), the c
 src/seams/                       the seam bodies, one file per domain (both); the x86 detours and thunks
 src/objects/                     wxl.object over the binding
 src/services/                    wxl.script, wxl.storage, wxl.data (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
+src/profile/                     the Tracy profiler and wxl.profile (both)
 src/hook/                        the detour engine and the named points        (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 tests/seam_harness.cpp           every seam body against a fake client; --bench times the hot paths
 mods/                            the mods above                                (x86)
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
+deps/tracy/                      Tracy's client 0.14.1, BSD-3-Clause, unmodified
 tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
 tools/fields/                    regenerate the SDK's update-field table from the decompiled client
@@ -412,7 +415,8 @@ tools/fields/                    regenerate the SDK's update-field table from th
 
 MIT. See [LICENSE](LICENSE).
 
-MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file.
+MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file. Tracy's client,
+under `deps/tracy/`, is BSD-3-Clause and keeps its own license file.
 
 <div align="center">
 
