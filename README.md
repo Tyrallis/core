@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.18-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.19-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -295,6 +295,7 @@ source. Everything else observes.
 | `Input.WindowProc` (gated) | `OsWindowProc(void* window, uint32_t message, uintptr_t wparam, intptr_t lparam)` | `Input` at the gate; writing `handled` answers 0 and the client's own procedure never sees the message |
 | `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate, `redirect` holding what a mod's `wxl.storage` redirect answers; a path written into `redirect` is what the client opens instead, then a folder of the search path that wins the name |
 | `Storage.OpenEx` | the same `SFile::OpenEx`, observed: on x86 a second link of the same chain, nearer the function than the gate | `FileOpened` after, at every return, with the name opened, whether a file came back and its size; nothing is read while nobody listens |
+| `Storage.FindFile` (gated) | `System_SFile2::FindFile(name, path, size, flags, type, archive)`, where every name the client opens or looks for is resolved | nothing: a folder of the search path, a provider or served bytes that win the name answer it, and a kind some mod transforms is opened through the runtime's file layer |
 | `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
 | `ConsoleDevice.Initialize` | `ConsoleDeviceInitialize(const char* title, bool, bool)` | nothing, but its return is `WXL_STAGE_GRAPHICS`: the device is made after the first database is read and before the script context exists, which is the order the stages promise |
@@ -349,6 +350,14 @@ source. Everything else observes.
 | `Texture.Create` | `TextureCreate(const char* file_name, CGxTexFlags, CStatus*, uint32_t flags)` (the file-name overload, at 0x004B9760), every texture asked for by name | `TextureLoad` before, cached or not; the x64 client skips the call while nobody listens |
 | `M2Shared.LoadSucceededCallback` | `CM2Shared::LoadSucceededCallback(void* param)`, the end of a model file's read, before `FinishLoading` parses it | `ModelLoad` before, with the path and the bytes; bytes a handler answers are copied into a buffer of the client's allocator and parsed instead |
 | `MapObj.Load` | `CMapObj::Load()`, which walks a map object's root once it is read | `MapObjectLoad` before, with the path and the root's bytes |
+| `MapObj.CreateGroup` | `CMapObjGroup::Create()`, which walks a map object's group once its file is read | `MapObjectGroupLoad` before, with the root's name, the group's number and its bytes |
+| `MapArea.AsyncCallback` | `CMapArea::AsyncCallback(void* param)`, the end of a terrain tile's read, before its chunks are walked | `TerrainTileLoad` before, with the tile's name, its place on the grid and its bytes |
+| `M2Shared.FinishLoadingSkinProfile` | `CM2Shared::FinishLoadingSkinProfile(uint32_t size)`, the end of a skin profile's read, before it is parsed | `SkinProfileLoad` before, with the model's path and the skin's bytes |
+| `Texture.AsyncTextureSuccessCallback` | `AsyncTextureSuccessCallback(CTexture*)`, the end of a texture file's read | nothing itself: notes the texture's name for `BLPFile.Source` |
+| `BLPFile.Open` | `CBLPFile::Open(name, flags)`, a texture file read whole by name | nothing itself: notes the name for `BLPFile.Source` |
+| `BLPFile.Source` | `CBLPFile::Source(const void* data)`, a texture file's bytes taken to decode | `TextureDecode` before, with the name its caller noted and what the BLP2 header says |
+| `Gx.IShaderLoad` | `CGxDevice::IShaderLoad(shaders, target, path, name, permutations)`, a shader program loaded by name | `ShaderLoad` before, with the stage, the folder, the name and the permutations |
+| `Sound.CreateWaveData` | `SE2::CreateWaveData(...)`, the sound data a sound plays from, made from a file | `SoundFileLoad` before, with the file, whether it streams and the channel's priority |
 | `Map.AllocDoodadDef` | `CMap::AllocDoodadDef()` | nothing itself: after, notes the def it handed out, which tells a placement from a def found in the map's hash |
 | `Map.CreateDoodadDef`, `Map.CreateDoodadDefAt`, `Map.CreateDoodadDefInMapObj` | the three `CMap::CreateDoodadDef` overloads: a tile's doodad, one the game places at a position, one of a map object's doodad set | `DoodadSpawn` after, for a def the call allocated, with the model's path and the position |
 | `ObjectMgr.FillInPartialObjectData` | `FillInPartialObjectData(CGObject_C*, WOWGUID, CDataStore*, bool, bool)`, where an update block's fields are written | nothing itself: after, notes a tracked object, once per packet |

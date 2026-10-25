@@ -353,7 +353,8 @@ first lines of the `Errors\` file written during it (the message and the `Curren
 - **A faulting mod is disabled, not unloaded.** Its handlers are dropped, its later entry points
   skipped, its binary left mapped. A mod that fails where the guard cannot see -- a C++ exception
   reaching a stage of a `WXL_MOD` mod -- disables itself the same way, through `wxl_host.disable`.
-- **What a mod holds goes with it.** Its open files, its search folders, its field watches, its
+- **What a mod holds goes with it.** Its open files, its search folders, its asset providers, served
+  names and transforms, its field watches, its
   memory reports and pressure threshold, its hooks and its patches are given back when it is disabled or unloaded (`OnModDisabled` in
   `src/runtime/Core.cpp`, the shutdown in `src/seams/Client.cpp`). The host sees every Lua mod as
   `wxl.lua`, so `sdk/lua/` keeps which Lua mod holds what and gives it back when that mod closes,
@@ -370,6 +371,20 @@ first lines of the `Errors\` file written during it (the message and the `Curren
   a branch there while nobody listens. On x86 the detour still runs; the body returns at once.
 - **Client and runtime come from one tree.** `WarcraftXLInit` compares the client's binding rows with
   its own and refuses a client built from a different table.
+
+## Files a mod serves
+
+The client opens every file through `SFile::OpenEx`, which resolves the name with
+`System_SFile2::FindFile`, then reads a plain file through `Blizzard::File`, whose every call is a
+verb of the client's file stack (`System_File::Stacked::s_manager`, mirrored in
+`include/wxl/core/filestack.hpp`). The `Storage.FindFile` gate answers a name a mod's source wins
+(a provider, served bytes) with a path of the runtime's own, `|wxl|<id>|<name>`, and the runtime
+writes its verbs into the top node of the stack once (`src/services/Assets.cpp`): its streams are
+answered by the runtime, any other goes on to the verb the node held. A kind of file some mod
+transforms is opened the same way, read whole through the client's own resolution (the thread
+marked so that no gate answers twice) and converted before the client reads it. A folder of the
+search path is still a name rewritten for the client's disk lookup. Nothing is done while no
+folder, source or transform is registered: the gate's test is two loads.
 
 ## Checks
 
