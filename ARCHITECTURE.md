@@ -97,6 +97,20 @@ of each table lists its shapes and columns.
    after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
    would be ambiguous.
 
+### A new service member for mods
+
+1. The member at the end of its `wxl_<svc>_api` in `sdk/include/wxl/services/<svc>.h`, and
+   `WXL_ABI_VERSION_FEATURE` raised in `abi.h`.
+2. Its row at the end of `sdk/include/wxl/services/<svc>.def`. The first member a feature appends
+   to a table gets a `WXL_API_SINCE(svc, member, (major, minor, feature))` row right above it: a
+   Lua mod whose manifest asks for an older `abi` is refused that member, naming the version to ask
+   for. A new table states the version it came with in its `WXL_API_SERVICE` row, and the whole
+   module is refused the same way. `sdk/tests/reflect.cpp` fails a row out of place or newer than
+   `abi.h`. A C++ mod is not gated by it: it names a service from its own headers, so its built
+   abi always covers it, and `requires`/`optional` with the service's version decide the rest.
+3. The implementation in core (`src/services/`), and its facade method or Lua shim if the row
+   says `by_hand` or `shim`.
+
 ### The update-field table
 
 `sdk/include/wxl/update_fields.def` is written by `core/tools/fields/generate_update_fields.py`
@@ -162,11 +176,22 @@ wxl.lua, which names each one's heap and reports at its own snapshot.
 ### The profiler
 
 WarcraftXL.dll carries the process's one Tracy client (`deps/tracy`, v0.14.1), compiled with
-`WXL_PROFILE` (default on; off removes it, the service and the host's zones). On demand: nothing
-is sent until a viewer connects to port 8086, and it is started by `profile::Start` on a thread
-of its own from `Core::Start`, never at load, since its clock calibration sleeps and its start
-must not run under the loader lock (`WXL_PROFILE=0` in the environment keeps it off). No crash
-handler (the host's guard owns faults), no system tracing, sampling or call stacks.
+`WXL_PROFILE` (the build's choice, default on; off removes it, the service and the host's zones,
+and the launch header says the `[profile]` section is ignored). Whether it runs is the player's
+choice: `WarcraftXL.ini`'s `[profile]` `enabled` (default 0: no thread, no port), `port` (8086)
+and `listen` (`localhost`, 127.0.0.1 only, or `any`), with `WXL_PROFILE=0|1` in the environment
+winning over `enabled`; `settings::ResolveProfile` turns them into the choice the header reports
+and `profile::Start` takes. Tracy reads its port and its localhost-only switch at run time from
+`TRACY_PORT`, `TRACY_ONLY_LOCALHOST` and `TRACY_ONLY_IPV4` (through `GetEnvironmentVariableA`, at
+`___tracy_startup_profiler` and when it opens its socket), which `profile::Start` sets from the
+choice, so the vendored source is untouched; localhost is IPv4 alone, since an IPv6 loopback
+socket takes no viewer connecting to 127.0.0.1. The address Tracy announces itself to is
+compile-time only (the whole network), so it is built with `TRACY_NO_BROADCAST`: a viewer types the
+address. A port another process holds is warned before Tracy tries it once and goes quiet. On
+demand: nothing is sent until a viewer connects, and it is started on a thread of its own from
+`Core::Start`, never at load, since its clock calibration sleeps and its start must not run under
+the loader lock. No crash handler (the host's guard owns faults), no system tracing, sampling or
+call stacks.
 `src/profile/Profile.cpp` is the only file that calls Tracy; three things go through it:
 
 - **The host's zones.** `ModHost::SetProfiler` hands the event bus a `wxl::host::Profiler`
@@ -187,8 +212,8 @@ handler (the host's guard owns faults), no system tracing, sampling or call stac
 
 Every present ends a frame (`Gx.ScenePresent`, both architectures, the loading screen included);
 while a viewer watches and accounting runs, it also plots `storm bytes`, `storm blocks` and
-`accounting tables`. `wxl-core-seam-harness --profile-live` waits for a viewer and sends a hundred
-frames of every kind of zone, which checks the profiler end to end on one architecture without a
+`accounting tables`. `wxl-core-seam-harness --profile-live` (127.0.0.1) or `--profile-live-any`
+waits for a viewer and sends a hundred frames of every kind of zone, which checks the profiler end to end on one architecture without a
 client; `--bench` measures a zone with no viewer.
 
 ### The log and the crash report
@@ -200,7 +225,9 @@ disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32
 - **Settings.** `WarcraftXL.ini` next to the executable (`src/runtime/Settings.cpp`), section
   `[log]`: `level`, `keep` (earlier launches kept, 30 by default) and `level.<tag>` for one tag's
   own level. `WXL_LOG_LEVEL` wins over the file's `level`. The log's gate is the lowest of all
-  levels, which the host's `log_minimum` takes; the file sink then filters by tag.
+  levels, which the host's `log_minimum` takes; the file sink then filters by tag. Section
+  `[profile]`: `enabled`, `port`, `listen` (above). A key or value that does not read is warned in
+  the header with its line number. `session::CurrentSettings` hands the file to `Core::Start`.
 - **Files.** `log::OpenSession` renames the previous `WarcraftXL.log` after its first line's
   `launch YYYY-MM-DD HH:MM:SS` (or its last write) to `WarcraftXL-<time>.log` and prunes the oldest
   past `keep`; a file held by another process sends the lines to `WarcraftXL-pid<pid>.log`.
@@ -210,7 +237,8 @@ disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32
   executable with its size, PE stamp, large-address-aware flag and, on x86, the FNV-1a of its
   `.text` against the stock 12340's, Windows (`RtlGetVersion`), Wine and its host
   (`wine_get_version`, `wine_get_build_id`, `wine_get_host_version`) and a few of its environment
-  variables, the CPU, the memory and the address space, the command line, the settings and what
+  variables, the CPU, the memory and the address space, the command line, the settings, the
+  profiler (`profiler: off (...)`, or on with its port and `listen`, and what decided it) and what
   happened to the previous log. `session::ReportMods` follows `LoadAll`: every folder, loaded
   (version, manifest abi, built abi, binary) or not (why).
 - **End.** `session end: <how>, after <uptime>`, once: at `Client.Destroy` after the unload, at
