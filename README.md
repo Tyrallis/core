@@ -183,7 +183,7 @@ What a mod can reach **today**, by build:
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
 | `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers | the same |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
-| `wxl.storage` | yes: exists, size, read, open/read_at/close, mount_archive | the same |
+| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path, whose folders (inside the client's folder) the client opens as its own loose files; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
