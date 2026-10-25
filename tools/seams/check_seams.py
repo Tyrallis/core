@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 WarcraftXL
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 WarcraftXL
 #
 # Checks that every seam declared in core/include/wxl/seams/*.def is wired into the client fork.
 """Verify the x64 realisation of the seam table against the client fork's sources.
@@ -20,7 +20,7 @@ from pathlib import Path
 SEAM_ROW = re.compile(r"\bWXL_SEAM(_GATE|_BEFORE|_AFTER)?\s*\(", re.MULTILINE)
 RAISES_ROW = re.compile(r"\bWXL_SEAM_RAISES\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)")
 EVENT_ROW = re.compile(r"\bWXL_EVENT\s*\(\s*\w+\s*,\s*(\w+)\s*,")
-RAISE_CALL = re.compile(r"\bRaise\s*\(\s*WXL_EV_(\w+)")
+RAISE_CALL = re.compile(r"\bRaise(?:To)?\s*\(\s*WXL_EV_(\w+)")
 INCLUDE_DEF = re.compile(r'^\s*#\s*include\s+"wxl/seams/([A-Za-z0-9_]+\.def)"', re.MULTILINE)
 
 

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The ObjectMgr domain: seams on the object manager, where objects enter and leave the client.
 
@@ -14,14 +14,32 @@
 // and filled: a placement-new of CGItem_C, CGUnit_C, CGPlayer_C, ... from the update's
 // CClientObjCreate, then AddWorldObject for the kinds that have a place in the world. A static
 // of ObjectMgrClient.cpp with one caller, CreateObject, which links the object into the visible
-// list right after it returns; an object the client already held comes back through Reenable
-// and never reaches here. After tracks the object and raises ObjectCreate with its handle.
+// list right after it returns; an object the client already held comes back through
+// GetUpdateObject and never reaches here. After tracks the object and raises ObjectCreate with its handle.
 //
 // regparm: the object in ESI, the create block in EAX, the time in ECX, nothing pushed. Evidence:
 // 0x004D3FF0 (mov edx,[esi+0x14], no prologue) and the caller at 0x004D6D5A-63 (mov ecx,[ebp+8];
 // lea eax,[ebp-0x2EC] before the call).
 WXL_SEAM_AFTER(ObjectMgr, InitObject, "InitObject", void, regparm, (void* object, const void* create, uint32_t time))
 WXL_SEAM_RAISES(ObjectMgr, InitObject, ObjectCreate)
+
+// Finds the object an update names: in the manager's guid table, or else in the lazy-cleanup set
+// ObjDelete put it in, from which it is taken back -- into the guid table, and onto the
+// reenabled list with `*reenabled` set when it is on neither that list nor the visible one. The
+// caller then fills it from the update and calls Reenable. A static of ObjectMgrClient.cpp with
+// five callers: CreateObject (an update creating an object the client still holds),
+// PostMovementUpdate, PartialUpdateFromFullUpdate, ClntObjMgrReenableObject and
+// UpdateInRangeObjects. A revived object never passes InitObject, so After is where it is seen
+// again: an object it returns that the runtime does not track is tracked with a new handle -- one
+// handle per visibility episode -- and announced with ObjectCreate, before the caller applies
+// the update that brought it back. An object already tracked raises nothing.
+//
+// cdecl: the guid as two dwords and the out-pointer on the stack, cleaned by the caller.
+// Evidence: 0x004D6AE0 reads [ebp+8], [ebp+0xC] (the guid) and [ebp+0x10] (`mov eax,[ebp+0x10];
+// mov dword ptr [eax],0` first) and returns with a bare `ret`; ClntObjMgrReenableObject at
+// 0x004D6F1D-25 pushes the pointer and both guid halves, then `add esp,0xc` after the call.
+WXL_SEAM_AFTER(ObjectMgr, GetUpdateObject, "GetUpdateObject", void*, cdecl, (uint64_t guid, int32_t* reenabled))
+WXL_SEAM_RAISES(ObjectMgr, GetUpdateObject, ObjectCreate)
 
 // Removes an object from the manager: out of the guid table and the visible list, into the
 // lazy-cleanup set it is freed from later. Reached by every path that lets an object go while
@@ -45,3 +63,55 @@ WXL_SEAM_RAISES(ObjectMgr, ObjDelete, ObjectDestroy)
 // callers, 0x004D4919 among them (mov esi,<object> before the call, nothing pushed).
 WXL_SEAM_BEFORE(ObjectMgr, DestroyRemovedObject, "DestroyRemovedObject", void, regparm, (void* object))
 WXL_SEAM_RAISES(ObjectMgr, DestroyRemovedObject, ObjectDestroy)
+
+// Builds the shared side of the object manager as the client enters the world, from
+// ClientInitializeGame: the object heaps on the first call, the expanded field descriptors
+// (MirrorInitialize), the ObjUsage command; the kinds' own mirror handlers are set right after it
+// (CGUnit_C::ClientInitialize and the others). After sets the runtime's mirror handler on every
+// field a mod watches (wxl_object_api's watch_field), which the client's update path then calls
+// for each change; that handler raises ObjectFieldChanged.
+//
+// cdecl, nothing taken: 0x004D4AC0 has no frame, reads no [esp+N] and returns with a bare `ret`
+// (0x004D4B20); its one caller, ClientInitializeGame at 0x004055D4, pushes nothing for it.
+WXL_SEAM_AFTER(ObjectMgr, InitializeShared, "ClntObjMgrInitializeShared", void, cdecl, ())
+WXL_SEAM_RAISES(ObjectMgr, InitializeShared, ObjectFieldChanged)
+
+// Takes it down as the client leaves the world, from ClientDestroyGame: every mirror handler set
+// on a kind's fields is deleted, the runtime's with the client's. Before notes that they are gone,
+// so that the next InitializeShared sets them again and a watch asked for in between waits for it.
+//
+// cdecl, nothing taken: 0x004D5C80 reads no [ebp+N] and returns with a bare `ret` (0x004D5D6A);
+// its one caller, ClientDestroyGame at 0x0040665F, pushes nothing for it.
+WXL_SEAM_BEFORE(ObjectMgr, DestroyShared, "ClntObjMgrDestroyShared", void, cdecl, ())
+
+// What ObjectUpdate is raised from: an object whose fields an update packet changed, once per
+// object and packet, when the whole packet has been applied. The client applies an
+// SMSG_UPDATE_OBJECT in two passes over its blocks: the first writes the fields
+// (FillInPartialObjectData), the second calls the mirror handlers (ObjectFieldChanged among
+// them) and finishes the creates. So the seam on the field writes notes the objects, and the one
+// on the packet raises for each when the packet is done, in the order the packet first named
+// them. A create is not an update: an object the packet creates is announced by ObjectCreate
+// and not noted (it is not tracked yet when its fields are written), nor is an object the packet
+// only moves. An object a packet re-creates while the client still holds it has its fields
+// rewritten, and is an update. SMSG_COMPRESSED_UPDATE_OBJECT inflates its body and calls the
+// same handler, so it is covered. Main thread only.
+
+// Writes an update block's fields into an object, dword by dword as the block's mask names them.
+// A static of ObjectMgrClient.cpp with three callers: PartialUpdateFromFullUpdate (a values
+// update) and CreateObject twice (an object the client still held, then a new one, before
+// InitObject). After notes the object when it is tracked, the write took and someone listens.
+//
+// cdecl: the object, the guid as two dwords, the message and two bools, six dwords on the stack
+// ([ebp+8] to [ebp+0x1C]) cleaned by the caller (a bare `ret`, 0x004D53E8). Evidence: CreateObject
+// at 0x004D6C5B-63 pushes 1, 0, the message, both guid halves and the object.
+WXL_SEAM_AFTER(ObjectMgr, FillInPartialObjectData, "FillInPartialObjectData", int32_t, cdecl, (void* object, uint64_t guid, void* msg, bool skip_mirror_update, bool zero_fill_absent))
+
+// The SMSG_UPDATE_OBJECT handler: out-of-range objects first, then both passes over the packet's
+// blocks, then the lazy-cleanup expiry. Registered with the connection by ClntObjMgrInitialize
+// and called by SMSG_COMPRESSED_UPDATE_OBJECT's (0x004D74D0) with the inflated body. After raises
+// ObjectUpdate for each object the packet's field writes noted that is still tracked.
+//
+// cdecl, four dwords (the handler's param, the opcode, the time, the message; [ebp+8] to
+// [ebp+0x14]) and a bare `ret` (0x004D74C9), as every message handler of the client.
+WXL_SEAM_AFTER(ObjectMgr, Packet_SMSG_UPDATE_OBJECT, "Packet_SMSG_UPDATE_OBJECT", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(ObjectMgr, Packet_SMSG_UPDATE_OBJECT, ObjectUpdate)

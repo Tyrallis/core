@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The core runtime: where its files live, and the mod host it stands up for the client.
 
@@ -22,7 +22,8 @@ namespace wxl::core
     constexpr const char* kRuntimeName = "WarcraftXL core";
 
     /**
-     * @brief Opens the log at Logs\WarcraftXL.log next to the client executable.
+     * @brief Opens the log at Logs\WarcraftXL.log next to the client executable, keeping the
+     *        previous launches', and writes the launch's header (see Session.hpp).
      *
      * Safe under the loader lock: it calls kernel32 only (no CRT file I/O, no C++ filesystem).
      * @return true when the file is open.

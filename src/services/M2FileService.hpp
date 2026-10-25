@@ -23,6 +23,10 @@ namespace wxl::core::services
         /// refused it or faulted on it.
         bool Dispatch(wxl_m2file& file);
 
+        /// The read stage, from M2Shared.LoadSucceededCallback once ModelLoad has run: the file
+        /// read whole and not parsed, which the watchers may rewrite, shorten or refuse.
+        void OnRead(void* param);
+
         /// Drops every watcher a mod registered, when it is disabled.
         void ForgetMod(uint32_t mod);
 

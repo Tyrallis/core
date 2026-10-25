@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The ConsoleVar domain: a seam on CVar, the client's console variables.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including consolevar.def"
+#endif
+
+// Writes a variable's value: the string, the int and the float it parses to when set_value is
+// set and the text differs from the current one; the reset and default values when asked and
+// not yet held; the save flag. Every set ends here -- CVar::Set after the callback and the
+// latch, Reset, Default, Update of a latched value, Register -- and a read-only variable
+// returns before writing. A non-static member, the five arguments on the stack: thiscall.
+// Before raises CVarChanged when the call will
+// change the value: set_value set, the variable writable, and the text not the current one
+// (compared without case, as the client compares it).
+WXL_SEAM_BEFORE(ConsoleVar, InternalSet, "CVar::InternalSet", void, thiscall, (void* self, const char* value, uint8_t set_value, uint8_t set_reset, uint8_t set_default, uint8_t set_needs_save))
+WXL_SEAM_RAISES(ConsoleVar, InternalSet, CVarChanged)

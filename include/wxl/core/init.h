@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // WarcraftXL.dll on x64: the entry point the client calls to bring the runtime up.
 
@@ -34,6 +34,63 @@ extern "C" {
 /// of a global set through the script rows of the binding. Answers how many results it pushed.
 typedef int32_t(WXL_CALL* wxl_script_native_fn)(void* state);
 
+/// A function told one name, as the client's SFile::List calls its callback: cdecl on x86
+/// (`call [ebp+0xc]; add esp, 8` at 0x0042509D). Answers nonzero to be told the next.
+typedef int32_t(WXL_CALL* wxl_core_name_fn)(const char* name, void* user);
+
+/// A function the client's object manager calls when an update changed a field it was set on,
+/// as its MIRRORHANDLERFUNC: the object's guid, the field's byte offset from its kind's first
+/// field and its size in bytes, the copy of its old bytes the client kept, and the param it was
+/// set with. On x86 the client calls it cdecl, the guid as two dwords (CallMirrorFunctions,
+/// `call ecx; add esp, 0x18` at 0x004D5254). What it answers is not read.
+typedef int32_t(WXL_CALL* wxl_core_mirror_fn)(uint64_t guid, uint32_t offset, uint32_t size,
+                                              const void* old_value, void* param);
+
+/// What a graphics resource is, as gx_resources tells it.
+#define WXL_CORE_GPU_TEXTURE 0u ///< a texture: 2D, cube or volume, every level
+#define WXL_CORE_GPU_BUFFER  1u ///< a vertex or index buffer
+
+/// One texture or buffer of the graphics device. `pool` is its D3DPOOL: 0 default, 1 managed,
+/// 2 system memory, 3 scratch. `bytes` is what its format and dimensions take, every level.
+typedef struct wxl_core_gpu_resource
+{
+    uint32_t kind;
+    uint32_t pool;
+    uint64_t bytes;
+} wxl_core_gpu_resource;
+
+typedef void(WXL_CALL* wxl_core_gpu_fn)(const wxl_core_gpu_resource* resource, void* user);
+
+/// One mounted archive: what its header says of its tables, and what they hold in memory.
+typedef struct wxl_core_archive
+{
+    const char* path;
+    int32_t     priority;
+    uint32_t    hash_entries;
+    uint32_t    block_entries;
+    uint64_t    bytes; ///< its hash and block tables, unpacked or packed, and its listfile's names
+} wxl_core_archive;
+
+typedef void(WXL_CALL* wxl_core_archive_fn)(const wxl_core_archive* archive, void* user);
+
+/// How many blocks a client database holds at most: its records, its strings, its index.
+#define WXL_CORE_DB_BLOCKS 3
+
+/// One client database. Each block is an allocation of the client's, null when it has none, with
+/// what it holds as far as the store's own counts tell (0 for the strings, which no count
+/// gives); the runtime knows the exact size of a block Storm handed out while it was counting.
+typedef struct wxl_core_db
+{
+    const char* file;
+    wxl_bool    loaded;
+    uint32_t    records;
+    uint32_t    record_size; ///< bytes per record in memory
+    const void* blocks[WXL_CORE_DB_BLOCKS];
+    uint64_t    estimates[WXL_CORE_DB_BLOCKS];
+} wxl_core_db;
+
+typedef void(WXL_CALL* wxl_core_db_fn)(const wxl_core_db* db, void* user);
+
 /// One string per row of wxl/core/binding.def, "name: ret (params)", in table order. The
 /// client hands its copy over in wxl_core_init and the runtime compares it with its own, so a
 /// client built from a different table is refused by name instead of having its accessors
@@ -64,6 +121,18 @@ typedef struct wxl_core_init
 #include "wxl/core/binding.def"
 #undef WXL_BINDING
 } wxl_core_init;
+
+/**
+ * @brief One byte per event of wxl/events.h, nonzero while at least one handler is subscribed
+ *        to it.
+ *
+ * The runtime writes it whenever an event gains its first handler or loses its last; the client
+ * reads it, through wxl::seam::Listening (wxl/seams/seams.h), before calling a seam whose body
+ * would only raise that event, so a seam nobody listens to costs a load and a branch instead of
+ * a call into the runtime. All zero until WarcraftXLInit has loaded the mods. Indexed by
+ * wxl_event; the client and the runtime come from one tree, so they agree on the count.
+ */
+WXL_CORE_API extern volatile uint8_t wxl_core_listening[];
 
 /**
  * @brief Brings the runtime up: the mod host, every mod under Mods\ next to the client

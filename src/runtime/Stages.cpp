@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // How far the client has booted: the one place a stage is announced.
 
@@ -7,6 +7,7 @@
 
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Crash.hpp"
 
 #include "wxl/host/mod_host.hpp"
 
@@ -67,10 +68,17 @@ namespace wxl::core::stages
         g_reached.store(ordinal, std::memory_order_release);
         g_reachedStage.store(stage, std::memory_order_relaxed);
         WLOG_INFO(kTag, "stage %s", Name(stage));
+        // The client sets its own crash filter as it starts: the report goes back in front of it.
+        crash::Install();
         host->Stage(stage);
     }
 
     wxl_stage Reached() { return g_reachedStage.load(std::memory_order_relaxed); }
+
+    const char* ReachedName()
+    {
+        return g_reached.load(std::memory_order_relaxed) < 0 ? "none" : Name(Reached());
+    }
 
     void Restart()
     {

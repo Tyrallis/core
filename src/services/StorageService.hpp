@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The wxl.storage service: the client's files, over the binding, the same on both builds.
 
@@ -24,5 +24,41 @@ namespace wxl::core::services
 
         /// The same for one mod, when it is disabled or unloaded.
         void CloseFilesOf(uint32_t mod);
+
+        /**
+         * @brief Where an open of @p name is answered from a folder of the search path.
+         *
+         * True when a folder holds the name and wins it: a folder of a priority above 0 over
+         * the client's own data, one of 0 or below only when the client has nothing by that name.
+         * @p out then receives the name the client opens that file by: its path relative to the
+         * client's folder behind two backslashes, which the client reads from the disk at its
+         * base path without looking among its loose files (absolute when it has no base path).
+         * False, nothing written, otherwise.
+         */
+        bool Resolve(const char* name, char* out, size_t capacity);
+
+        /**
+         * @brief The name a mod's redirect opens in place of @p name, from any thread.
+         *
+         * True, with the latest redirect's name in @p out, when a mod redirected @p name; false
+         * and nothing written otherwise. One load when no name is redirected.
+         */
+        bool Redirected(const char* name, char* out, size_t capacity);
+
+        /// Takes a mod's redirects back: it is disabled or unloaded.
+        void RemoveRedirectsOf(uint32_t mod);
+
+        /// Whether a name resolves, in the client's archives or in a folder of the search path.
+        bool Exists(const char* name);
+
+        /// Whether this thread is listing the archives for find: the opens of their listfiles
+        /// are the runtime's own, not the client's.
+        bool Listing();
+
+        /// Takes the folders a mod added out of the search: it is disabled or unloaded.
+        void RemoveSearchPathsOf(uint32_t mod);
+
+        /// Forgets the search path. Called on the way out, and by the harness.
+        void ForgetSearchPaths();
     }
 }

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The x86 realisation of the client binding: memory reads at measured offsets, calls at resolved addresses.
 
@@ -11,6 +11,8 @@
 #include "runtime/Image.hpp"
 
 #include "wxl/events.h"
+#include "wxl/core/gpu.hpp"
+#include "wxl/core/storm.hpp"
 #include "wxl/offsets/layout.hpp"
 #include "wxl/offsets/site.hpp"
 #include "wxl/services/script.h"
@@ -19,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace
 {
@@ -120,6 +123,47 @@ namespace
     // the convention they are declared with, cdecl, is the one they carry.
     using GxFlag       = int32_t(__cdecl*)();
     using GxWindowSize = void(__cdecl*)(float* rect); ///< a CRect: minY, minX, maxY, maxX
+
+    /// The ARCHIVEREC* of every mounted archive, in the client's order.
+    std::vector<void*> ArchiveRecords()
+    {
+        std::vector<void*> records;
+        // System_MPQGlobals::GetArchiveList answers the std::set of mounted archives. Its layout
+        // is MSVC 9's, as FindArchiveByName (0x00453FC0) and the set iterator's ++ (0x00429F90)
+        // read it: the head node at +4; a node's left, parent and right at 0, 4 and 8, its value
+        // (the ARCHIVEREC*) at 0xC, its is-nil flag at 0x11. The head is the nil node.
+        using GetList = const uint8_t*(__cdecl*)();
+        const uint8_t* set =
+            reinterpret_cast<GetList>(WXL_SITE("System_MPQGlobals::GetArchiveList", 0))();
+        if (!set) return records;
+        const auto link = [](const uint8_t* node, size_t at) {
+            return *reinterpret_cast<const uint8_t* const*>(node + at);
+        };
+        const auto nil = [](const uint8_t* node) { return node[0x11] != 0; };
+
+        const uint8_t* head = link(set, 4);
+        const uint8_t* node = link(head, 0);
+        while (node && !nil(node) && records.size() < 4096)
+        {
+            records.push_back(*reinterpret_cast<void* const*>(node + 0xC));
+            if (!nil(link(node, 8)))
+            {
+                node = link(node, 8);
+                while (!nil(link(node, 0))) node = link(node, 0);
+            }
+            else
+            {
+                const uint8_t* parent = link(node, 4);
+                while (!nil(parent) && node == link(parent, 8))
+                {
+                    node   = parent;
+                    parent = link(parent, 4);
+                }
+                node = parent;
+            }
+        }
+        return records;
+    }
 
     /// The device the client draws with, or null before it is made and after it is torn down.
     const void* GxDevice() { return *reinterpret_cast<void* const*>(WXL_STATIC("g_theGxDevicePtr")); }
@@ -226,6 +270,76 @@ namespace wxl::core::binding
         return reinterpret_cast<PlayerFn>(WXL_SITE("ClntObjMgrGetActivePlayerObj", 0))();
     }
 
+    const void* object_by_guid(uint64_t guid)
+    {
+        // ClntObjMgrObjectPtr(WOWGUID, TypeMask, const char* file, int line), cdecl: the guid as
+        // two dwords, the mask, and a source position it reads only to report a wrong kind.
+        // TYPE_OBJECT (1) is every kind.
+        using ObjectPtrFn = void*(__cdecl*)(uint64_t guid, uint32_t mask, const char* file, int32_t line);
+        if (!IsClient() || !OnMainThread() || !guid) return nullptr;
+        return reinterpret_cast<ObjectPtrFn>(WXL_SITE("ClntObjMgrObjectPtr", 0))(guid, 1u, "WarcraftXL", 0);
+    }
+
+    wxl_bool object_watch_type(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                               void* param)
+    {
+        // ClntObjMgrSetTypeMirrorHandler(OBJECT_TYPE_ID, fieldOffset, fieldSize, MIRRORHANDLERFUNC,
+        // param, HANDLER_PRIORITY, alwaysFire), cdecl: it reads [ebp+8]..[ebp+0x20] and returns
+        // with a bare `ret` (0x004D5C13); CGUnit_C::ClientInitialize pushes seven dwords, calls,
+        // and `add esp, 0x1c` (0x006E4648-0x006E465E). Priority 0 links the handler after those
+        // already on the field; alwaysFire 0 calls it only when the bytes changed.
+        using SetTypeFn = void(__cdecl*)(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                                         void* param, int32_t priority, int32_t always);
+        if (!IsClient() || !OnMainThread() || !handler) return WXL_FALSE;
+        reinterpret_cast<SetTypeFn>(WXL_SITE("ClntObjMgrSetTypeMirrorHandler", 0))(type, offset, size, handler,
+                                                                                    param, 0, 0);
+        return WXL_TRUE;
+    }
+
+    wxl_bool object_watch_one(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                              wxl_core_mirror_fn handler, void* param)
+    {
+        // ClntObjMgrSetObjMirrorHandler(WOWGUID, OBJECT_TYPE_ID, fieldOffset, fieldSize,
+        // MIRRORHANDLERFUNC, param, HANDLER_PRIORITY, alwaysFire), cdecl: the guid as two dwords
+        // at [ebp+8] and [ebp+0xC], the rest to [ebp+0x28], a bare `ret` (0x004D5B33); the
+        // explored-zones handler's setter at 0x00547120-0x00547143 pushes seven dwords and the
+        // active player's guid (edx:eax), calls, and `add esp, 0x24`. It does nothing for a guid
+        // the manager does not hold, which is asked first.
+        using SetObjFn = void(__cdecl*)(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                                        wxl_core_mirror_fn handler, void* param, int32_t priority, int32_t always);
+        if (!handler || !object_by_guid(guid)) return WXL_FALSE;
+        reinterpret_cast<SetObjFn>(WXL_SITE("ClntObjMgrSetObjMirrorHandler", 0))(guid, type, offset, size, handler,
+                                                                                  param, 0, 0);
+        return WXL_TRUE;
+    }
+
+    wxl_bool object_unwatch_type(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        // ClntObjMgrUnsetTypeMirrorHandler(OBJECT_TYPE_ID, fieldOffset, MIRRORHANDLERFUNC, param),
+        // cdecl: it reads [ebp+8]..[ebp+0x14] and returns with a bare `ret` (0x004D5C70);
+        // CGUnit_C::UnregisterMirrorHandlers pushes four dwords, calls, and `add esp, 0x10`
+        // (0x00741FF6-0x00742008).
+        using UnsetTypeFn = void(__cdecl*)(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param);
+        if (!IsClient() || !OnMainThread() || !handler) return WXL_FALSE;
+        reinterpret_cast<UnsetTypeFn>(WXL_SITE("ClntObjMgrUnsetTypeMirrorHandler", 0))(type, offset, handler, param);
+        return WXL_TRUE;
+    }
+
+    wxl_bool object_unwatch_one(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                void* param)
+    {
+        // ClntObjMgrUnsetObjMirrorHandler(WOWGUID, OBJECT_TYPE_ID, fieldOffset, MIRRORHANDLERFUNC,
+        // param), cdecl: the guid as two dwords at [ebp+8] and [ebp+0xC], the rest to [ebp+0x1C],
+        // a bare `ret` (0x004D5B9B). It does nothing for a guid the manager does not hold, which is
+        // asked first.
+        using UnsetObjFn = void(__cdecl*)(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                          void* param);
+        if (!handler || !object_by_guid(guid)) return WXL_FALSE;
+        reinterpret_cast<UnsetObjFn>(WXL_SITE("ClntObjMgrUnsetObjMirrorHandler", 0))(guid, type, offset, handler,
+                                                                                      param);
+        return WXL_TRUE;
+    }
+
     uint64_t ui_target_guid(void)
     {
         return IsClient() ? *reinterpret_cast<const uint64_t*>(WXL_STATIC("CGGameUI::m_lockedTarget")) : 0;
@@ -239,6 +353,43 @@ namespace wxl::core::binding
     uint8_t ui_logging_in(void)
     {
         return IsClient() ? *reinterpret_cast<const uint8_t*>(WXL_STATIC("CGGameUI::m_loggingIn")) : 0;
+    }
+
+    // --- glue.def: the login screens' state -------------------------------------------------
+
+    const char* glue_current_screen(void)
+    {
+        // A char[64] static: its address is the string.
+        return IsClient() ? reinterpret_cast<const char*>(WXL_STATIC("CGlueMgr::m_currentScreen")) : nullptr;
+    }
+
+    int32_t login_server_type(const void* login)
+    {
+        // Login::GetLoginServerType is the vtable's slot 50 (+0xC8): ClientServices::
+        // GetLoginServerType calls it there (0x004D9FF2 `mov eax,[edx+0xc8]`), and the slot holds
+        // 0x008E5250 (`xor eax,eax; ret`) in GruntLogin's vtable at 0x00A94928 and 0x008C8DE0
+        // (`mov eax,1; ret`) in BattlenetLogin's at 0x00A94768.
+        if (!IsClient() || !login) return -1;
+        using ServerTypeFn = int32_t(__fastcall*)(const void* self, void* edx);
+        const void* const* vtable = Read<const void* const*>(login, 0);
+        return reinterpret_cast<ServerTypeFn>(const_cast<void*>(vtable[50]))(login, nullptr);
+    }
+
+    // --- chat.def: the lines the chat holds -------------------------------------------------
+
+    const void* chat_pending_last(void)
+    {
+        // TSList::Tail as stpl.h writes it: the terminator's m_prevLink, that link's m_prevLink,
+        // and its m_next unless the low bit marks the terminator. The list is the link offset
+        // (+0), then the terminator: m_prevLink (+4), m_next (+8). QueueChatText reads the same
+        // m_prevLink to append (0x00502D68 `mov ecx,[0x00AC7D40]`).
+        if (!IsClient()) return nullptr;
+        const void* list       = reinterpret_cast<const void*>(WXL_STATIC("CGChat::s_pendingChat"));
+        const void* last       = Read<const void*>(list, 4);
+        const void* beforeLast = last ? Read<const void*>(last, 0) : nullptr;
+        if (!beforeLast) return nullptr;
+        const std::uintptr_t next = Read<std::uintptr_t>(beforeLast, 4);
+        return (next & 1u) ? nullptr : reinterpret_cast<const void*>(next);
     }
 
     // --- script.def: the client's Lua, called as the C functions they are ---------------------
@@ -386,9 +537,10 @@ namespace wxl::core::binding
         if (!IsClient() || !file) return WXL_FALSE;
         const FileSeek call = reinterpret_cast<FileSeek>(WXL_SITE("SFile::SetFilePointer", 0));
         int32_t        high = static_cast<int32_t>(offset >> 32);
-        // Method 0 is FILE_BEGIN: the offset is absolute, which is what read_at means.
-        return call(file, static_cast<int32_t>(offset & 0xFFFFFFFFu), &high, 0) ? WXL_TRUE
-                                                                                : WXL_FALSE;
+        // Method 0 is FILE_BEGIN: the offset is absolute, which is what read_at means. The answer
+        // is the cursor afterwards, 0 for a seek to the start (0x00421C75: `mov eax, edi`).
+        const int32_t at = call(file, static_cast<int32_t>(offset & 0xFFFFFFFFu), &high, 0);
+        return wxl::core::storm::SeekLanded(static_cast<uint32_t>(at), offset) ? WXL_TRUE : WXL_FALSE;
     }
 
     uint32_t file_read(void* file, void* buffer, uint32_t count)
@@ -413,6 +565,36 @@ namespace wxl::core::binding
             reinterpret_cast<ArchiveOpen>(WXL_SITE("SFile::OpenArchive", 0));
         void* archive = nullptr;
         return call(path, priority, 0, &archive) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    const char* storage_base_path()
+    {
+        if (!IsClient()) return nullptr;
+        return reinterpret_cast<const char*>(WXL_STATIC("SFile::m_basePath"));
+    }
+
+    uint32_t archive_list(wxl_core_name_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+
+        // The records first, walked in order; the listing opens files, which may reach the set.
+        const std::vector<void*> records = ArchiveRecords();
+        using List = int32_t(__stdcall*)(void* archive, wxl_core_name_fn callback, void* param);
+
+        // SFile::List takes an SArchive: its type (0, an MPQ) then the record, as OpenEx reads it
+        // ([eax], [eax+4] at 0x00424C6F). stdcall: `ret 0xc` at 0x004250C8.
+        const List list  = reinterpret_cast<List>(WXL_SITE("SFile::List", 0));
+        uint32_t   listed = 0;
+        for (void* record : records)
+        {
+            struct
+            {
+                uint32_t type;
+                void*    archive;
+            } archive{0, record};
+            if (record && list(&archive, fn, user)) ++listed;
+        }
+        return listed;
     }
 
     wxl_bool gx_device_exists()
@@ -555,5 +737,291 @@ namespace wxl::core::binding
         case WXL_OBJECT_CONTAINER: return CallName(WXL_SITE("CGItem_C::GetObjectName", 0), object);
         default: return nullptr;
         }
+    }
+
+    // --- Memory ---------------------------------------------------------------------------
+
+    namespace
+    {
+        /**
+         * @brief Calls `visit` with every element of a TSList, from its terminator.
+         *
+         * A TSList starts with the offset of the link inside each element; a link is its
+         * previous link then its next element, and the terminator's next is the first element. A
+         * next with its low bit set (or null) is the terminator again: the end.
+         */
+        template <class F>
+        void WalkList(const uint8_t* list, std::size_t terminatorNext, F&& visit)
+        {
+            const std::ptrdiff_t linkOffset = Read<std::ptrdiff_t>(list, 0);
+            const uint8_t*       node       = Read<const uint8_t*>(list, terminatorNext);
+            for (uint32_t guard = 0; node && !(reinterpret_cast<uintptr_t>(node) & 1) && guard < (1u << 20); ++guard)
+            {
+                visit(node);
+                node = Read<const uint8_t*>(node, static_cast<std::size_t>(linkOffset) + sizeof(void*));
+            }
+        }
+
+        /// The bytes a MSVC 9 std::vector reserves: its first and its end of storage, at +4 and +0xC
+        /// (InitializeTables reads the hash table's at [rec+0x1C0] and [rec+0x1C4], 0x0045B8F4).
+        uint64_t VectorBytes(const uint8_t* vector)
+        {
+            const uintptr_t first = Read<uintptr_t>(vector, 4);
+            const uintptr_t end   = Read<uintptr_t>(vector, 0xC);
+            return first && end > first ? end - first : 0;
+        }
+
+        /// The bytes a BitPacked* holds: its bit count at +4, rounded up to bytes.
+        uint64_t BitPackedBytes(const uint8_t* bits)
+        {
+            return bits ? (static_cast<uint64_t>(Read<uint32_t>(bits, 4)) + 7) / 8 + 8 : 0;
+        }
+
+        /**
+         * @brief What one ARCHIVEREC says of itself.
+         *
+         * The layout is the fork's (SFileArchives.h, measured for Win32 in its comments), checked
+         * against the code that reads it: the tables-initialised flag at 0x1D9, the unpacked hash
+         * table (a vector of 16-byte entries) at 0x1BC, the packed block table at 0x1A4 and the
+         * header's hash table size at 0x40 (all read by ARCHIVEREC::InitializeTables, 0x0045B8D2
+         * to 0x0045B926). The priority is at 0x1C, the name inline at 0x84, the header's block
+         * table size at 0x44, the unpacked block table (0x31-byte entries) at 0x1AC, the packed
+         * hash table at 0x1A8 and the listfile, a std::map of names, at 0x204 with its size at +8.
+         * A listfile name is counted at 96 bytes: a map node and the name's heap block.
+         */
+        bool DescribeArchive(const uint8_t* rec, wxl_core_archive* out)
+        {
+            if (!rec || !out) return false;
+            // m_name, or a folder archive's m_directPath (a std::string at 0x188).
+            out->path          = wxl::core::storm::ArchiveName(reinterpret_cast<const char*>(rec + 0x84),
+                                                               wxl::core::storm::Msvc9String(rec + 0x188));
+            out->priority      = Read<int32_t>(rec, 0x1C);
+            out->hash_entries  = Read<uint32_t>(rec, 0x40);
+            out->block_entries = Read<uint32_t>(rec, 0x44);
+
+            uint64_t bytes = VectorBytes(rec + 0x1BC) + VectorBytes(rec + 0x1AC);
+            if (const uint8_t* blocks = Read<const uint8_t*>(rec, 0x1A4))
+            {
+                // BlockEntryTable: its vectors of flags, file times, CRCs and MD5s at 0, 0x54,
+                // 0x64 and 0x74, its packed hashes and entries at 0x48 and 0x4C; 0x88 bytes itself.
+                bytes += 0x88 + VectorBytes(blocks) + VectorBytes(blocks + 0x54) + VectorBytes(blocks + 0x64) +
+                         VectorBytes(blocks + 0x74) + BitPackedBytes(Read<const uint8_t*>(blocks, 0x48)) +
+                         BitPackedBytes(Read<const uint8_t*>(blocks, 0x4C));
+            }
+            if (const uint8_t* hashes = Read<const uint8_t*>(rec, 0x1A8))
+            {
+                // HashEntryTable: a tag byte per slot (the count at 0x14), packed indices at 0x10.
+                bytes += 0x38 + Read<uint32_t>(hashes, 0x14) + BitPackedBytes(Read<const uint8_t*>(hashes, 0x10));
+            }
+            bytes += static_cast<uint64_t>(Read<uint32_t>(rec, 0x204 + 8)) * 96u;
+            out->bytes = bytes;
+            return true;
+        }
+
+        // The client's Lua: lua_gc(L, LUA_GCCOUNT) in kilobytes and LUA_GCCOUNTB, the rest in bytes.
+        using LuaGc = int32_t(__cdecl*)(void* L, int32_t what, int32_t data);
+        constexpr int32_t kLuaGcCount  = 3;
+        constexpr int32_t kLuaGcCountB = 4;
+    }
+
+    uint32_t gx_resources(wxl_core_gpu_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        const uint8_t* device = static_cast<const uint8_t*>(GxDevice());
+        if (!device) return 0;
+        // EGxApi: 1 is Direct3D 9, 2 Direct3D 9Ex; the others hold no IDirect3D resources.
+        const int32_t api = Read<int32_t>(device, WXL_FIELD("CGxDevice", "m_api"));
+        if (api != 1 && api != 2) return 0;
+
+        uint32_t told = 0;
+        // The textures: each one created holds its IDirect3DBaseTexture9 in m_apiSpecificData; one
+        // waiting to be created again holds a placeholder there and is skipped.
+        WalkList(device + WXL_FIELD("CGxDevice", "m_textures"),
+                 WXL_FIELD("CGxDevice", "m_textures.m_terminator.m_next") - WXL_FIELD("CGxDevice", "m_textures"),
+                 [&](const uint8_t* texture) {
+                     if (Read<int8_t>(texture, WXL_FIELD("CGxTex", "m_needsCreation"))) return;
+                     auto* object = Read<IDirect3DBaseTexture9*>(texture, WXL_FIELD("CGxTex", "m_apiSpecificData"));
+                     wxl_core_gpu_resource resource{};
+                     if (object && wxl::core::gpu::DescribeTexture(object, &resource))
+                     {
+                         fn(&resource, user);
+                         ++told;
+                     }
+                 });
+        // The pools: each one holds its IDirect3DVertexBuffer9 or IndexBuffer9 in m_apiSpecific.
+        WalkList(device + WXL_FIELD("CGxDevice", "m_poolList"),
+                 WXL_FIELD("CGxDevice", "m_poolList.m_terminator.m_next") - WXL_FIELD("CGxDevice", "m_poolList"),
+                 [&](const uint8_t* pool) {
+                     auto* object = Read<IDirect3DResource9*>(pool, WXL_FIELD("CGxPool", "m_apiSpecific"));
+                     wxl_core_gpu_resource resource{};
+                     if (object && wxl::core::gpu::DescribeBuffer(object, &resource))
+                     {
+                         fn(&resource, user);
+                         ++told;
+                     }
+                 });
+        return told;
+    }
+
+    wxl_bool sound_heap(uint64_t* current, uint64_t* peak)
+    {
+        if (!IsClient() || !current || !peak) return WXL_FALSE;
+        // FMOD::gGlobal, the sound engine's globals, as FMOD_Memory_allocC loads it: `mov eax,
+        // [gGlobal]` (A1, then the address) at +0x11. Its gSystemPool at +4 is the MemPool every
+        // FMOD allocation goes through, which counts what it holds at +0x1C and the most it held
+        // at +0x120 (MemPool::alloc: `add [esi+0x1c], edx`, then `cmp eax, [esi+0x120]` and
+        // `mov [esi+0x120], eax`, 0x008CFE9C to 0x008CFEB7).
+        const uint8_t* load = reinterpret_cast<const uint8_t*>(WXL_SITE("FMOD_Memory_allocC", 0x11));
+        if (load[0] != 0xA1) return WXL_FALSE;
+        const uint8_t* global = Read<const uint8_t*>(Read<const void*>(load, 1), 0);
+        const uint8_t* pool   = global ? Read<const uint8_t*>(global, 4) : nullptr;
+        if (!pool) return WXL_FALSE;
+        *current = Read<uint32_t>(pool, 0x1C);
+        *peak    = Read<uint32_t>(pool, 0x120);
+        return WXL_TRUE;
+    }
+
+    uint64_t script_heap()
+    {
+        void* L = IsClient() ? script_state() : nullptr;
+        if (!L) return 0;
+        const LuaGc gc = reinterpret_cast<LuaGc>(WXL_SITE("lua_gc", 0));
+        return static_cast<uint64_t>(gc(L, kLuaGcCount, 0)) * 1024u + static_cast<uint64_t>(gc(L, kLuaGcCountB, 0));
+    }
+
+    uint32_t archive_tables(wxl_core_archive_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        uint32_t told = 0;
+        for (void* record : ArchiveRecords())
+        {
+            wxl_core_archive archive{};
+            if (!DescribeArchive(static_cast<const uint8_t*>(record), &archive)) continue;
+            fn(&archive, user);
+            ++told;
+        }
+        return told;
+    }
+
+    wxl_bool archive_of(void* archive, wxl_core_archive* out)
+    {
+        // An SArchive: its type, 0 for an MPQ, then its ARCHIVEREC* (SFile2-Core.h).
+        if (!IsClient() || !archive || !out || Read<uint32_t>(archive, 0) != 0) return WXL_FALSE;
+        return DescribeArchive(Read<const uint8_t*>(archive, 4), out) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    uint32_t client_dbs(wxl_core_db_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        // Every store shares WowClientDB_Base's counts; a plain store has its records at 0x1C and
+        // its index by id at 0x20, a compressed one its records (maybe compressed) at 0x18 and its
+        // row pointers -- the index by id after them, in the same block -- at 0x1C.
+        struct Row
+        {
+            uintptr_t   address;
+            const char* file;
+            uint32_t    row_size;
+            bool        rle;
+        };
+        static const Row kRows[] = {
+#define WXL_DB_RLE_plain false
+#define WXL_DB_RLE_rle   true
+#define WXL_CLIENT_DB(global, Rec, store, file, row_size) {WXL_STATIC(#global), file, row_size, WXL_DB_RLE_##store},
+#include "wxl/core/client_dbs.def"
+#undef WXL_CLIENT_DB
+#undef WXL_DB_RLE_rle
+#undef WXL_DB_RLE_plain
+        };
+        constexpr std::size_t kPlainRecords = WXL_FIELD("WowClientDB_SpellRec", "m_records");
+        constexpr std::size_t kPlainIndex   = WXL_FIELD("WowClientDB_SpellRec", "m_recordsById");
+        constexpr std::size_t kRleData      = WXL_FIELD("WowClientDB_RLE_SpellRec", "m_data");
+        constexpr std::size_t kRleRows      = WXL_FIELD("WowClientDB_RLE_SpellRec", "m_records");
+
+        uint32_t told = 0;
+        for (const Row& row : kRows)
+        {
+            const void* store   = reinterpret_cast<const void*>(row.address);
+            const int32_t count = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_numRecords"));
+            const int32_t minId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_minID"));
+            const int32_t maxId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_maxID"));
+            const uint64_t ids  = count > 0 && maxId >= minId ? static_cast<uint64_t>(maxId - minId) + 1 : 0;
+
+            wxl_core_db db{};
+            db.file        = row.file;
+            db.loaded      = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_loaded")) ? WXL_TRUE : WXL_FALSE;
+            db.records     = count > 0 ? static_cast<uint32_t>(count) : 0u;
+            db.record_size = row.row_size;
+            db.blocks[0]   = Read<const void*>(store, row.rle ? kRleData : kPlainRecords);
+            db.estimates[0] = static_cast<uint64_t>(db.records) * row.row_size;
+            db.blocks[1]   = Read<const void*>(store, WXL_FIELD("WowClientDB_SpellRec", "m_strings"));
+            db.blocks[2]   = Read<const void*>(store, row.rle ? kRleRows : kPlainIndex);
+            db.estimates[2] = (row.rle ? db.records + ids : ids) * sizeof(void*);
+            fn(&db, user);
+            ++told;
+        }
+        return told;
+    }
+}
+
+// --- Asset: models, map objects, doodads (asset.def) ----------------------------------------
+
+namespace
+{
+    // The allocator of model data: 16-byte aligned blocks of Storm's heap (SMemAlloc).
+    using AllocA16Fn = void*(__cdecl*)(uint32_t size, const char* file, int32_t line);
+    using FreeA16Fn  = void(__cdecl*)(void* block);
+}
+
+namespace wxl::core::binding
+{
+    const char* model_path(const void* shared)
+    {
+        if (!IsClient() || !shared) return nullptr;
+        return static_cast<const char*>(shared) + WXL_FIELD("CM2Shared", "m_fileName");
+    }
+
+    const void* model_bytes(const void* shared, uint32_t* size)
+    {
+        if (!IsClient() || !shared) return nullptr;
+        if (size) *size = Read<uint32_t>(shared, WXL_FIELD("CM2Shared", "m_fileSize"));
+        return Read<const void*>(shared, WXL_FIELD("CM2Shared", "m_data"));
+    }
+
+    wxl_bool model_replace_bytes(void* shared, const void* bytes, uint32_t size)
+    {
+        if (!IsClient() || !shared || !bytes || !size) return WXL_FALSE;
+        const AllocA16Fn alloc = reinterpret_cast<AllocA16Fn>(WXL_SITE("SIMD::AllocA16", 0));
+        const FreeA16Fn  release = reinterpret_cast<FreeA16Fn>(WXL_SITE("SIMD::FreeA16", 0));
+        void* copy = alloc(size, __FILE__, __LINE__);
+        if (!copy) return WXL_FALSE;
+        std::memcpy(copy, bytes, size);
+        char* base = static_cast<char*>(shared);
+        void* read = Read<void*>(shared, WXL_FIELD("CM2Shared", "m_data"));
+        std::memcpy(base + WXL_FIELD("CM2Shared", "m_data"), &copy, sizeof copy);
+        std::memcpy(base + WXL_FIELD("CM2Shared", "m_fileSize"), &size, sizeof size);
+        if (read) release(read);
+        return WXL_TRUE;
+    }
+
+    const char* map_obj_path(const void* map_obj)
+    {
+        if (!IsClient() || !map_obj) return nullptr;
+        return static_cast<const char*>(map_obj) + WXL_FIELD("CMapObj", "m_wmoName");
+    }
+
+    const void* map_obj_bytes(const void* map_obj, uint32_t* size)
+    {
+        if (!IsClient() || !map_obj) return nullptr;
+        if (size) *size = Read<uint32_t>(map_obj, WXL_FIELD("CMapObj", "m_wmoFileSize"));
+        return Read<const void*>(map_obj, WXL_FIELD("CMapObj", "m_pWmoData"));
+    }
+
+    wxl_bool doodad_position(const void* def, wxl_vec3* out)
+    {
+        if (!IsClient() || !def || !out) return WXL_FALSE;
+        out->x = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.x"));
+        out->y = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.y"));
+        out->z = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.z"));
+        return WXL_TRUE;
     }
 }

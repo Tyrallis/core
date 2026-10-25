@@ -36,9 +36,9 @@ WXL_SEAM_AFTER(M2, AnimateMTSimple, "CM2Model::AnimateMTSimple", void, thiscall,
 // raise no event: each hands the file, at that point, to the watchers of wxl.m2file, which only a
 // runtime that sees the loader publishes. They are how a mod teaches the client a model format.
 
-// The model file has been read and nothing has parsed it: param is the CM2Shared. Before, the
-// watchers may rewrite its bytes in place and shorten it, or refuse it. A class static: cdecl.
-WXL_SEAM_BEFORE(M2, LoadSucceededCallback, "CM2Shared::LoadSucceededCallback", void, cdecl, (void* param))
+// The read stage -- the file read whole, nothing parsed -- is handed over by
+// M2Shared.LoadSucceededCallback (m2shared.def), after its ModelLoad: the watchers see the bytes the
+// client is going to parse, a replacement included.
 
 // The model has been parsed -- its arrays resolved to self-relative offsets -- and nothing has
 // been made from it. Before, the watchers may point its arrays at memory of their own (texture

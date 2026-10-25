@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The wxl.data service: which client databases a mod serves from a file of its own.
 
 #include "services/DataService.hpp"
+#include "services/StorageService.hpp"
 
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
@@ -116,7 +117,7 @@ namespace
         if (key.empty() || !path.data || !path.size) return WXL_E_INVALID;
 
         const std::string file(path.data, path.size);
-        if (!wxl::core::binding::file_exists(file.c_str()))
+        if (!wxl::core::services::storage::Exists(file.c_str()))
         {
             WLOG_WARN(kTag, "%s cannot serve %s from %s: the client cannot read it",
                       ModName(Asking()), buffer, file.c_str());

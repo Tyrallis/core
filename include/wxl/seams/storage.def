@@ -1,7 +1,8 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
-// The Storage domain: a seam on the one function every file of the client is opened through.
+// The Storage domain: the one function every file of the client is opened through, and the
+// mounting and closing of its archives.
 
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including storage.def"
@@ -15,7 +16,30 @@
 // Gated: a handler of FileOpen may write a path into wxl_file_open_args::redirect to have that
 // file opened instead. The gate never takes the call; it rewrites the name and lets the client's
 // own open run. Called on every thread that opens files.
-//
-// FileOpened is not raised: it carries the result, and the function has a dozen returns.
 WXL_SEAM_GATE(Storage, OpenFile, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
 WXL_SEAM_RAISES(Storage, OpenFile, FileOpen)
+
+// The same function, observed: a gate has no After, so the result of an open is a second row
+// on the same address. On x86 both are links of one chain, this one attached after the gate and
+// so nearer the function: it is handed the arguments the gate let through, the name a redirect
+// or a search folder chose included. On x64 the fork calls After at each of the function's
+// returns, after the gate's test at its head.
+//
+// After raises FileOpened with the name that was opened, whether a file came back, and its size
+// (0 when none did). Called on every thread that opens files; nothing is read when nobody
+// listens, and on x64 the client skips the calls then. The runtime's own opens (the archive
+// listing of wxl.storage's find) raise nothing, as they raise no FileOpen.
+WXL_SEAM_AFTER(Storage, OpenEx, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
+WXL_SEAM_RAISES(Storage, OpenEx, FileOpened)
+
+// Mounts an archive by path: an .MPQ file, or a folder named like one. Nonzero, with an SArchive
+// written through `archive`, when it was opened; its hash and block tables are read by then. A
+// class static declared STORMAPI: __stdcall (`ret 0x10`). After raises ArchiveMounted for an
+// archive it opened. Archive views (SFile::OpenPathAsArchive) are not mounts and raise nothing.
+WXL_SEAM_AFTER(Storage, OpenArchive, "SFile::OpenArchive", int32_t, stdcall, (const char* path, int32_t priority, uint32_t flags, void** archive))
+WXL_SEAM_RAISES(Storage, OpenArchive, ArchiveMounted)
+
+// Closes an archive SFile::OpenArchive opened, and frees its SArchive. __stdcall (`ret 4`).
+// Before raises ArchiveUnmounted while it is still whole.
+WXL_SEAM_BEFORE(Storage, CloseArchive, "SFile::CloseArchive", int32_t, stdcall, (void* archive))
+WXL_SEAM_RAISES(Storage, CloseArchive, ArchiveUnmounted)

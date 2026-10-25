@@ -70,9 +70,9 @@ namespace
     }
 }
 
-namespace wxl::seam::M2::LoadSucceededCallback
+namespace wxl::core::services::m2file
 {
-    void WXL_CALL Before(void* param)
+    void OnRead(void* param)
     {
         // One test per model file while no mod watches.
         if (!m2file::Watching()) return;

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Player domain of the client binding: the player descriptor block (CGPlayerData).
 //
@@ -21,3 +21,8 @@ WXL_BINDING_FIELD_VIA_AT(player_visible_item_id, int32_t, CGPlayer_C, m_player, 
 
 // The same field of a VisibleItem_C the client hands a seam by pointer.
 WXL_BINDING_FIELD(visible_item_id, int32_t, VisibleItem_C, m_itemId, 0)
+
+// The player's money in copper (PLAYER_FIELD_COINAGE): a field of the local block, which
+// only the local player's m_player carries past the descriptor block. Read it for the local
+// player only.
+WXL_BINDING_FIELD_VIA(player_money, uint32_t, CGPlayer_C, m_player, CGPlayerLocalData, m_playerFieldCoinage, 0)

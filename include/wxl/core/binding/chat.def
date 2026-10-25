@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Chat domain of the client binding: the lines the chat holds until it can show them.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including chat.def"
+#endif
+
+// The last line of CGChat::s_pendingChat, the list of lines the chat holds until it can show
+// them: CGChat::QueueChatText appends each one at its tail (NewNode(2, ...), 0x00502D3A), so
+// right after it returns this is the line it kept. Null when the list is empty or outside the
+// client.
+WXL_BINDING(chat_pending_last, const void*, (void), (), nullptr)
+
+// The text a held line keeps: PENDINGCHAT::m_text, QueueChatText's copy of it, which the client
+// hands to AddChatMessage when it adds the line again.
+WXL_BINDING_FIELD(pending_chat_text, const char*, PENDINGCHAT, m_text, nullptr)

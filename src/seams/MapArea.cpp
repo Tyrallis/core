@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The MapArea seams: what the runtime does when a terrain chunk is built, on both builds.
 
@@ -18,7 +18,7 @@ namespace wxl::seam::MapArea::PrepareChunk
     void WXL_CALL Before(void* self, int32_t chunk_x, int32_t chunk_y)
     {
         wxl::host::ModHost* host = wxl::core::Host();
-        if (!host || !self) return;
+        if (!host || !self || !host->Listening(WXL_EV_TerrainChunkBuild)) return;
 
         wxl_terrain_chunk_args args{};
         args.map_id  = static_cast<uint32_t>(wxl::core::binding::map_id());

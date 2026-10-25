@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Storm domain: seams on Storm's allocator, which every allocation of the client goes
+// through -- `new` included -- with the source file and line of the code that asked, and on
+// Storm's error display, which every fatal error of the client goes through.
+//
+// No event is raised: the client allocates tens of thousands of times a second. The allocator
+// bodies count, for wxl.footprint, while a mod has started accounting, and return at once
+// otherwise. They run on every thread that allocates.
+//
+// All four are free functions declared STORMAPI: __stdcall (`ret 0x10`, `ret 0x10`, `ret 0x14`,
+// `ret 0x1C`).
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including storm.def"
+#endif
+
+// Allocates `bytes`, rounded up to 8, from the CRT heap; zeroed when flags carry 8. A failure
+// does not return to the caller unless the client was told not to exit on one: it answers null
+// then. `operator new` calls it with "new" for a file. After counts the block it answered, under
+// the file it was given.
+WXL_SEAM_AFTER(Storm, SMemAlloc, "SMemAlloc", void*, stdcall, (size_t bytes, const char* filename, int32_t line, uint32_t flags))
+
+// Frees a block; null is allowed. Before stops counting it, while no other thread can be handed
+// the same address.
+WXL_SEAM_BEFORE(Storm, SMemFree, "SMemFree", int32_t, stdcall, (void* ptr, const char* filename, int32_t line, uint32_t flags))
+
+// Grows or shrinks a block. With no block it is SMemAlloc's call, which that seam counts; with
+// flags 0xB00BEEE5, or with 0x10 (no move allowed), it answers null and leaves the block alone;
+// otherwise the block moves or stays, and a size of 0 frees it. Before takes the block out of the
+// counts, After puts back what the call left: the new block under the file it was given, or the
+// old one when the call failed.
+WXL_SEAM(Storm, SMemReAlloc, "SMemReAlloc", void*, stdcall, (void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags))
+
+// Shows an error, writes it to Errors\<time> Error.txt and, unless it is recoverable, ends the
+// process (TerminateProcess with exitcode). Every fatal error of the client ends here:
+// SErrDisplayAppFatal (an "Invalid function pointer" among them), the failed assertions, an
+// allocation that cannot be served, and Storm's exception filter. None of it is an exception, so
+// the crash report never sees it. Before writes the error to WarcraftXL.log and flushes it: the
+// message, the code, the stack, the mod whose code was running, the last events, and for a fatal
+// one the session's end line. linenumber is negative for Storm's own kinds: -5 an exception and
+// -3 a leak report, whose text is in filename.
+WXL_SEAM_BEFORE(Storm, SErrDisplayError, "SErrDisplayError", int32_t, stdcall, (uint32_t errorcode, const char* filename, int32_t linenumber, const char* description, int32_t recoverable, uint32_t exitcode, uint32_t unknown))

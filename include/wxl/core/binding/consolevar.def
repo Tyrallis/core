@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The ConsoleVar domain of the client binding: a console variable, as the ConsoleVar seam
+// reads it. `object` is the CVar* the seam was handed.
+
+#ifndef WXL_BINDING_FIELD
+#error "define WXL_BINDING_FIELD(name, ret, Type, member, absent) before including consolevar.def"
+#endif
+
+// The variable's name: the key of the hash object it is.
+WXL_BINDING_FIELD(cvar_name, const char*, CVar, m_key.m_str, 0)
+
+// Its value as a string; null before the first set.
+WXL_BINDING_FIELD(cvar_value, const char*, CVar, m_stringValue.m_str, 0)
+
+// Its flags: 1 archived, 2 latched until Update, 4 read-only, ...
+WXL_BINDING_FIELD(cvar_flags, uint32_t, CVar, m_flags, 0)

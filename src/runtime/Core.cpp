@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The core runtime: paths, the log sink, and the mod host.
 
@@ -8,14 +8,21 @@
 #include "runtime/Stages.hpp"
 
 #include "common/Log.hpp"
+#include "objects/Objects.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Code.hpp"
+#include "runtime/Session.hpp"
 #include "services/DataService.hpp"
 #include "services/GxService.hpp"
 #include "services/M2FileService.hpp"
 #include "services/M2Service.hpp"
+
+#include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
+#include "wxl/core/init.h"
 #include "wxl/host/mod_host.hpp"
 
 #include <windows.h>
@@ -26,7 +33,6 @@
 
 namespace
 {
-    constexpr wchar_t kLogRelative[]  = L"Logs\\WarcraftXL.log";
     constexpr wchar_t kModsRelative[] = L"Mods";
 
     /**
@@ -95,10 +101,25 @@ namespace
         // and nothing it was holding is going to be given back by it.
         wxl::core::attachment::Release(token);
         wxl::core::services::storage::CloseFilesOf(token);
+        wxl::core::services::storage::RemoveSearchPathsOf(token);
+        wxl::core::services::storage::RemoveRedirectsOf(token);
         wxl::core::services::data::ForgetMod(token);
         wxl::core::services::gx::ForgetMod(token);
         wxl::core::services::m2::ForgetMod(token);
         wxl::core::services::m2file::ForgetMod(token);
+
+        // What it reported of its memory, and the threshold it watched, go too.
+        wxl::core::services::footprint::ForgetMod(token);
+        // Its watches go with it: the client stops reporting what no other mod watches.
+        wxl::core::objects::Service().DropWatches(token);
+    }
+
+    /// An event gained its first handler or lost its last: the flag the client tests before a
+    /// seam whose body would only raise it.
+    void OnListenChanged(void*, wxl_event event, bool listening)
+    {
+        if (static_cast<uint32_t>(event) < static_cast<uint32_t>(WXL_EV_COUNT))
+            wxl_core_listening[event] = listening ? 1 : 0;
     }
 
     // Heap-allocated and never freed: the wxl_host table points into it, and a mod disabled
@@ -109,16 +130,11 @@ namespace
     bool g_up      = false;
 }
 
+extern "C" WXL_CORE_API volatile uint8_t wxl_core_listening[WXL_EV_COUNT] = {};
+
 namespace wxl::core
 {
-    bool OpenLog()
-    {
-        wchar_t path[1024];
-        const size_t dir = ExeDirectory(path, sizeof path / sizeof path[0]);
-        if (dir == 0) return false;
-        if (wcscat_s(path, kLogRelative) != 0) return false;
-        return wxl::log::Open(path);
-    }
+    bool OpenLog() { return session::Begin(); }
 
     wxl::host::ModHost* Host() { return g_host; }
 
@@ -140,6 +156,8 @@ namespace wxl::core
             }
 
             attachment::Prepare();
+            // First: it calibrates its clock on a thread of its own while the mods load.
+            profile::Start(settings::ResolveProfile(session::CurrentSettings()));
 
             wxl::host::HostConfig cfg;
             cfg.mods_directory  = std::filesystem::path(dir) / kModsRelative;
@@ -150,17 +168,23 @@ namespace wxl::core
             cfg.log_minimum     = ToHostLevel(wxl::log::MinLevel());
             cfg.events          = attachment::Events();
             cfg.services        = attachment::Services();
+            // Every binary the host maps is code the client may be handed, as is the runtime's own.
+            cfg.loader          = &code::HostLoader();
+            code::AddOwnImage();
 
-            WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u, target %s, mods in %ls",
+            WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u.%u, target %s, mods in %ls",
                       kRuntimeId, kRuntimeName, static_cast<unsigned>(WXL_CORE_VERSION),
                       static_cast<unsigned>(WXL_ABI_VERSION_MAJOR),
-                      static_cast<unsigned>(WXL_ABI_VERSION_MINOR), cfg.target.c_str(),
+                      static_cast<unsigned>(WXL_ABI_VERSION_MINOR),
+                      static_cast<unsigned>(WXL_ABI_VERSION_FEATURE), cfg.target.c_str(),
                       cfg.mods_directory.c_str());
             for (const wxl::host::PublishedService& service : cfg.services)
                 WLOG_INFO(kTag, "service %s version %u", service.name.c_str(), service.version);
 
             g_host = new wxl::host::ModHost(std::move(cfg));
             g_host->SetDisableHandler(&OnModDisabled, nullptr);
+            profile::Attach(*g_host);
+            g_host->SetListenHandler(&OnListenChanged, nullptr);
 
             attachment::Install();
 
@@ -168,19 +192,7 @@ namespace wxl::core
             stages::Restart();
             stages::Reach(WXL_STAGE_EARLY);
 
-            for (const wxl::host::LoadedMod& mod : g_host->Loaded())
-            {
-                if (mod.disabled)
-                    WLOG_WARN(kTag, "mod %s %s (%s) is disabled: it faulted %s", mod.id.c_str(),
-                              mod.manifest.version.text.c_str(), mod.name.c_str(), mod.fault.c_str());
-                else
-                    WLOG_INFO(kTag, "mod %s %s (%s) is up", mod.id.c_str(),
-                              mod.manifest.version.text.c_str(), mod.name.c_str());
-            }
-            for (const wxl::host::RefusedMod& mod : g_host->Refused())
-                WLOG_INFO(kTag, "mod %s was not loaded: %s",
-                          mod.id.empty() ? mod.directory_name.c_str() : mod.id.c_str(),
-                          mod.reason.c_str());
+            session::ReportMods(*g_host);
             WLOG_INFO(kTag, "core ready: %zu mod(s) loaded", g_host->Loaded().size());
             g_up = true;
         }

@@ -3,7 +3,7 @@
 # for the recompiled client (64-bit, linked by the client and started through WarcraftXLInit).
 # The mod host comes from the SDK checkout next door and is built here once per architecture.
 # The patcher, MinHook and the two mods under mods/ carry client addresses and exist on x86 only.
-# Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
+# Copyright (c) 2026 WarcraftXL. MIT (see LICENSE).
 #
 # One CMake tree is one architecture, so this file plays two roles depending on WXL_CORE_ARCH:
 #
@@ -15,6 +15,7 @@
 #       build/dist/bin/x86/wxl-core-patcher.exe
 #       build/dist/bin/x64/WarcraftXL.dll
 #       build/dist/Mods/<id>/{mod.json,bin/x86/<name>.dll}
+#       build/dist/Mods/wxl.lua/{mod.json,LICENSE-LuaJIT.txt,bin/x86/wxl-lua.dll,bin/x64/wxl-lua.dll}
 #
 #   - win-x86 or win-x64 (a child, or a tree configured by hand with the matching -A Win32 or
 #     -A x64): the real targets of that one architecture, in build/<Config>/.
@@ -25,6 +26,8 @@ project(wxl-core VERSION 0.2.0 LANGUAGES NONE)
 set(WXL_CORE_ARCH "" CACHE STRING
     "Architecture of this build tree (win-x86 or win-x64). Set by the superbuild; empty builds every target.")
 option(WXL_CORE_MODS "Build the mods under mods/ (x86 only: both require wxl.patch)" ON)
+option(WXL_CORE_LUA "Build wxl.lua, the runtime of the Lua mods, from the SDK and ship it in Mods/" ON)
+option(WXL_PROFILE "Carry the Tracy profiler client, on demand, and publish wxl.profile; WarcraftXL.ini's [profile] starts it; OFF leaves no trace of it" ON)
 
 set(WXL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sdk" CACHE PATH "Path to a checkout of WarcraftXL/sdk")
 if(NOT EXISTS "${WXL_SDK_DIR}/include/wxl/abi.h")
@@ -88,6 +91,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 # --- The SDK: the contract, the shared mod host and the shared runtime half of wxl.object -------
 set(WXL_SDK_TESTS OFF CACHE BOOL "" FORCE)
+# The host's dispatch and handler zones follow the runtime's choice.
+set(WXL_HOST_PROFILE ${WXL_PROFILE} CACHE BOOL "" FORCE)
 add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
 
 # A single integer a mod can read out of wxl_runtime_info.version: major*10000 + minor*100 + patch.
@@ -132,15 +137,41 @@ list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/AttachX86\.cpp$")
 list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/RegparmX86\.cpp$")
 file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/objects/*.cpp")
 
+# The commits the build comes from, read at every build into a header only Session.cpp includes:
+# core's, the SDK's, and the client's when core is built inside a client's tree.
+set(WXL_BUILD_IDS_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(WXL_BUILD_IDS_CLIENT "")
+if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(WXL_BUILD_IDS_CLIENT "${CMAKE_SOURCE_DIR}")
+endif()
+add_custom_target(wxl-core-build-ids
+    COMMAND "${CMAKE_COMMAND}" "-DOUT=${WXL_BUILD_IDS_DIR}/wxl_build_ids.h"
+            "-DCORE=${CMAKE_CURRENT_SOURCE_DIR}" "-DSDK=${WXL_SDK_DIR}" "-DCLIENT=${WXL_BUILD_IDS_CLIENT}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_ids.cmake"
+    BYPRODUCTS "${WXL_BUILD_IDS_DIR}/wxl_build_ids.h"
+    COMMENT "Reading the commits WarcraftXL.dll is built from"
+    VERBATIM)
+
+# The launch's log (its settings file, its header and its end, the crash report, the client's fatal
+# errors) and the code the client accepts.
+set(WXL_CORE_SESSION_SOURCES
+    src/runtime/Code.cpp
+    src/runtime/Session.cpp
+    src/runtime/Settings.cpp
+    src/runtime/Crash.cpp
+    src/runtime/Stamp.cpp)
+
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
+    ${WXL_CORE_SESSION_SOURCES}
     src/runtime/Stages.cpp
     src/runtime/Frame.cpp
-    src/runtime/Stamp.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp
     src/services/StorageService.cpp
+    src/services/FootprintService.cpp
+
     src/services/GxService.cpp
     src/services/M2Service.cpp
     src/services/M2FileService.cpp
@@ -154,7 +185,8 @@ set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 # follow, and neither matters to what ships.
 set_property(TARGET wxl-core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 wxl_core_release_symbols(wxl-core)
-target_include_directories(wxl-core PRIVATE src include)
+target_include_directories(wxl-core PRIVATE src include "${WXL_BUILD_IDS_DIR}")
+add_dependencies(wxl-core wxl-core-build-ids)
 target_link_libraries(wxl-core PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core PRIVATE
     ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
@@ -167,6 +199,7 @@ target_compile_definitions(wxl-core PRIVATE
 # carry an architecture's entry point. Built for both, run by hand or by ctest.
 add_executable(wxl-core-seam-harness
     tests/seam_harness.cpp
+    ${WXL_CORE_SESSION_SOURCES}
     src/common/Log.cpp
     src/runtime/Stages.cpp
     src/runtime/Frame.cpp
@@ -174,6 +207,8 @@ add_executable(wxl-core-seam-harness
     src/services/ScriptService.cpp
     src/services/DataService.cpp
     src/services/StorageService.cpp
+    src/services/FootprintService.cpp
+
     src/services/GxService.cpp
     src/services/M2Service.cpp
     src/services/M2FileService.cpp
@@ -181,12 +216,55 @@ add_executable(wxl-core-seam-harness
     ${WXL_OBJECT_READS})
 # The same build as the DLL, so --bench measures what ships rather than something near it.
 set_property(TARGET wxl-core-seam-harness PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-target_include_directories(wxl-core-seam-harness PRIVATE src include)
+target_include_directories(wxl-core-seam-harness PRIVATE src include "${WXL_BUILD_IDS_DIR}")
+add_dependencies(wxl-core-seam-harness wxl-core-build-ids)
 target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host wxl::runtime)
-target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)
+target_compile_definitions(wxl-core-seam-harness PRIVATE
+    ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
+
+# --- The log ---------------------------------------------------------------------------------------
+# The session files (a launch's log renamed for the next, the oldest pruned), the levels by tag,
+# the settings file, against a scratch folder.
+add_executable(wxl-core-log-tests
+    tests/log_tests.cpp
+    src/common/Log.cpp
+    src/runtime/Settings.cpp)
+target_include_directories(wxl-core-log-tests PRIVATE src include)
+target_compile_definitions(wxl-core-log-tests PRIVATE ${WXL_CORE_DEFS})
+
+# --- Tracy (BSD-3-Clause, deps/tracy, its own license file) -----------------------------------------
+# The client half of the profiler, compiled once into the DLL: mods reach it through wxl.profile,
+# the recompiled client through WarcraftXLZoneBegin/End, so no other binary carries a second one.
+# On demand: nothing is sent, and a zone costs a load, until a viewer connects. Started by the
+# runtime (profile::Start) rather than at load, which would run under the loader lock. No crash
+# handler: the mod host's guard owns faults. No system tracing, sampling or call stacks: they need
+# rights or symbol files a player does not have, and Proton serves none of them. Whether it starts,
+# its port and whether it listens on 127.0.0.1 alone are WarcraftXL.ini's [profile], set at run time
+# through the variables Tracy reads; the address it would announce itself to is fixed at compile
+# time (255.255.255.255, the whole network), so it does not announce itself at all: a viewer
+# connects to the address it is given.
+if(WXL_PROFILE)
+    add_library(wxl-tracy STATIC deps/tracy/public/TracyClient.cpp)
+    target_include_directories(wxl-tracy SYSTEM PUBLIC deps/tracy/public)
+    target_compile_definitions(wxl-tracy PUBLIC
+        TRACY_ENABLE TRACY_ON_DEMAND TRACY_DELAYED_INIT TRACY_MANUAL_LIFETIME TRACY_NO_CRASH_HANDLER
+        TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING TRACY_NO_CONTEXT_SWITCH TRACY_NO_VSYNC_CAPTURE
+        TRACY_NO_CALLSTACK TRACY_NO_CODE_TRANSFER TRACY_NO_VERIFY TRACY_NO_FRAME_IMAGE TRACY_NO_BROADCAST
+        ${WXL_CORE_DEFS})
+    target_link_libraries(wxl-tracy PUBLIC ws2_32)
+
+    foreach(target wxl-core wxl-core-seam-harness)
+        target_sources(${target} PRIVATE src/profile/Profile.cpp)
+        target_link_libraries(${target} PRIVATE wxl-tracy)
+    endforeach()
+    # PUBLIC: the client's sources read it too, to compile their zones (wxl/core/profile.h).
+    target_compile_definitions(wxl-core PUBLIC WXL_CORE_PROFILE=1)
+    target_compile_definitions(wxl-core-seam-harness PRIVATE WXL_CORE_PROFILE=1)
+endif()
 
 enable_testing()
 add_test(NAME seams COMMAND wxl-core-seam-harness)
+add_test(NAME log COMMAND wxl-core-log-tests "${CMAKE_CURRENT_BINARY_DIR}/log-scratch")
 
 install(TARGETS wxl-core RUNTIME DESTINATION "bin/${WXL_CORE_ARCH_DIR}" COMPONENT core)
 install(FILES "$<TARGET_PDB_FILE:wxl-core>" DESTINATION "bin/${WXL_CORE_ARCH_DIR}"
@@ -252,10 +330,15 @@ else()
     set(WXL_CORE_WARNED_TARGETS wxl-core)
 endif()
 
-list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness)
+list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness wxl-core-log-tests)
 foreach(target IN LISTS WXL_CORE_WARNED_TARGETS)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
 endforeach()
+
+# --- wxl.lua, on both architectures: the Lua mods run on either runtime ----------------------------
+if(WXL_CORE_LUA)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/wxl_lua.cmake")
+endif()
 
 # --- The mods this runtime ships -------------------------------------------------------------------
 if(WXL_CORE_MODS AND WXL_CORE_X86)

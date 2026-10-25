@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // How far the client has booted, told by the seams that know.
 
@@ -22,6 +22,9 @@ namespace wxl::core::stages
 
     /// The furthest stage announced so far.
     wxl_stage Reached();
+
+    /// The furthest stage's name, "early" ... "shutdown", or "none" before the first.
+    const char* ReachedName();
 
     /// Forgets what has been announced, for a runtime that starts over. Only Core.cpp calls it.
     void Restart();
