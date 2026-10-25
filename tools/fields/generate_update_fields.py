@@ -92,7 +92,7 @@ TYPE_INT, TYPE_SHORTS, TYPE_FLOAT, TYPE_LONG, TYPE_BYTES, TYPE_BYTES2 = 1, 2, 3,
 SCALARS = {
     'uint8_t': (1, 'u'), 'int8_t': (1, 's'), 'uint16_t': (2, 'u'), 'int16_t': (2, 's'),
     'uint32_t': (4, 'u'), 'int32_t': (4, 's'), 'float': (4, 'f'), 'uint64_t': (8, 'u'),
-    'WOWGUID': (8, 'g'), 'TypeMask': (4, 'u'),
+    'WOWGUID': (8, 'g'), 'TypeMask': (4, 'u'), 'OBJECT_TYPE': (4, 'u'),
 }
 
 HEADER = """\
@@ -229,7 +229,7 @@ def dword_counts(client):
     source = read(os.path.join(client, 'WoW/Source/ObjectMgrClient/ObjectMgrClient.cpp'))
     address, items = uint_array(source, 's_objDwordCount')
     counts = [number(item) for item in items]
-    remote = re.search(r'TYPEMASK_OBJECT \| TYPEMASK_UNIT \| TYPEMASK_PLAYER:\s*\{\s*return guid == '
+    remote = re.search(r'(?:HEIR_TYPE_PLAYER|TYPEMASK_OBJECT \| TYPEMASK_UNIT \| TYPEMASK_PLAYER):\s*\{\s*return guid == '
                        r'ClntObjMgrGetActivePlayer\(\) \? (\w+) : (\w+);', source)
     if not remote:
         raise Problem('GetNumDwordBlocks: the player case was not found')
@@ -238,10 +238,23 @@ def dword_counts(client):
 
 # --- the descriptor blocks, measured --------------------------------------------------------
 
-MEMBER_RE = re.compile(r'^\s*/\*\s*([0-9A-Fa-f]+)\s*\*/\s*([\w:]+)\s+(\w+)\s*((?:\[\s*\d+\s*\]\s*)*);')
+MEMBER_RE = re.compile(r'^\s*/\*\s*([0-9A-Fa-f]+)\s*\*/\s*([\w:]+)\s+(\w+)\s*((?:\[\s*\w+\s*\]\s*)*);')
 
 
-def class_members(text, name):
+def enumerator(object_dir, name):
+    """The value of an enumerator the fork's object headers define, for an array bound named by it."""
+    values = set()
+    for root, _, files in os.walk(object_dir):
+        for f in files:
+            if f.endswith('.h'):
+                for match in re.finditer(r'^\s*' + name + r'\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*,', read(os.path.join(root, f)), re.M):
+                    values.add(number(match.group(1)))
+    if len(values) != 1:
+        raise Problem('the array bound %s is defined %d times under WoW/Source/Object' % (name, len(values)))
+    return values.pop()
+
+
+def class_members(text, name, object_dir):
     """The data members of `class|struct name { ... };`, in declaration order."""
     match = re.search(r'^(?:class|struct)\s+' + name + r'\b[^;{]*\{(.*?)^\};', text, re.S | re.M)
     if not match:
@@ -251,7 +264,8 @@ def class_members(text, name):
     for line in match.group(1).split('\n'):
         member = MEMBER_RE.match(line)
         if member:
-            dims = [int(d) for d in re.findall(r'\d+', member.group(4))]
+            dims = [int(d) if d.isdigit() else enumerator(object_dir, d)
+                    for d in re.findall(r'\w+', member.group(4))]
             members.append((member.group(3), member.group(2), dims, int(member.group(1), 16)))
     return (base.group(1) if base else None), members
 
@@ -263,7 +277,7 @@ def find_class(client, name, hint):
     for root, _, files in os.walk(object_dir):
         candidates += [os.path.join(root, f) for f in sorted(files) if f.endswith('.h')]
     for path in candidates:
-        found = class_members(read(path), name)
+        found = class_members(read(path), name, object_dir)
         if found:
             return path, found
     raise Problem('no declaration of %s under WoW/Source/Object' % name)

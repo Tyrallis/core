@@ -231,7 +231,7 @@ namespace wxl::core::binding
     {
         // ClntObjMgrObjectPtr(WOWGUID, TypeMask, const char* file, int line), cdecl: the guid as
         // two dwords, the mask, and a source position it reads only to report a wrong kind.
-        // TYPEMASK_OBJECT (1) is every kind.
+        // TYPE_OBJECT (1) is every kind.
         using ObjectPtrFn = void*(__cdecl*)(uint64_t guid, uint32_t mask, const char* file, int32_t line);
         if (!IsClient() || !OnMainThread() || !guid) return nullptr;
         return reinterpret_cast<ObjectPtrFn>(WXL_SITE("ClntObjMgrObjectPtr", 0))(guid, 1u, "WarcraftXL", 0);
