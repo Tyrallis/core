@@ -782,6 +782,29 @@ GROUND_TRUTH = {
     # The observed half of SFile::OpenEx, the same function as Storage.OpenFile: `ret 0x10` at
     # 0x00424C3C and 0x00424CCB.
     "Storage.OpenEx":                  ("0x00424B50", "stdcall", [], 4),
+    # System_SFile2::FindFile reads [ebp+8] (0x004247C0) up to [ebp+0x1C] (0x004247A9) and ends
+    # in a bare `ret` (0x00424B0A); SFile::FileExistsEx pushes six and `add esp, 0x18` at 0x00424B38.
+    "Storage.FindFile":                ("0x00424780", "cdecl", [], 6),
+    # The asset pipeline's events. CMapArea::AsyncCallback reads [ebp+8] (0x007D7024), a bare
+    # `ret` (0x007D7044); AsyncTextureSuccessCallback the same (0x004B7E84, 0x004B7F0D); both are
+    # called by AsyncFileReadPollHandler through ECX at 0x004B9B9E, `add esp, 4`.
+    "MapArea.AsyncCallback":           ("0x007D7020", "cdecl", [], 1),
+    "Texture.AsyncTextureSuccessCallback": ("0x004B7E80", "cdecl", [], 1),
+    # CMapObjGroup::Create: `mov esi, ecx` (0x007D82E8), bare `ret` (0x007D8560, 0x007D856E).
+    "MapObj.CreateGroup":              ("0x007D82E0", "thiscall", ["ecx"], 0),
+    # CM2Shared::FinishLoadingSkinProfile: `mov edi, ecx` (0x00838494), [ebp+8] read, `ret 4`
+    # (0x008384A3).
+    "M2Shared.FinishLoadingSkinProfile": ("0x00838490", "thiscall", ["ecx"], 1),
+    # CBLPFile::Open: [ebp+8] (0x006AFF16) and `mov esi, ecx` (0x006AFF1B), `ret 8` (0x006AFF3A).
+    # CBLPFile::Source: `mov ebx, ecx` (0x006AE904), [ebp+8] (0x006AE924), `ret 4` (0x006AE955).
+    "BLPFile.Open":                    ("0x006AFF10", "thiscall", ["ecx"], 2),
+    "BLPFile.Source":                  ("0x006AE900", "thiscall", ["ecx"], 1),
+    # CGxDevice::IShaderLoad reads ECX (0x0068497E) and [ebp+8..0x14], `ret 0x14` (0x00684A9F).
+    "Gx.IShaderLoad":                  ("0x00684970", "thiscall", ["ecx"], 5),
+    # SE2::CreateWaveData reads [ebp+8] (0x0087EE83) to the floats at [ebp+0x38], bare `ret`
+    # (0x0087F195, 0x0087F376); Sound_LoadScriptSoundFile pushes sixteen, `add esp, 0x40` at
+    # 0x0087F808.
+    "Sound.CreateWaveData":            ("0x0087EE60", "cdecl", [], 16),
     # TextureCreate (the file-name overload) reads [ebp+8..0x14] and ends in a bare `ret`
     # (0x004B97A4, 0x004B98EC); 0x0040A075 pushes four and cleans 0x10.
     "Texture.Create":                  ("0x004B9760", "cdecl", [], 4),

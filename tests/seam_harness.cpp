@@ -18,6 +18,7 @@
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
+#include "services/Assets.hpp"
 #include "services/StorageService.hpp"
 
 #include <chrono>
@@ -30,6 +31,7 @@
 #include "wxl/core/storm.hpp"
 #include "wxl/objects/map.hpp"
 #include "wxl/runtime/handles.hpp"
+#include "wxl/core/filestack.hpp"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -43,6 +45,8 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -528,37 +532,177 @@ namespace
         return nullptr;
     }
 
-    wxl_bool WXL_CALL FakeFileExists(const char* path)
+    std::string g_basePath; ///< the client's folder, as SFile::m_basePath holds it
+
+    // The client's file stack, as Blizzard::File dispatches through it: one node whose verbs
+    // know no file of their own, which the runtime's file layer writes its verbs into.
+    namespace fsk = wxl::core::filestack;
+
+    bool FakeVerbFails(fsk::Filesystem*, fsk::FileParms*) { return false; }
+
+    fsk::Filesystem  g_fakeInitial{};
+    fsk::Filesystem* g_fakeNode = nullptr;
+    void*            g_fakeTop  = &g_fakeInitial;
+
+    /// Builds the stack as file_init does: a node of its own on top.
+    void BuildFakeStack()
     {
-        return path && FileNamed(path) ? WXL_TRUE : WXL_FALSE;
+        static fsk::Filesystem node;
+        node = fsk::Filesystem{};
+        fsk::Verb* verbs = &node.verbs.cd;
+        for (size_t i = 0; i < sizeof node.verbs / sizeof(fsk::Verb); ++i) verbs[i] = &FakeVerbFails;
+        g_fakeNode = &node;
+        g_fakeTop  = &node;
+        wxl::core::services::assets::ForgetInstall();
     }
 
+    void** WXL_CALL FakeFilestackTop() { return &g_fakeTop; }
+    const void* WXL_CALL FakeFilestackInitial() { return &g_fakeInitial; }
+
+    fsk::Verb TopVerb(uintptr_t offset) { return fsk::VerbAt(static_cast<fsk::Filesystem*>(g_fakeTop), offset); }
+
+    /// An open file of the fake client: one it holds, one of the disk, or one of the file stack.
+    struct FakeHandle
+    {
+        FakeFile*          file = nullptr; ///< a file it holds, or one read off the disk
+        std::unique_ptr<FakeFile> disk;
+        fsk::StreamRecord* stream = nullptr;
+    };
+
+    /// FindFile as the client runs it: the gate first, then a name behind two backslashes off
+    /// the disk at the base path, else the files it holds. Answers the path to open, and
+    /// whether that path is the file stack's.
+    bool FakeFind(const char* name, std::string& path, bool& stacked)
+    {
+        char        buffer[260] = {};
+        char*       out         = buffer;
+        uint32_t    size        = sizeof buffer;
+        uint32_t    flags       = 0;
+        uint32_t    type        = 3;
+        uint32_t*   typeAt      = &type;
+        void*       archive     = nullptr;
+        void**      archiveAt   = &archive;
+        int32_t     answer      = 0;
+        const char* asked       = name;
+        if (wxl::seam::Storage::FindFile::Gate(&answer, &asked, &out, &size, &flags, &typeAt, &archiveAt))
+        {
+            if (!answer) return false;
+            path    = buffer;
+            stacked = true;
+            return true;
+        }
+        stacked = false;
+        if (asked[0] == '\\' && asked[1] == '\\')
+        {
+            path = g_basePath + asked;
+            const DWORD attributes = ::GetFileAttributesA(path.c_str());
+            return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+        }
+        path = asked;
+        return FileNamed(asked) != nullptr;
+    }
+
+    wxl_bool WXL_CALL FakeFileExists(const char* path)
+    {
+        std::string found;
+        bool        stacked = false;
+        return path && FakeFind(path, found, stacked) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    /// SFileOpenFile: SFile::OpenEx's gate, FindFile, then the open of what it found.
     void* WXL_CALL FakeFileOpen(const char* path)
     {
-        FakeFile* file = path ? FileNamed(path) : nullptr;
-        if (!file) return nullptr;
-        file->at   = 0;
-        file->open = true;
+        if (!path) return nullptr;
+        void*       archive = nullptr;
+        const char* name    = path;
+        uint32_t    flags   = 0;
+        void**      result  = nullptr;
+        int32_t     answer  = 0;
+        if (wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &result)) return nullptr;
+
+        std::string found;
+        bool        stacked = false;
+        if (!FakeFind(name, found, stacked)) return nullptr;
+        auto handle = std::make_unique<FakeHandle>();
+        if (stacked)
+        {
+            fsk::FileParms parms{};
+            parms.verb = offsetof(fsk::Filesystem, verbs.open);
+            parms.path = found.data();
+            parms.mode = 0x1005;
+            if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) || !parms.stream) return nullptr;
+            handle->stream = parms.stream;
+        }
+        else if (found.size() > 1 && found.find(":\\") != std::string::npos)
+        {
+            std::ifstream in(found, std::ios::binary);
+            if (!in) return nullptr;
+            handle->disk = std::make_unique<FakeFile>();
+            handle->disk->name.assign(found);
+            handle->disk->bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            handle->file = handle->disk.get();
+        }
+        else
+        {
+            handle->file = FileNamed(found.c_str());
+            if (!handle->file) return nullptr;
+        }
+        if (handle->file)
+        {
+            handle->file->at   = 0;
+            handle->file->open = true;
+        }
         ++g_opens;
-        return file;
+        return handle.release();
     }
+
+    FakeHandle* Handle(void* file) { return static_cast<FakeHandle*>(file); }
 
     uint64_t WXL_CALL FakeFileSize(void* file)
     {
-        return file ? static_cast<const FakeFile*>(file)->bytes.size() : 0u;
+        if (!file) return 0;
+        FakeHandle* handle = Handle(file);
+        if (handle->file) return handle->file->bytes.size();
+        fsk::FileParms parms{};
+        parms.verb   = offsetof(fsk::Filesystem, verbs.getfileinfo);
+        parms.stream = handle->stream;
+        if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) || !parms.info) return 0;
+        return static_cast<uint64_t>(parms.info->size);
     }
 
     wxl_bool WXL_CALL FakeFileSeek(void* file, uint64_t offset)
     {
         if (!file) return WXL_FALSE;
-        static_cast<FakeFile*>(file)->at = offset;
-        return WXL_TRUE;
+        FakeHandle* handle = Handle(file);
+        if (handle->file)
+        {
+            handle->file->at = offset;
+            return WXL_TRUE;
+        }
+        fsk::FileParms parms{};
+        parms.verb     = offsetof(fsk::Filesystem, verbs.setpos);
+        parms.stream   = handle->stream;
+        parms.pos      = static_cast<int64_t>(offset);
+        parms.pos_mode = 0;
+        return TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) ? WXL_TRUE : WXL_FALSE;
     }
 
-    uint32_t WXL_CALL FakeFileRead(void* handle, void* buffer, uint32_t count)
+    uint32_t WXL_CALL FakeFileRead(void* opened, void* buffer, uint32_t count)
     {
-        FakeFile* file = static_cast<FakeFile*>(handle);
-        if (!file || !buffer || file->at >= file->bytes.size()) return 0;
+        if (!opened || !buffer) return 0;
+        FakeHandle* handle = Handle(opened);
+        if (!handle->file)
+        {
+            fsk::FileParms parms{};
+            parms.verb   = offsetof(fsk::Filesystem, verbs.read);
+            parms.stream = handle->stream;
+            parms.buffer = buffer;
+            parms.amount = static_cast<int32_t>(count);
+            if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms)) return 0;
+            return static_cast<uint32_t>(parms.amount);
+        }
+        FakeFile* file = handle->file;
+        if (file->at >= file->bytes.size()) return 0;
         const uint64_t left = file->bytes.size() - file->at;
         const uint32_t got  = left < count ? static_cast<uint32_t>(left) : count;
         memcpy(buffer, file->bytes.data() + file->at, got);
@@ -566,17 +710,25 @@ namespace
         return got;
     }
 
-    void WXL_CALL FakeFileClose(void* file)
+    void WXL_CALL FakeFileClose(void* opened)
     {
-        if (!file) return;
-        static_cast<FakeFile*>(file)->open = false;
+        if (!opened) return;
+        FakeHandle* handle = Handle(opened);
+        if (handle->file) handle->file->open = false;
+        if (handle->stream)
+        {
+            fsk::FileParms parms{};
+            parms.verb   = offsetof(fsk::Filesystem, verbs.close);
+            parms.stream = handle->stream;
+            TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms);
+        }
+        delete handle;
         ++g_closes;
     }
 
     wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
 
-    // The client's folder and its archives' listfiles, as find and the search path see them.
-    std::string              g_basePath;
+    // The client's archives' listfiles, as find sees them.
     std::vector<std::string> g_listed = {"Interface\\FrameXML\\FrameXML.toc",
                                          "Interface\\FrameXML\\Bindings.xml",
                                          "INTERFACE\\Icons\\A.blp", "Interface\\Glues\\Glues.toc"};
@@ -752,7 +904,67 @@ namespace
         std::string bytes;
         std::string replaced;    ///< what model_replace_bytes put in place, when it was asked
         bool        replace_fails = false;
+        std::string skin;        ///< its skin profile, as read
     };
+
+    /// A terrain tile, a map object's group and a texture, as the asset event rows read them.
+    struct FakeTile
+    {
+        int32_t     x = 0, y = 0;
+        const char* file = nullptr; ///< stands for the open file: its name
+        std::string bytes;
+    };
+
+    struct FakeGroup
+    {
+        void*       parent = nullptr;
+        uint32_t    index  = 0;
+        std::string bytes;
+    };
+
+    struct FakeTexture
+    {
+        char name[260] = {};
+    };
+
+    const void* WXL_CALL FakeAreaBytes(const void* area, int32_t* x, int32_t* y, void** file, uint32_t* size)
+    {
+        const FakeTile* tile = static_cast<const FakeTile*>(area);
+        if (!tile) return nullptr;
+        *x    = tile->x;
+        *y    = tile->y;
+        *file = const_cast<char*>(tile->file);
+        *size = static_cast<uint32_t>(tile->bytes.size());
+        return tile->bytes.data();
+    }
+
+    wxl_bool WXL_CALL FakeFileName(void* file, char* buffer, uint32_t capacity)
+    {
+        if (!file) return WXL_FALSE;
+        std::snprintf(buffer, capacity, "%s", static_cast<const char*>(file));
+        return WXL_TRUE;
+    }
+
+    const void* WXL_CALL FakeGroupBytes(const void* group, void** parent, uint32_t* index, uint32_t* size)
+    {
+        const FakeGroup* g = static_cast<const FakeGroup*>(group);
+        if (!g) return nullptr;
+        *parent = g->parent;
+        *index  = g->index;
+        *size   = static_cast<uint32_t>(g->bytes.size());
+        return g->bytes.data();
+    }
+
+    const void* WXL_CALL FakeSkinBytes(const void* shared)
+    {
+        const FakeModel* model = static_cast<const FakeModel*>(shared);
+        return model && !model->skin.empty() ? model->skin.data() : nullptr;
+    }
+
+    const char* WXL_CALL FakeTextureName(const void* texture)
+    {
+        return texture ? static_cast<const FakeTexture*>(texture)->name : nullptr;
+    }
 
     struct FakeMapObj
     {
@@ -1053,6 +1265,8 @@ namespace
         init.archive_mount          = &FakeArchiveMount;
         init.storage_base_path      = &FakeBasePath;
         init.archive_list           = &FakeArchiveList;
+        init.filestack_top          = &FakeFilestackTop;
+        init.filestack_initial      = &FakeFilestackInitial;
         init.gx_device_exists       = &FakeGxDeviceExists;
         init.gx_has_context         = &FakeGxHasContext;
         init.gx_window_visible      = &FakeGxWindowVisible;
@@ -1133,6 +1347,11 @@ namespace
         init.model_replace_bytes    = &FakeModelReplace;
         init.map_obj_path           = &FakeMapObjPath;
         init.map_obj_bytes          = &FakeMapObjBytes;
+        init.map_area_bytes         = &FakeAreaBytes;
+        init.file_name              = &FakeFileName;
+        init.map_obj_group_bytes    = &FakeGroupBytes;
+        init.model_skin_bytes       = &FakeSkinBytes;
+        init.texture_name           = &FakeTextureName;
         init.doodad_position        = &FakeDoodadPosition;
         init.unit_aura_slot         = &FakeAuraSlot;
         init.os_time_ms             = &FakeTimeMs;
@@ -2131,6 +2350,124 @@ namespace
     }
 
     /// Map: a doodad an overload placed is announced once; one it answered from the hash is not.
+
+    // --- the engine's own loads: tiles, groups, skins, textures, shaders, sounds ----------------
+
+    void CheckAssetEvents()
+    {
+        FakeTile tile;
+        tile.x     = 32;
+        tile.y     = 48;
+        tile.file  = "|wxl|00000000|World\\Maps\\Azeroth\\Azeroth_32_48.adt";
+        tile.bytes = "REVM tile";
+        g_received.clear();
+        wxl::seam::MapArea::AsyncCallback::Before(&tile);
+        const Received* loaded = Only(WXL_EV_TerrainTileLoad);
+        Check(loaded && loaded->As<wxl_terrain_tile_args>().tile_x == 32 && loaded->As<wxl_terrain_tile_args>().tile_y == 48 &&
+                  loaded->As<wxl_terrain_tile_args>().size == 9u,
+              "MapArea.AsyncCallback raises TerrainTileLoad with the tile's place and its bytes");
+        Check(loaded && loaded->As<wxl_terrain_tile_args>().path.size == strlen("World\\Maps\\Azeroth\\Azeroth_32_48.adt"),
+              "named by the client's name, not the file layer's path");
+
+        FakeMapObj root;
+        strcpy(root.name, "World\\wmo\\Inn.wmo");
+        FakeGroup group;
+        group.parent = &root;
+        group.index  = 3;
+        group.bytes  = "REVM group";
+        g_received.clear();
+        wxl::seam::MapObj::CreateGroup::Before(&group);
+        const Received* grouped = Only(WXL_EV_MapObjectGroupLoad);
+        Check(grouped && grouped->As<wxl_map_object_group_args>().group == 3u &&
+                  grouped->As<wxl_map_object_group_args>().size == 10u &&
+                  grouped->As<wxl_map_object_group_args>().path.size == strlen(root.name),
+              "MapObj.CreateGroup raises MapObjectGroupLoad with the root's name, the group's number and bytes");
+
+        FakeModel model;
+        strcpy(model.name, "Creature\\Boar\\Boar.m2");
+        model.skin = "SKIN data";
+        g_received.clear();
+        wxl::seam::M2Shared::FinishLoadingSkinProfile::Before(&model, 9);
+        const Received* skin = Only(WXL_EV_SkinProfileLoad);
+        Check(skin && skin->As<wxl_skin_profile_args>().size == 9u &&
+                  skin->As<wxl_skin_profile_args>().model.size == strlen(model.name),
+              "M2Shared.FinishLoadingSkinProfile raises SkinProfileLoad with the model and the skin's bytes");
+
+        // A BLP2 header: 256 x 128, DXT, 8-bit alpha, DXT5, three mip levels.
+        std::vector<uint8_t> blp(0x94 + 16, 0);
+        const uint32_t       header[] = {0x32504C42u, 1u};
+        std::memcpy(blp.data(), header, sizeof header);
+        blp[8]  = 2;
+        blp[9]  = 8;
+        blp[10] = 7;
+        blp[11] = 1;
+        const uint32_t size[] = {256u, 128u};
+        std::memcpy(blp.data() + 12, size, sizeof size);
+        for (int i = 0; i < 3; ++i)
+        {
+            const uint32_t mip = 100u >> i;
+            std::memcpy(blp.data() + 0x54 + 4 * i, &mip, 4);
+        }
+        FakeTexture texture;
+        strcpy(texture.name, "World\\Grass.blp");
+        g_received.clear();
+        wxl::seam::Texture::AsyncTextureSuccessCallback::Before(&texture);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        const Received* decoded = Only(WXL_EV_TextureDecode);
+        Check(decoded && decoded->As<wxl_texture_decode_args>().width == 256u &&
+                  decoded->As<wxl_texture_decode_args>().height == 128u &&
+                  decoded->As<wxl_texture_decode_args>().encoding == WXL_TEXTURE_DXT &&
+                  decoded->As<wxl_texture_decode_args>().alpha_bits == 8u &&
+                  decoded->As<wxl_texture_decode_args>().alpha_kind == 7u &&
+                  decoded->As<wxl_texture_decode_args>().mip_levels == 3u &&
+                  decoded->As<wxl_texture_decode_args>().path.size == strlen(texture.name),
+              "BLPFile.Source raises TextureDecode with the header's facts, named by the texture the read was for");
+        g_received.clear();
+        wxl::seam::BLPFile::Open::Before(nullptr, "Interface\\Icons\\A.blp", 0);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        decoded = Only(WXL_EV_TextureDecode);
+        Check(decoded && decoded->As<wxl_texture_decode_args>().path.size == strlen("Interface\\Icons\\A.blp"),
+              "or by CBLPFile::Open's name");
+        g_received.clear();
+        blp[0] = 'X';
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        Check(g_received.empty(), "bytes that are not a BLP2 file raise nothing");
+
+        g_received.clear();
+        wxl::seam::Gx::IShaderLoad::Before(nullptr, nullptr, 4u, "Shaders\\Pixel", "MapObjDiffuse", 2u);
+        const Received* shader = Only(WXL_EV_ShaderLoad);
+        Check(shader && shader->As<wxl_shader_load_args>().stage == WXL_SHADER_PIXEL &&
+                  shader->As<wxl_shader_load_args>().permutations == 2u &&
+                  shader->As<wxl_shader_load_args>().name.size == 13u,
+              "Gx.IShaderLoad raises ShaderLoad with the stage, the folder, the name and the permutations");
+
+        g_received.clear();
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "Sound\\Music\\Zone.mp3", 0u, nullptr, nullptr, nullptr, 0u, 50, 0,
+                                                 0xFFFFFF01u, 0u, 0, 0.f, 0.f, 0.f, nullptr);
+        const Received* sound = Only(WXL_EV_SoundFileLoad);
+        Check(sound && sound->As<wxl_sound_file_args>().streaming == WXL_TRUE && sound->As<wxl_sound_file_args>().priority == 50,
+              "Sound.CreateWaveData raises SoundFileLoad: a bool pushed as a dword is read by its low byte");
+        g_received.clear();
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "", 0u, nullptr, nullptr, nullptr, 0u, 0, 0, 0u, 0u, 0, 0.f, 0.f,
+                                                 0.f, nullptr);
+        Check(g_received.empty(), "an empty sound name raises nothing");
+
+        const wxl_event quiet[] = {WXL_EV_TerrainTileLoad, WXL_EV_MapObjectGroupLoad, WXL_EV_SkinProfileLoad,
+                                   WXL_EV_TextureDecode, WXL_EV_ShaderLoad, WXL_EV_SoundFileLoad};
+        for (wxl_event event : quiet) Mute(event);
+        g_received.clear();
+        blp[0] = 'B';
+        wxl::seam::MapArea::AsyncCallback::Before(&tile);
+        wxl::seam::MapObj::CreateGroup::Before(&group);
+        wxl::seam::M2Shared::FinishLoadingSkinProfile::Before(&model, 9);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        wxl::seam::Gx::IShaderLoad::Before(nullptr, nullptr, 0u, "Shaders\\Vertex", "X", 1u);
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "a.wav", 0u, nullptr, nullptr, nullptr, 0u, 0, 0, 0u, 0u, 0, 0.f,
+                                                 0.f, 0.f, nullptr);
+        for (wxl_event event : quiet) Unmute(event);
+        Check(g_received.empty(), "none of them raises anything while nobody listens");
+    }
+
     void CheckDoodads()
     {
         FakeDoodad tree;
@@ -2178,7 +2515,9 @@ namespace
         FakeFile file;
         file.name  = "DBFilesClient\\Spell.dbc";
         file.bytes = std::string(1234, 'x');
-        void* handle = &file;
+        FakeHandle opened_file;
+        opened_file.file = &file;
+        void* handle     = &opened_file;
 
         g_received.clear();
         wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
@@ -3082,6 +3421,16 @@ namespace
             int32_t     answer  = -1;
             flags               = 0;
             wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file);
+            // Then FindFile, as SFile::OpenEx calls it: a folder's file is a name rewritten.
+            char      path[260] = {};
+            char*     out       = path;
+            uint32_t  size      = sizeof path;
+            uint32_t  type      = 3;
+            uint32_t* typeAt    = &type;
+            void*     found     = nullptr;
+            void**    foundAt   = &found;
+            if (wxl::seam::Storage::FindFile::Gate(&answer, &name, &out, &size, &flags, &typeAt, &foundAt))
+                return std::string(path);
             return std::string(name);
         };
         uint32_t flags = 0;
@@ -3218,6 +3567,339 @@ namespace
         g_files.clear();
         g_basePath.clear();
         fs::remove_all(root, ignored);
+    }
+
+
+    // --- the asset pipeline: providers, served bytes, transforms --------------------------------
+
+    /// A provider over a table of names, counting what it is asked.
+    struct FakeProvider
+    {
+        std::map<std::string, std::string> files; ///< by lower-case name
+        std::map<std::string, std::vector<std::pair<std::string, bool>>> folders;
+        std::atomic<int> opens{0}, closes{0}, reads{0};
+        bool             faultOnExists = false;
+        uint64_t         removeFromInside = 0; ///< a handle exists tries to take back
+        wxl_result       removedFromInside = WXL_OK;
+        wxl_asset_provider table{};
+
+        static std::string Lowered(wxl_str path)
+        {
+            std::string key(path.data, path.size);
+            for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return key;
+        }
+
+        std::set<std::string> pending; ///< names it answers "not yet" for
+
+        static wxl_result WXL_CALL Exists(void* user, wxl_str path)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            if (self.pending.count(Lowered(path))) return WXL_E_PENDING;
+            if (self.faultOnExists) *static_cast<volatile int*>(nullptr) = 1;
+            if (self.removeFromInside)
+                self.removedFromInside = wxl::core::services::StorageApi().remove_provider(self.removeFromInside);
+            return self.files.count(Lowered(path)) ? WXL_OK : WXL_E_NOT_FOUND;
+        }
+
+        static void* WXL_CALL Open(void* user, wxl_str path, uint64_t* size)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            const auto    it   = self.files.find(Lowered(path));
+            if (it == self.files.end()) return nullptr;
+            ++self.opens;
+            *size = it->second.size();
+            return const_cast<std::string*>(&it->second);
+        }
+
+        static wxl_result WXL_CALL ReadAt(void* user, void* file, uint64_t offset, void* buffer, uint32_t size,
+                                          uint32_t* read)
+        {
+            ++static_cast<FakeProvider*>(user)->reads;
+            const std::string& bytes = *static_cast<const std::string*>(file);
+            const uint64_t     left  = offset < bytes.size() ? bytes.size() - offset : 0;
+            *read                    = left < size ? static_cast<uint32_t>(left) : size;
+            std::memcpy(buffer, bytes.data() + offset, *read);
+            return WXL_OK;
+        }
+
+        static void WXL_CALL Close(void* user, void*) { ++static_cast<FakeProvider*>(user)->closes; }
+
+        static void WXL_CALL List(void* user, wxl_str folder, wxl_asset_entry_fn fn, void* context)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            const auto    it   = self.folders.find(Lowered(folder));
+            if (it == self.folders.end()) return;
+            for (const auto& [name, isFolder] : it->second)
+                fn(context, wxl_str{name.data(), static_cast<uint32_t>(name.size())}, isFolder ? WXL_TRUE : WXL_FALSE);
+        }
+
+        const wxl_asset_provider* Table()
+        {
+            table = wxl_asset_provider{sizeof(wxl_asset_provider), this, &Exists, &Open, &ReadAt, &Close, &List};
+            return &table;
+        }
+    };
+
+    std::string ReadAll(const wxl_storage_api& api, const char* path)
+    {
+        std::string bytes(4096, '\0');
+        uint64_t    read = 0;
+        if (api.read(Str(path), bytes.data(), bytes.size(), &read) != WXL_OK) return "<none>";
+        bytes.resize(static_cast<size_t>(read));
+        return bytes;
+    }
+
+    /// A transform that upper-cases a file, one that adds a mark (a size change), one by magic.
+    wxl_result WXL_CALL Upper(void*, wxl_str, const void* data, uint64_t size, const wxl_asset_output* out)
+    {
+        char* to = static_cast<char*>(out->replace(out->context, size));
+        if (!to) return WXL_E_FAILED;
+        for (uint64_t i = 0; i < size; ++i) to[i] = static_cast<char>(std::toupper(static_cast<const unsigned char*>(data)[i]));
+        return WXL_OK;
+    }
+
+    wxl_result WXL_CALL Mark(void* user, wxl_str, const void* data, uint64_t size, const wxl_asset_output* out)
+    {
+        const std::string& mark = *static_cast<const std::string*>(user);
+        char*              to   = static_cast<char*>(out->replace(out->context, size + mark.size()));
+        std::memcpy(to, data, static_cast<size_t>(size));
+        std::memcpy(to + size, mark.data(), mark.size());
+        return WXL_OK;
+    }
+
+    wxl_result WXL_CALL Untouched(void* user, wxl_str, const void*, uint64_t, const wxl_asset_output*)
+    {
+        ++*static_cast<int*>(user);
+        return WXL_E_NOT_FOUND;
+    }
+
+    std::vector<std::string> g_walked;
+
+    bool Walked(const fsk::ProcessDirParms& parms)
+    {
+        g_walked.push_back(std::string(parms.filename) + (parms.is_dir ? "\\" : ""));
+        return true;
+    }
+
+    void CheckAssetPipeline()
+    {
+        namespace assets = wxl::core::services::assets;
+        const wxl_storage_api& api = wxl::core::services::StorageApi();
+        Check(api.struct_size >= offsetof(wxl_storage_api, unserve) + sizeof(void*),
+              "wxl.storage carries the asset pipeline's members");
+
+        BuildFakeStack();
+        g_files.clear();
+        g_files.push_back(FakeFile{"World\\Base.txt", "the client's", 0, false});
+        g_files.push_back(FakeFile{"World\\Model.bin", "MD20 model", 0, false});
+        g_files.push_back(FakeFile{"World\\Other.bin", "MD21 model", 0, false});
+        g_opens = g_closes = 0;
+
+        Check(!assets::Active() && ReadAll(api, "World\\Base.txt") == "the client's",
+              "with nothing registered, the client's files are its own");
+
+        // Providers by priority: above 0 before the client, 0 or below only what it lacks.
+        FakeProvider high, low;
+        high.files = {{"interface\\p\\a.txt", "from high"}, {"world\\base.txt", "high's base"}};
+        low.files  = {{"interface\\p\\fill.txt", "from low"}, {"world\\base.txt", "low's base"},
+                      {"interface\\p\\a.txt", "low's a"}};
+        uint64_t highId = 0, lowId = 0;
+        Check(api.add_provider(high.Table(), 5, &highId) == WXL_OK && highId != 0 &&
+                  api.add_provider(low.Table(), -1, &lowId) == WXL_OK && lowId != highId,
+              "two providers join, at their priorities");
+        wxl_asset_provider broken = *high.Table();
+        broken.read_at            = nullptr;
+        uint64_t ignored          = 0;
+        Check(api.add_provider(&broken, 1, &ignored) == WXL_E_INVALID && api.add_provider(nullptr, 1, &ignored) == WXL_E_INVALID,
+              "a provider missing a function is refused");
+        Check(api.exists(Str("interface/P/A.TXT")) == WXL_TRUE && api.exists(Str("Interface\\P\\None.txt")) == WXL_FALSE,
+              "exists sees a provider's files, in any case and with either slash");
+        Check(ReadAll(api, "Interface\\P\\A.txt") == "from high", "the client reads a provider's file through its file stack");
+        Check(ReadAll(api, "World\\Base.txt") == "high's base", "a provider above 0 wins a name over the client's own");
+        Check(ReadAll(api, "Interface\\P\\Fill.txt") == "from low", "one at 0 or below fills a name the client lacks");
+        Check(high.closes.load() == high.opens.load() && low.closes.load() == low.opens.load(),
+              "and every file a provider opened is closed when the client closes it");
+
+        {
+            const wxl_handle file = api.open(Str("Interface\\P\\A.txt"));
+            char             piece[8] = {};
+            uint64_t         read     = 0;
+            Check(file != WXL_HANDLE_NONE && api.read_at(file, 5, piece, 4, &read) == WXL_OK && read == 4 &&
+                      std::string(piece, 4) == "high",
+                  "a provider's file is read at an offset, a piece at a time");
+            Check(api.read_at(file, 0, piece, 4, &read) == WXL_OK && std::string(piece, 4) == "from",
+                  "and from the start again");
+            api.close(file);
+        }
+
+        // Many threads at once: every read whole and right. The harness's own recorder of
+        // events is not made for threads, so it hears nothing meanwhile.
+        {
+            Mute(WXL_EV_FileOpen);
+            Mute(WXL_EV_FileOpened);
+            std::atomic<int>         wrong{0};
+            std::vector<std::thread> loaders;
+            for (int t = 0; t < 8; ++t)
+                loaders.emplace_back([&] {
+                    for (int i = 0; i < 100; ++i)
+                        if (ReadAll(api, i % 2 ? "Interface\\P\\A.txt" : "Interface\\P\\Fill.txt") !=
+                            (i % 2 ? "from high" : "from low"))
+                            ++wrong;
+                });
+            for (std::thread& loader : loaders) loader.join();
+            Unmute(WXL_EV_FileOpen);
+            Unmute(WXL_EV_FileOpened);
+            Check(wrong.load() == 0, "eight threads reading providers' files at once each read them whole");
+        }
+
+        // Taken back: the client's files come back; a file still open reads as an error.
+        void* held = FakeFileOpen("Interface\\P\\A.txt");
+        Check(held != nullptr, "the client holds a provider's file open");
+        const int closedBefore = high.closes.load();
+        Check(api.remove_provider(lowId) == WXL_OK && api.remove_provider(lowId) == WXL_E_NOT_FOUND,
+              "a provider is taken back once; again is not found");
+        Check(api.remove_provider(highId + 1000) == WXL_E_NOT_FOUND, "a handle never given is not found");
+        constexpr uint32_t kOther = 9;
+        const uint32_t previous = g_host->SwapCurrentMod(kOther);
+        Check(api.remove_provider(highId) == WXL_E_NOT_FOUND, "another mod cannot take a provider back");
+        g_host->SwapCurrentMod(previous);
+        assets::ReleaseOf(0);
+        Check(high.closes.load() == closedBefore + 1, "a mod that goes has its provider close the files the client holds");
+        char into[4];
+        Check(FakeFileRead(held, into, 4) == 0, "and those files read nothing from then on");
+        FakeFileClose(held);
+        Check(high.closes.load() == closedBefore + 1, "the client's close then frees what is left, closing nothing twice");
+        Check(ReadAll(api, "World\\Base.txt") == "the client's" && api.exists(Str("Interface\\P\\A.txt")) == WXL_FALSE,
+              "with its providers gone, the client's own files answer again");
+
+        // "Not yet": the name is looked for further down, and a mod's read is told so.
+        {
+            FakeProvider later;
+            later.pending = {"world\\base.txt", "interface\\p\\soon.txt"};
+            uint64_t id   = 0;
+            api.add_provider(later.Table(), 4, &id);
+            Check(ReadAll(api, "World\\Base.txt") == "the client's",
+                  "a name a provider has not yet is the client's own meanwhile");
+            uint64_t size = 0;
+            char     none[4];
+            uint64_t read = 0;
+            Check(api.size(Str("Interface\\P\\Soon.txt"), &size) == WXL_E_PENDING &&
+                      api.read(Str("Interface\\P\\Soon.txt"), none, sizeof none, &read) == WXL_E_PENDING &&
+                      api.exists(Str("Interface\\P\\Soon.txt")) == WXL_FALSE,
+                  "and one nobody else has reads as WXL_E_PENDING for a mod, absent for the client");
+            Check(api.size(Str("Interface\\P\\Never.txt"), &size) == WXL_E_NOT_FOUND,
+                  "while a name no provider waits for is not found");
+            api.remove_provider(id);
+        }
+
+        // A provider taking itself back from inside its own call is refused.
+        {
+            FakeProvider self;
+            uint64_t     id = 0;
+            api.add_provider(self.Table(), 1, &id);
+            self.removeFromInside = id;
+            api.exists(Str("Interface\\Anything.txt"));
+            Check(self.removedFromInside == WXL_E_INVALID, "a provider cannot take itself back from inside its own call");
+            self.removeFromInside = 0;
+            api.remove_provider(id);
+        }
+
+        // A provider that faults is never called again.
+        {
+            FakeProvider faulty;
+            faulty.files         = {{"world\\base.txt", "never"}};
+            faulty.faultOnExists = true;
+            uint64_t id          = 0;
+            api.add_provider(faulty.Table(), 3, &id);
+            Check(ReadAll(api, "World\\Base.txt") == "the client's", "a provider that faults answers nothing");
+            faulty.faultOnExists = false;
+            Check(ReadAll(api, "World\\Base.txt") == "the client's", "and is not asked again");
+            api.remove_provider(id);
+        }
+
+        // Served bytes.
+        const char hello[] = "served here";
+        Check(api.serve(Str("Interface\\Served.txt"), hello, 11, 1) == WXL_OK &&
+                  ReadAll(api, "interface\\served.txt") == "served here",
+              "bytes a mod serves are read as one of the client's files");
+        Check(api.serve(Str("World\\Base.txt"), "x", 1, 0) == WXL_OK && ReadAll(api, "World\\Base.txt") == "the client's",
+              "served at 0, a name the client has stays the client's");
+        Check(api.serve(Str("Interface\\Served.txt"), "again", 5, 1) == WXL_OK &&
+                  ReadAll(api, "Interface\\Served.txt") == "again",
+              "serving a name again replaces the mod's bytes");
+        Check(api.unserve(Str("Interface\\Served.txt")) == WXL_OK && api.unserve(Str("Interface\\Served.txt")) == WXL_E_NOT_FOUND &&
+                  api.exists(Str("Interface\\Served.txt")) == WXL_FALSE,
+              "unserved, the name is gone; unserving again is not found");
+        Check(api.serve(Str(""), "x", 1, 1) == WXL_E_INVALID && api.serve(Str(std::string(241, 'a').c_str()), "x", 1, 1) == WXL_E_INVALID,
+              "an empty name or one past 240 bytes is refused");
+        api.unserve(Str("World\\Base.txt"));
+
+        // Transforms: chained by priority, sizes changing, filtered by magic.
+        const std::string bang = "!";
+        int               untouched = 0;
+        wxl_asset_transform upper{sizeof(wxl_asset_transform), nullptr, Str("TXT"), 0, &Upper};
+        wxl_asset_transform mark{sizeof(wxl_asset_transform), const_cast<std::string*>(&bang), Str(".txt"), 0, &Mark};
+        wxl_asset_transform byMagic{sizeof(wxl_asset_transform), const_cast<std::string*>(&bang), Str("bin"),
+                                    0x3032444Du /* MD20 */, &Mark};
+        wxl_asset_transform none{sizeof(wxl_asset_transform), &untouched, Str("txt"), 0, &Untouched};
+        uint64_t upperId = 0, markId = 0, magicId = 0, noneId = 0;
+        Check(api.add_transform(&mark, 5, &markId) == WXL_OK && api.add_transform(&upper, 10, &upperId) == WXL_OK &&
+                  api.add_transform(&byMagic, 0, &magicId) == WXL_OK && api.add_transform(&none, 1, &noneId) == WXL_OK,
+              "transforms join, by kind and priority");
+        wxl_asset_transform noKind{sizeof(wxl_asset_transform), nullptr, Str(""), 0, &Upper};
+        Check(api.add_transform(&noKind, 1, &ignored) == WXL_E_INVALID, "a transform with no kind is refused");
+        Check(ReadAll(api, "World\\Base.txt") == "THE CLIENT'S!",
+              "the highest runs first and the next gets what it left, the file growing by a byte");
+        Check(untouched == 1, "a transform that answers nothing leaves the bytes as they came");
+        Check(ReadAll(api, "World\\Model.bin") == "MD20 model!" && ReadAll(api, "World\\Other.bin") == "MD21 model",
+              "a transform by magic sees only the files that start with it");
+        Check(api.exists(Str("World\\Base.txt")) == WXL_TRUE && api.exists(Str("World\\Nothing.txt")) == WXL_FALSE,
+              "a transformed kind still exists only where a file is");
+        {
+            FakeProvider source;
+            source.files = {{"interface\\p\\t.txt", "provided"}};
+            uint64_t id  = 0;
+            api.add_provider(source.Table(), 2, &id);
+            Check(ReadAll(api, "Interface\\P\\T.txt") == "PROVIDED!", "a provider's file is transformed too");
+            api.remove_provider(id);
+        }
+        Check(api.remove_transform(upperId) == WXL_OK && ReadAll(api, "World\\Base.txt") == "the client's!",
+              "a transform taken back no longer runs");
+        assets::ReleaseOf(0);
+        Check(!assets::Active() && ReadAll(api, "World\\Base.txt") == "the client's",
+              "a mod that goes takes its transforms with it");
+
+        // A folder's listing: the providers' entries join the disk's.
+        {
+            FakeProvider addons;
+            addons.folders = {{"interface\\addons", {{"MyAddOn", true}}},
+                              {"interface\\addons\\myaddon", {{"MyAddOn.toc", false}, {"Main.lua", false}}}};
+            addons.files   = {{"interface\\addons\\myaddon\\myaddon.toc", "## Title: Mine"}};
+            uint64_t id    = 0;
+            api.add_provider(addons.Table(), 1, &id);
+            g_basePath = "C:\\Game\\";
+            assets::Install();
+            fsk::FileParms parms{};
+            parms.verb        = offsetof(fsk::Filesystem, verbs.dirwalk);
+            std::string where = "C:\\Game\\Interface\\AddOns";
+            parms.path        = where.data();
+            parms.dircallback = &Walked;
+            g_walked.clear();
+            TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms);
+            Check(g_walked.size() == 1 && g_walked[0] == "MyAddOn\\",
+                  "a listing of the add-ons folder tells a provider's add-on as a folder of the disk");
+            std::vector<wxl_str> names(8);
+            const uint32_t       count = api.find(Str("Interface\\AddOns\\*.toc"), names.data(), 8);
+            Check(count == 1 && std::string(names[0].data, names[0].size) == "Interface\\AddOns\\MyAddOn\\MyAddOn.toc",
+                  "find walks a provider's folders");
+            api.remove_provider(id);
+            g_basePath.clear();
+        }
+
+        assets::ReleaseAll();
+        assets::ForgetInstall();
+        g_files.clear();
     }
 
     // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
@@ -6337,6 +7019,66 @@ namespace
         Check(Only(WXL_EV_MapObjectLoad) != nullptr, "and Before raised MapObjectLoad for it");
         MapObjLink::original = nullptr;
     }
+
+    // --- System_SFile2::FindFile: the gate, called as SFile::FileExistsEx calls it ---------------
+
+    int g_findCalls = 0;
+
+    /// A cdecl function of FindFile's shape that finds nothing.
+    __declspec(noinline) int32_t __cdecl FakeFindFile(const char*, char*, uint32_t, uint32_t, uint32_t*, void**)
+    {
+        ++g_findCalls;
+        return 0;
+    }
+
+    uint32_t g_eaxAfter = 0;
+
+    /// Six dwords pushed, `add esp, 0x18` after the call, as FileExistsEx at 0x00424B33 does.
+    __declspec(noinline) void CallLikeFindFile(void* detour, const char* name, char* path, uint32_t* kind, void** found)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push found
+            push kind
+            push 0
+            push 0x104
+            push path
+            push name
+            call detour
+            add  esp, 0x18
+            mov  dword ptr [g_espAfter], esp
+            mov  dword ptr [g_eaxAfter], eax
+        }
+    }
+
+    using FindGateSeam = wxl::core::seams::GateOf<wxl::seam::Storage::FindFile::Convention,
+                                                  wxl::seam::Storage::FindFile::Signature>;
+    using FindGateLink = FindGateSeam::Link<&wxl::seam::Storage::FindFile::Gate>;
+
+    void CheckFindFileDetour()
+    {
+        BuildFakeStack();
+        const wxl_storage_api& api = wxl::core::services::StorageApi();
+        api.serve(Str("Interface\\Served.txt"), "x", 1, 1);
+        FindGateLink::original = Opaque(reinterpret_cast<FindGateSeam::Fn>(&FakeFindFile));
+        void* const detour     = Opaque(reinterpret_cast<void*>(&FindGateLink::Detour));
+
+        char     path[260] = {};
+        uint32_t type      = 3;
+        void*    archive   = reinterpret_cast<void*>(1);
+        g_findCalls        = 0;
+        CallLikeFindFile(detour, "Interface\\Served.txt", path, &type, &archive);
+        Check(g_espBefore == g_espAfter && g_eaxAfter == 1 && g_findCalls == 0,
+              "the FindFile detour takes a served name: eax 1, the caller cleans its six dwords");
+        Check(std::strncmp(path, "|wxl|", 5) == 0 && type == 0 && archive == nullptr,
+              "with the file layer's path, a plain file, no archive");
+        CallLikeFindFile(detour, "Interface\\Missing.txt", path, &type, &archive);
+        Check(g_espBefore == g_espAfter && g_eaxAfter == 0 && g_findCalls == 1,
+              "and hands any other name to the client's FindFile");
+        FindGateLink::original = nullptr;
+        wxl::core::services::assets::ReleaseAll();
+        wxl::core::services::assets::ForgetInstall();
+    }
 #endif
 }
 
@@ -8002,6 +8744,7 @@ int main(int argc, char** argv)
     CheckMapArea();
     CheckListening();
     CheckAssets();
+    CheckAssetEvents();
     CheckDoodads();
     CheckFileOpened();
     CheckObjectUpdate();
@@ -8015,6 +8758,7 @@ int main(int argc, char** argv)
     CheckStorage();
     CheckSound();
     CheckStorageService();
+    CheckAssetPipeline();
     CheckDataService();
     CheckRender();
     CheckSpell();
@@ -8054,6 +8798,7 @@ int main(int argc, char** argv)
     CheckChatDetours();
     CheckStormDetours();
     CheckAssetDetours();
+    CheckFindFileDetour();
     CheckValidatorDetour();
     CheckGameplayDetours();
 #endif
