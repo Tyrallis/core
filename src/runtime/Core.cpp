@@ -147,7 +147,7 @@ namespace wxl::core
 
             attachment::Prepare();
             // First: it calibrates its clock on a thread of its own while the mods load.
-            profile::Start();
+            profile::Start(settings::ResolveProfile(session::CurrentSettings()));
 
             wxl::host::HostConfig cfg;
             cfg.mods_directory  = std::filesystem::path(dir) / kModsRelative;

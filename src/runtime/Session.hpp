@@ -14,6 +14,11 @@ namespace wxl::host
     class ModHost;
 }
 
+namespace wxl::core::settings
+{
+    struct Settings;
+}
+
 namespace wxl::core::session
 {
     /// The tag of the launch's own lines.
@@ -42,6 +47,9 @@ namespace wxl::core::session
      *        launch lacks.
      */
     void End(const char* how);
+
+    /// WarcraftXL.ini as @ref Begin read it; the defaults before, or without the file.
+    const wxl::core::settings::Settings& CurrentSettings();
 
     /// Milliseconds since @ref Begin.
     uint64_t UptimeMs();

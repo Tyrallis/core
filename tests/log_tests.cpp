@@ -190,6 +190,54 @@ int main(int argc, char** argv)
         wxl::core::settings::Load((scratch + L"\\no-such.ini").c_str(), none);
         Check(!none.found && !none.has_level && none.keep == 30, "without the file, the defaults");
 
+        using wxl::core::settings::ResolveProfile;
+        Check(!settings.has_profile && !none.has_profile && !none.profile_enabled && none.profile_port == 8086 &&
+                  !none.profile_any,
+              "without a [profile] section the profiler is off, on 127.0.0.1:8086 when started");
+        const auto off = ResolveProfile(none, nullptr);
+        Check(!off.enabled && !off.from_env && off.port == 8086 && !off.any, "and nothing starts it");
+        const auto forced = ResolveProfile(none, "1");
+        Check(forced.enabled && forced.from_env && !forced.any, "WXL_PROFILE=1 starts it, still on 127.0.0.1");
+
+        const char profileText[] = "[profile]\n"
+                                   "enabled = 1\n"
+                                   "port = 9000 ; another\n"
+                                   "listen = ANY\n"
+                                   "[log]\n"
+                                   "level = warn\n";
+        wxl::core::settings::Settings profile;
+        wxl::core::settings::Parse(profileText, sizeof profileText - 1, profile);
+        Check(profile.has_profile && profile.has_profile_enabled && profile.profile_enabled &&
+                  profile.profile_port == 9000 && profile.profile_any && profile.problem_count == 0 &&
+                  profile.has_level && profile.level == Level::Warn,
+              "[profile] enabled, port and listen, in any case, beside [log]");
+        const auto fromFile = ResolveProfile(profile, nullptr);
+        Check(fromFile.enabled && !fromFile.from_env && fromFile.port == 9000 && fromFile.any, "the file starts it");
+        const auto envOff = ResolveProfile(profile, "0");
+        Check(!envOff.enabled && envOff.from_env && !envOff.ignored, "WXL_PROFILE=0 wins over the file's enabled = 1");
+        const auto garbled = ResolveProfile(profile, "yes");
+        Check(garbled.enabled && !garbled.from_env && garbled.ignored && std::strcmp(garbled.ignored, "yes") == 0,
+              "a WXL_PROFILE neither 0 nor 1 is ignored, and said");
+
+        const char badText[] = "[profile]\n"
+                               "enabled = yes\n"
+                               "port = 0\n"
+                               "port = 65536\n"
+                               "port = 80a\n"
+                               "listen = lan\n"
+                               "colour = blue\n"
+                               "listen = localhost\n";
+        wxl::core::settings::Settings bad;
+        wxl::core::settings::Parse(badText, sizeof badText - 1, bad);
+        Check(!bad.has_profile_enabled && !bad.profile_enabled && bad.profile_port == 8086 && !bad.profile_any,
+              "a value that does not read keeps the default");
+        Check(bad.problem_count == 6 && std::strstr(bad.problems[0], "line 2") && std::strstr(bad.problems[0], "yes") &&
+                  std::strstr(bad.problems[1], "line 3") && std::strstr(bad.problems[1], "1 to 65535") &&
+                  std::strstr(bad.problems[2], "65536") && std::strstr(bad.problems[3], "80a") &&
+                  std::strstr(bad.problems[4], "lan") && std::strstr(bad.problems[5], "line 7") &&
+                  std::strstr(bad.problems[5], "[profile]"),
+              "each value that does not read, and an unknown key, is noted with its line");
+
         Level level;
         Check(wxl::log::ParseLevel(" WARN ", level) && level == Level::Warn && wxl::log::ParseLevel("1", level) &&
                   level == Level::Debug && !wxl::log::ParseLevel("loud", level),

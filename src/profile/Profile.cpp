@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 WarcraftXL
 
+// Before windows.h, which would otherwise bring the first Windows Sockets in.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "profile/Profile.hpp"
 
 #include "common/Log.hpp"
@@ -78,6 +82,47 @@ namespace
 
     bool Live() { return g_up.load(std::memory_order_acquire) && ___tracy_connected() != 0; }
 
+    /// Whether a listening socket can take @p port where the profiler will listen: Tracy, given
+    /// a port, tries it once and otherwise stays silent for the rest of the process.
+    bool PortFree(uint16_t port, bool any)
+    {
+        WSADATA data;
+        if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return true; // cannot tell: Tracy will try
+        bool   free = false;
+        SOCKET sock = INVALID_SOCKET;
+        if (any)
+        {
+            // As Tracy listens: IPv6 taking IPv4 too, IPv4 alone where IPv6 is missing.
+            sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+            if (sock != INVALID_SOCKET)
+            {
+                unsigned long both = 0;
+                setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&both), sizeof both);
+                sockaddr_in6 address{};
+                address.sin6_family = AF_INET6;
+                address.sin6_port   = htons(port);
+                address.sin6_addr   = in6addr_any;
+                free = bind(sock, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+                closesocket(sock);
+                WSACleanup();
+                return free;
+            }
+        }
+        sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock != INVALID_SOCKET)
+        {
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_port        = htons(port);
+            address.sin_addr.s_addr = htonl(any ? INADDR_ANY : INADDR_LOOPBACK);
+            free = bind(sock, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+            closesocket(sock);
+        }
+        else free = true;
+        WSACleanup();
+        return free;
+    }
+
     // --- the host's zones --------------------------------------------------------------------
 
     const void* HostLocation(void*, std::string_view name, std::string_view function, uint32_t color)
@@ -150,25 +195,38 @@ namespace
 
 namespace wxl::core::profile
 {
-    void Start()
+    void Start(const settings::ProfileChoice& choice)
     {
+        if (!choice.enabled) return; // the launch header says so
         if (InterlockedCompareExchange(&g_starting, 1, 0) != 0) return;
-        if (const char* off = std::getenv("WXL_PROFILE"); off && std::strcmp(off, "0") == 0)
-        {
-            WLOG_INFO(kProfileTag, "profiler off: WXL_PROFILE=0 in the environment");
-            return;
-        }
-        std::thread([] {
+
+        // Tracy 0.14.1 reads these through GetEnvironmentVariableA, the port when the profiler
+        // is made (___tracy_startup_profiler) and the other two when it opens its socket: set
+        // here, they decide, whatever the process was started with. 127.0.0.1 alone is IPv4
+        // alone: an IPv6 loopback socket would not take a viewer connecting to 127.0.0.1.
+        char port[8];
+        std::snprintf(port, sizeof port, "%u", static_cast<unsigned>(choice.port));
+        SetEnvironmentVariableA("TRACY_PORT", port);
+        SetEnvironmentVariableA("TRACY_ONLY_LOCALHOST", choice.any ? "0" : "1");
+        SetEnvironmentVariableA("TRACY_ONLY_IPV4", choice.any ? nullptr : "1");
+
+        const uint16_t number = choice.port;
+        const bool     any    = choice.any;
+        std::thread([number, any] {
+            if (!PortFree(number, any))
+                WLOG_WARN(kProfileTag,
+                          "port %u is taken%s: no viewer can connect to this client; set another port under "
+                          "[profile] in WarcraftXL.ini (another client from this machine may hold it)",
+                          static_cast<unsigned>(number), any ? "" : " on 127.0.0.1");
             ___tracy_startup_profiler();
-            const char* port = std::getenv("TRACY_PORT");
             char        info[128];
             std::snprintf(info, sizeof info, "WarcraftXL %s, abi %u.%u.%u", sizeof(void*) == 8 ? "x64" : "x86",
                           static_cast<unsigned>(WXL_ABI_VERSION_MAJOR), static_cast<unsigned>(WXL_ABI_VERSION_MINOR),
                           static_cast<unsigned>(WXL_ABI_VERSION_FEATURE));
             ___tracy_emit_message_appinfo(info, std::strlen(info));
             g_up.store(true, std::memory_order_release);
-            WLOG_INFO(kProfileTag, "profiler up (Tracy 0.14.1, on demand): a viewer connects on port %s",
-                      port && *port ? port : "8086");
+            WLOG_INFO(kProfileTag, "profiler up (Tracy 0.14.1, on demand): a viewer connects to %s port %u",
+                      any ? "this machine's address on" : "127.0.0.1", static_cast<unsigned>(number));
         }).detach();
     }
 

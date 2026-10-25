@@ -48,7 +48,13 @@ namespace wxl::core::settings
             static_cast<unsigned char>(rest[1]) == 0xBB && static_cast<unsigned char>(rest[2]) == 0xBF)
             rest.remove_prefix(3);
 
-        bool     inLog = false;
+        enum class Section
+        {
+            other,
+            log,
+            profile,
+        };
+        Section  section = Section::other;
         unsigned number = 0;
         while (!rest.empty())
         {
@@ -67,13 +73,17 @@ namespace wxl::core::settings
                 if (line.back() != ']')
                 {
                     Problem(out, number, "a section without its ']'", line);
-                    inLog = false;
+                    section = Section::other;
                     continue;
                 }
-                inLog = SameWord(Trim(line.substr(1, line.size() - 2)), "log");
+                const std::string_view name = Trim(line.substr(1, line.size() - 2));
+                section = SameWord(name, "log") ? Section::log
+                          : SameWord(name, "profile") ? Section::profile
+                                                      : Section::other;
+                if (section == Section::profile) out.has_profile = true;
                 continue;
             }
-            if (!inLog) continue;
+            if (section == Section::other) continue;
 
             const size_t equals = line.find('=');
             if (equals == std::string_view::npos)
@@ -83,6 +93,40 @@ namespace wxl::core::settings
             }
             const std::string_view key   = Trim(line.substr(0, equals));
             const std::string_view value = Trim(line.substr(equals + 1));
+
+            if (section == Section::profile)
+            {
+                if (SameWord(key, "enabled"))
+                {
+                    if (value == "0" || value == "1")
+                    {
+                        out.has_profile_enabled = true;
+                        out.profile_enabled     = value == "1";
+                    }
+                    else Problem(out, number, "not 0 or 1:", value);
+                }
+                else if (SameWord(key, "port"))
+                {
+                    unsigned port   = 0;
+                    bool     digits = !value.empty() && value.size() <= 5;
+                    for (char c : value) digits = digits && c >= '0' && c <= '9';
+                    if (digits)
+                        for (char c : value) port = port * 10 + static_cast<unsigned>(c - '0');
+                    if (digits && port >= 1 && port <= 65535) out.profile_port = static_cast<uint16_t>(port);
+                    else Problem(out, number, "not a port from 1 to 65535:", value);
+                }
+                else if (SameWord(key, "listen"))
+                {
+                    if (SameWord(value, "localhost")) out.profile_any = false;
+                    else if (SameWord(value, "any")) out.profile_any = true;
+                    else Problem(out, number, "not localhost or any:", value);
+                }
+                else
+                {
+                    Problem(out, number, "an unknown key of [profile] (enabled, port, listen):", key);
+                }
+                continue;
+            }
 
             if (SameWord(key, "level"))
             {
@@ -134,6 +178,34 @@ namespace wxl::core::settings
         CloseHandle(file);
         if (!ok) return;
         Parse(text, read, out);
+    }
+
+    ProfileChoice ResolveProfile(const Settings& settings, const char* env)
+    {
+        ProfileChoice choice;
+        choice.enabled = settings.profile_enabled;
+        choice.port    = settings.profile_port;
+        choice.any     = settings.profile_any;
+        if (env && *env)
+        {
+            if (std::strcmp(env, "0") == 0 || std::strcmp(env, "1") == 0)
+            {
+                choice.enabled  = env[0] == '1';
+                choice.from_env = true;
+            }
+            else choice.ignored = env;
+        }
+        return choice;
+    }
+
+    ProfileChoice ResolveProfile(const Settings& settings)
+    {
+        // The variable's text lives as long as the process: it is handed back in the choice.
+        static char value[64];
+        const DWORD length = GetEnvironmentVariableA("WXL_PROFILE", value, sizeof value);
+        if (length == 0) return ResolveProfile(settings, nullptr);
+        if (length >= sizeof value) std::strcpy(value, "(too long)");
+        return ResolveProfile(settings, value);
     }
 
     void ApplyToLog(const Settings& settings)

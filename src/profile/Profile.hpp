@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 WarcraftXL
 //
-// The process's profiler: Tracy's client, compiled into WarcraftXL.dll on demand. Nothing is
-// sent, and almost nothing done, until a viewer connects to port 8086 (TRACY_PORT to change it).
+// The process's profiler: Tracy's client, compiled into WarcraftXL.dll on demand. It starts
+// only when WarcraftXL.ini's [profile] says so (or WXL_PROFILE=1 in the environment), and then
+// listens on the port and the interfaces the file gives, 127.0.0.1:8086 by default. Nothing is
+// sent, and almost nothing done, until a viewer connects.
 // Three ways in, all through here:
 //
 //   the host       a zone per event dispatch and per handler (wxl/host/profile.hpp)
@@ -18,6 +20,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "runtime/Settings.hpp"
 #include "wxl/services/profile.h"
 
 namespace wxl::host
@@ -30,11 +33,12 @@ namespace wxl::core::profile
 {
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     /**
-     * @brief Starts the profiler on a thread of its own, unless WXL_PROFILE=0 is in the
-     *        environment: it calibrates its clock for a fifth of a second, which the client's
-     *        start does not wait for. Zones before it is up are not recorded. Once.
+     * @brief Starts the profiler on a thread of its own when @p choice enables it, listening on
+     *        its port, on 127.0.0.1 only or on every interface: it calibrates its clock for a
+     *        fifth of a second, which the client's start does not wait for. Zones before it is
+     *        up are not recorded. Once; a disabled choice opens no port and starts no thread.
      */
-    void Start();
+    void Start(const settings::ProfileChoice& choice);
 
     /// The host's zones go through this from now on. Before the mods load.
     void Attach(wxl::host::ModHost& host);
@@ -61,7 +65,7 @@ namespace wxl::core::profile
     /// The table published as WXL_PROFILE_SERVICE.
     const wxl_profile_api& Api();
 #else
-    inline void Start() {}
+    inline void Start(const settings::ProfileChoice&) {}
     inline void Attach(wxl::host::ModHost&) {}
     inline void Present() {}
     inline bool Connected() { return false; }

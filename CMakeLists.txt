@@ -27,7 +27,7 @@ set(WXL_CORE_ARCH "" CACHE STRING
     "Architecture of this build tree (win-x86 or win-x64). Set by the superbuild; empty builds every target.")
 option(WXL_CORE_MODS "Build the mods under mods/ (x86 only: both require wxl.patch)" ON)
 option(WXL_CORE_LUA "Build wxl.lua, the runtime of the Lua mods, from the SDK and ship it in Mods/" ON)
-option(WXL_PROFILE "Carry the Tracy profiler client, on demand, and publish wxl.profile; OFF leaves no trace of it" ON)
+option(WXL_PROFILE "Carry the Tracy profiler client, on demand, and publish wxl.profile; WarcraftXL.ini's [profile] starts it; OFF leaves no trace of it" ON)
 
 set(WXL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sdk" CACHE PATH "Path to a checkout of WarcraftXL/sdk")
 if(NOT EXISTS "${WXL_SDK_DIR}/include/wxl/abi.h")
@@ -228,14 +228,18 @@ target_compile_definitions(wxl-core-log-tests PRIVATE ${WXL_CORE_DEFS})
 # On demand: nothing is sent, and a zone costs a load, until a viewer connects. Started by the
 # runtime (profile::Start) rather than at load, which would run under the loader lock. No crash
 # handler: the mod host's guard owns faults. No system tracing, sampling or call stacks: they need
-# rights or symbol files a player does not have, and Proton serves none of them.
+# rights or symbol files a player does not have, and Proton serves none of them. Whether it starts,
+# its port and whether it listens on 127.0.0.1 alone are WarcraftXL.ini's [profile], set at run time
+# through the variables Tracy reads; the address it would announce itself to is fixed at compile
+# time (255.255.255.255, the whole network), so it does not announce itself at all: a viewer
+# connects to the address it is given.
 if(WXL_PROFILE)
     add_library(wxl-tracy STATIC deps/tracy/public/TracyClient.cpp)
     target_include_directories(wxl-tracy SYSTEM PUBLIC deps/tracy/public)
     target_compile_definitions(wxl-tracy PUBLIC
         TRACY_ENABLE TRACY_ON_DEMAND TRACY_DELAYED_INIT TRACY_MANUAL_LIFETIME TRACY_NO_CRASH_HANDLER
         TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING TRACY_NO_CONTEXT_SWITCH TRACY_NO_VSYNC_CAPTURE
-        TRACY_NO_CALLSTACK TRACY_NO_CODE_TRANSFER TRACY_NO_VERIFY TRACY_NO_FRAME_IMAGE
+        TRACY_NO_CALLSTACK TRACY_NO_CODE_TRANSFER TRACY_NO_VERIFY TRACY_NO_FRAME_IMAGE TRACY_NO_BROADCAST
         ${WXL_CORE_DEFS})
     target_link_libraries(wxl-tracy PUBLIC ws2_32)
 

@@ -5654,15 +5654,19 @@ void CheckProfile()
 #endif
 
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
-// --profile-live: the profiler started and waited on for up to a minute, so that a viewer (or
-// Tracy's capture tool) can connect; then a hundred frames of the host's zones, a mod's zone, a
-// client zone, a plot and a message, each frame ended by a present. What a viewer then shows is
-// the runtime's profiler end to end, on this architecture, without a client.
-void ProfileLive()
+// --profile-live: the profiler started as WarcraftXL.ini's [profile] enabled = 1 starts it, on
+// 127.0.0.1:8086 (--profile-live-any: every interface), and waited on for up to a minute, so that
+// a viewer (or Tracy's capture tool) can connect; then a hundred frames of the host's zones, a
+// mod's zone, a client zone, a plot and a message, each frame ended by a present. What a viewer
+// then shows is the runtime's profiler end to end, on this architecture, without a client.
+void ProfileLive(bool any)
 {
     namespace profile = wxl::core::profile;
-    profile::Start();
-    printf("\nprofile-live: waiting up to 60 s for a viewer on port 8086\n");
+    wxl::core::settings::ProfileChoice choice;
+    choice.enabled = true;
+    choice.any     = any;
+    profile::Start(choice);
+    printf("\nprofile-live: waiting up to 60 s for a viewer on %s port 8086\n", any ? "any interface," : "127.0.0.1");
     for (int i = 0; i < 6000 && !profile::Connected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     if (!profile::Connected())
     {
@@ -5769,7 +5773,9 @@ void Bench()
         traced.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0, 1);
         time("event bus, two subscribers, profiler set", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
 
-        profile::Start();
+        wxl::core::settings::ProfileChoice choice;
+        choice.enabled = true;
+        profile::Start(choice);
         for (int i = 0; i < 500 && !profile::Started(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         printf("  (profiler %s, no viewer)\n", profile::Started() ? "up" : "NOT up");
         time("event bus, two subscribers, profiler up", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
@@ -5916,7 +5922,10 @@ int main(int argc, char** argv)
         if (strcmp(argv[i], "--bench") == 0) Bench();
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     for (int i = 1; i < argc; ++i)
-        if (strcmp(argv[i], "--profile-live") == 0) ProfileLive();
+    {
+        if (strcmp(argv[i], "--profile-live") == 0) ProfileLive(false);
+        if (strcmp(argv[i], "--profile-live-any") == 0) ProfileLive(true);
+    }
 #endif
 
     g_host.reset();

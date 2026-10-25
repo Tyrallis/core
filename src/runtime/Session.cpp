@@ -237,6 +237,30 @@ namespace
         Line("command line %s", Utf8(GetCommandLineW(), command, sizeof command));
     }
 
+    /// The profiler's line: off, or on with its port and interfaces, and what decided it.
+    void Profiler()
+    {
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+        const wxl::core::settings::ProfileChoice choice = wxl::core::settings::ResolveProfile(g_settings);
+        if (choice.ignored)
+            wxl::log::WriteUnfilteredF(Level::Warn, kTag, "WXL_PROFILE=%s in the environment is neither 0 nor 1; ignored",
+                                       choice.ignored);
+        const char* why = choice.from_env              ? "WXL_PROFILE in the environment, over the file's"
+                          : g_settings.has_profile_enabled ? "[profile] enabled in WarcraftXL.ini"
+                                                           : "the default";
+        if (!choice.enabled)
+            Line("profiler: off (%s)%s; no port opened", why,
+                 choice.from_env || g_settings.has_profile_enabled ? "" : "; [profile] enabled = 1 starts it");
+        else
+            Line("profiler: on (%s), Tracy 0.14.1 on demand, port %u, %s", why, static_cast<unsigned>(choice.port),
+                 choice.any ? "listen any: every interface, other computers can connect"
+                            : "listen localhost: 127.0.0.1 only");
+#else
+        Line("profiler: not in this build (core built with WXL_PROFILE=OFF)%s",
+             g_settings.has_profile ? "; the [profile] section of WarcraftXL.ini is ignored" : "");
+#endif
+    }
+
     void Settings(const wxl::log::SessionFiles& files)
     {
         using wxl::log::LevelName;
@@ -282,6 +306,7 @@ namespace
         {
             Line("log %s; %u earlier log(s) in Logs\\", path, files.kept);
         }
+        Profiler();
         if (files.fallback)
             wxl::log::WriteUnfilteredF(Level::Warn, kTag,
                                        "Logs\\WarcraftXL.log is held by another process (a second client from this "
@@ -334,6 +359,8 @@ namespace wxl::core::session
         Settings(files);
         return open;
     }
+
+    const wxl::core::settings::Settings& CurrentSettings() { return g_settings; }
 
     void ReportMods(const wxl::host::ModHost& host)
     {
