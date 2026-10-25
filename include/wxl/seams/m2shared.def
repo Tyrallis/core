@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The M2Shared domain: seams on CM2Shared, the part of an M2 model every instance of it shares.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including m2shared.def"
+#endif
+
+// The end of a model file's read. CM2Shared::Load (0x0083D410) sizes the buffer and queues an
+// asynchronous read of the whole file into it; when the read is done, the client's poll of the
+// read queue (AsyncFileReadPollHandler) calls this with the model, on the main thread, and it
+// goes on to FinishLoading, which parses the bytes in place (M2Init). So this is the one moment
+// the file's bytes are all there and nothing has read them yet.
+//
+// Before raises ModelLoad with the model's path, its bytes and their size. A handler may answer
+// with other bytes (wxl_model_load_args::replacement and replacement_size, native mods only):
+// they are copied into a buffer of the client's own allocator, which takes the place of the
+// one read, and the client parses those instead.
+//
+// cdecl, a static taking the model as its one argument: [ebp+8] is read, and the function leaves
+// by a tail jump to FinishLoading (0x0083D35E), so it has no `ret` of its own. Reached only
+// through the read's callback pointer: the witness is that call.
+WXL_SEAM_BEFORE(M2Shared, LoadSucceededCallback, "CM2Shared::LoadSucceededCallback", void, cdecl, (void* param))
+WXL_SEAM_WITNESS(M2Shared, LoadSucceededCallback, 0x004B9B9E)    // AsyncFileReadPollHandler: call ecx; add esp, 4
+WXL_SEAM_RAISES(M2Shared, LoadSucceededCallback, ModelLoad)

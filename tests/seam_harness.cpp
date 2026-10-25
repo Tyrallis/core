@@ -709,6 +709,69 @@ namespace
         g_modChanges.push_back(*static_cast<const wxl_object_field_args*>(args));
     }
 
+    // --- Assets: a model, a map object and a placed doodad, as the asset rows read them -------
+
+    struct FakeModel
+    {
+        char        name[260] = {};
+        std::string bytes;
+        std::string replaced;    ///< what model_replace_bytes put in place, when it was asked
+        bool        replace_fails = false;
+    };
+
+    struct FakeMapObj
+    {
+        char        name[260] = {};
+        std::string bytes;
+    };
+
+    struct FakeDoodad
+    {
+        wxl_vec3 position{};
+    };
+
+    const char* WXL_CALL FakeModelPath(const void* shared)
+    {
+        return shared ? static_cast<const FakeModel*>(shared)->name : nullptr;
+    }
+
+    const void* WXL_CALL FakeModelBytes(const void* shared, uint32_t* size)
+    {
+        if (!shared) return nullptr;
+        const FakeModel* model = static_cast<const FakeModel*>(shared);
+        const std::string& now = model->replaced.empty() ? model->bytes : model->replaced;
+        if (size) *size = static_cast<uint32_t>(now.size());
+        return now.data();
+    }
+
+    wxl_bool WXL_CALL FakeModelReplace(void* shared, const void* bytes, uint32_t size)
+    {
+        FakeModel* model = static_cast<FakeModel*>(shared);
+        if (!model || !bytes || !size || model->replace_fails) return WXL_FALSE;
+        model->replaced.assign(static_cast<const char*>(bytes), size);
+        return WXL_TRUE;
+    }
+
+    const char* WXL_CALL FakeMapObjPath(const void* map_obj)
+    {
+        return map_obj ? static_cast<const FakeMapObj*>(map_obj)->name : nullptr;
+    }
+
+    const void* WXL_CALL FakeMapObjBytes(const void* map_obj, uint32_t* size)
+    {
+        if (!map_obj) return nullptr;
+        const FakeMapObj* root = static_cast<const FakeMapObj*>(map_obj);
+        if (size) *size = static_cast<uint32_t>(root->bytes.size());
+        return root->bytes.data();
+    }
+
+    wxl_bool WXL_CALL FakeDoodadPosition(const void* def, wxl_vec3* out)
+    {
+        if (!def || !out) return WXL_FALSE;
+        *out = static_cast<const FakeDoodad*>(def)->position;
+        return WXL_TRUE;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -798,6 +861,12 @@ namespace
         init.archive_tables         = &FakeArchiveTables;
         init.archive_of             = &FakeArchiveOf;
         init.client_dbs             = &FakeClientDbs;
+        init.model_path             = &FakeModelPath;
+        init.model_bytes            = &FakeModelBytes;
+        init.model_replace_bytes    = &FakeModelReplace;
+        init.map_obj_path           = &FakeMapObjPath;
+        init.map_obj_bytes          = &FakeMapObjBytes;
+        init.doodad_position        = &FakeDoodadPosition;
         return init;
     }
 }
@@ -853,6 +922,22 @@ namespace
     }
 
     int g_failures = 0;
+
+    /// The harness's own subscription to each event it records, so a check can take it away to
+    /// see what a seam does when nobody listens, and give it back.
+    wxl_subscription g_heard[WXL_EV_COUNT]{};
+
+    void Mute(wxl_event event)
+    {
+        g_host->Events().Unsubscribe(g_heard[event]);
+        g_heard[event] = WXL_SUBSCRIPTION_NONE;
+    }
+
+    void Unmute(wxl_event event)
+    {
+        if (g_heard[event] == WXL_SUBSCRIPTION_NONE)
+            g_heard[event] = g_host->Events().Subscribe(event, &OnEvent, &g_tags[event], 0);
+    }
 
     void Check(bool ok, const char* what)
     {
@@ -961,6 +1046,7 @@ namespace
             g_tags[event] = event;
             const wxl_subscription subscription =
                 g_host->Events().Subscribe(event, &OnEvent, &g_tags[event], 0);
+            g_heard[event] = subscription;
             char what[128];
             snprintf(what, sizeof what, "a mod can subscribe to event %u", unsigned(event));
             Check(subscription != WXL_SUBSCRIPTION_NONE, what);
@@ -1521,6 +1607,220 @@ namespace
 
         wxl::seam::ObjectMgr::ObjDelete::Before(&rat);
         wxl::seam::ObjectMgr::ObjDelete::Before(&bat);
+    }
+
+    /// Listening: the host's answer follows the subscriptions, and so do the flags the x64
+    /// client tests before a seam.
+    void CheckListening()
+    {
+        Check(g_host->Listening(WXL_EV_TextureLoad), "an event the harness subscribed to is listened to");
+        Mute(WXL_EV_TextureLoad);
+        Check(!g_host->Listening(WXL_EV_TextureLoad), "with its one subscription gone, nobody listens");
+        Unmute(WXL_EV_TextureLoad);
+        Check(g_host->Listening(WXL_EV_TextureLoad), "and subscribing again is heard at once");
+    }
+
+    /// Texture, M2Shared and MapObj: an asset named, read or walked raises its event with what
+    /// the binding reads, and nothing is read when nobody listens.
+    void CheckAssets()
+    {
+        g_received.clear();
+        wxl::seam::Texture::Create::Before("Interface\\Icons\\Spell_Fire_Fireball.blp", 0u, nullptr, 0u);
+        const Received* texture = Only(WXL_EV_TextureLoad);
+        Check(texture && texture->As<wxl_texture_load_args>().path.size == 39,
+              "Texture.Create raises TextureLoad with the name asked for");
+        g_received.clear();
+        wxl::seam::Texture::Create::Before("", 0u, nullptr, 0u);
+        wxl::seam::Texture::Create::Before(nullptr, 0u, nullptr, 0u);
+        Check(g_received.empty(), "an empty or missing name raises nothing");
+        Mute(WXL_EV_TextureLoad);
+        wxl::seam::Texture::Create::Before("Textures\\a.blp", 0u, nullptr, 0u);
+        Unmute(WXL_EV_TextureLoad);
+        Check(g_received.empty(), "nor does any name while nobody listens");
+
+        FakeModel boar;
+        strcpy(boar.name, "Creature\\Boar\\Boar.m2");
+        boar.bytes = std::string("MD20") + std::string(60, '\x01');
+        g_received.clear();
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&boar);
+        const Received* model = Only(WXL_EV_ModelLoad);
+        Check(model != nullptr, "M2Shared.LoadSucceededCallback raises ModelLoad once");
+        if (model)
+        {
+            const wxl_model_load_args args = model->As<wxl_model_load_args>();
+            Check(args.path.size == strlen(boar.name) && args.size == 64u,
+                  "with the model's path and the size of the bytes read");
+            Check(args.replacement && args.replacement_size, "and the native answer to write");
+        }
+        Check(boar.replaced.empty(), "bytes nobody answers stay the client's");
+
+        // A native handler that answers other bytes: the client parses those.
+        static const char kOther[] = "MD20 other bytes";
+        struct Answer
+        {
+            static void WXL_CALL Give(void*, const void* raw)
+            {
+                const wxl_model_load_args* args = static_cast<const wxl_model_load_args*>(raw);
+                *args->replacement      = kOther;
+                *args->replacement_size = static_cast<uint32_t>(sizeof kOther - 1);
+            }
+        };
+        const wxl_subscription answer = g_host->Events().Subscribe(WXL_EV_ModelLoad, &Answer::Give, nullptr, 0);
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&boar);
+        Check(boar.replaced == std::string(kOther, sizeof kOther - 1),
+              "bytes a handler answers are put in place of the ones read");
+        FakeModel stuck;
+        strcpy(stuck.name, "Creature\\Rat\\Rat.m2");
+        stuck.bytes         = "MD20";
+        stuck.replace_fails = true;
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&stuck);
+        Check(stuck.replaced.empty(), "a copy the client cannot make leaves the model as read");
+        g_host->Events().Unsubscribe(answer);
+
+        FakeMapObj keep;
+        strcpy(keep.name, "World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo");
+        keep.bytes = std::string("REVM") + std::string(28, '\0');
+        g_received.clear();
+        wxl::seam::MapObj::Load::Before(&keep);
+        const Received* root = Only(WXL_EV_MapObjectLoad);
+        Check(root && root->As<wxl_map_object_args>().size == 32u &&
+                  root->As<wxl_map_object_args>().path.size == strlen(keep.name),
+              "MapObj.Load raises MapObjectLoad with the root's path and bytes");
+        Mute(WXL_EV_MapObjectLoad);
+        g_received.clear();
+        wxl::seam::MapObj::Load::Before(&keep);
+        Unmute(WXL_EV_MapObjectLoad);
+        Check(g_received.empty(), "and nothing while nobody listens");
+    }
+
+    /// Map: a doodad an overload placed is announced once; one it answered from the hash is not.
+    void CheckDoodads()
+    {
+        FakeDoodad tree;
+        tree.position = {100.0f, 200.0f, 30.0f};
+        const wxl_vec3 center{0.0f, 0.0f, 0.0f};
+
+        g_received.clear();
+        wxl::seam::Map::AllocDoodadDef::After(&tree);
+        wxl::seam::Map::CreateDoodadDef::After(&tree, "World\\Azeroth\\Elwynn\\Tree01.m2", nullptr, &center);
+        const Received* spawn = Only(WXL_EV_DoodadSpawn);
+        Check(spawn != nullptr, "Map.CreateDoodadDef raises DoodadSpawn for the def it allocated");
+        if (spawn)
+        {
+            const wxl_doodad_args args = spawn->As<wxl_doodad_args>();
+            Check(args.position.x == 100.0f && args.position.z == 30.0f &&
+                      args.path.size == strlen("World\\Azeroth\\Elwynn\\Tree01.m2"),
+                  "with the model's path and where the def was placed");
+            Check(args.doodad == WXL_HANDLE_NONE, "a doodad is no object of wxl.object: no handle");
+        }
+
+        g_received.clear();
+        wxl::seam::Map::CreateDoodadDef::After(&tree, "World\\Azeroth\\Elwynn\\Tree01.m2", nullptr, &center);
+        Check(g_received.empty(), "the same def answered from the hash is not placed again");
+
+        FakeDoodad lamp, chair;
+        g_received.clear();
+        wxl::seam::Map::AllocDoodadDef::After(&lamp);
+        wxl::seam::Map::CreateDoodadDefAt::After(&lamp, "World\\Generic\\Lamp.m2", &center, 1.5f, 0);
+        wxl::seam::Map::AllocDoodadDef::After(&chair);
+        wxl::seam::Map::CreateDoodadDefInMapObj::After(&chair, 3u, nullptr, const_cast<char*>("Chair.m2"), 7u,
+                                                       nullptr, 0);
+        Check(Count(WXL_EV_DoodadSpawn) == 2, "the other two overloads announce theirs");
+
+        Mute(WXL_EV_DoodadSpawn);
+        wxl::seam::Map::AllocDoodadDef::After(&lamp);
+        Unmute(WXL_EV_DoodadSpawn);
+        g_received.clear();
+        wxl::seam::Map::CreateDoodadDefAt::After(&lamp, "World\\Generic\\Lamp.m2", &center, 1.5f, 0);
+        Check(g_received.empty(), "a def allocated while nobody listened is not announced later");
+    }
+
+    /// Storage.OpenEx: the result of every open, found or not, with the name the client opened.
+    void CheckFileOpened()
+    {
+        FakeFile file;
+        file.name  = "DBFilesClient\\Spell.dbc";
+        file.bytes = std::string(1234, 'x');
+        void* handle = &file;
+
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
+        const Received* opened = Only(WXL_EV_FileOpened);
+        Check(opened != nullptr, "Storage.OpenEx raises FileOpened once");
+        if (opened)
+        {
+            const wxl_file_opened_args args = opened->As<wxl_file_opened_args>();
+            Check(args.found == WXL_TRUE && args.size == 1234u && args.path.size == 23u,
+                  "with the name, found, and the size the binding reads");
+        }
+
+        void* none = nullptr;
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(0, nullptr, "Missing\\File.blp", 0u, &none);
+        const Received* missing = Only(WXL_EV_FileOpened);
+        Check(missing && missing->As<wxl_file_opened_args>().found == WXL_FALSE &&
+                  missing->As<wxl_file_opened_args>().size == 0u,
+              "an open that found nothing is raised too, not found and empty");
+
+        Mute(WXL_EV_FileOpened);
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
+        Unmute(WXL_EV_FileOpened);
+        Check(g_received.empty(), "nothing is raised while nobody listens");
+    }
+
+    /// ObjectMgr: ObjectUpdate once per tracked object per packet, after the whole packet.
+    void CheckObjectUpdate()
+    {
+        FakeObject wolf, hawk, egg;
+        wolf.guid   = 0xF130000000000201ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        hawk.guid   = 0xF130000000000202ull;
+        hawk.typeId = WXL_OBJECT_UNIT;
+        egg.guid    = 0xF110000000000203ull;
+        egg.typeId  = WXL_OBJECT_GAMEOBJECT;
+
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 1u);
+        wxl::seam::ObjectMgr::InitObject::After(&hawk, nullptr, 1u);
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &hawk, hawk.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &egg, egg.guid, nullptr, true, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(0, &hawk, hawk.guid, nullptr, false, false);
+        Check(Count(WXL_EV_ObjectUpdate) == 0, "nothing is raised while the packet is being applied");
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(Count(WXL_EV_ObjectUpdate) == 2, "the packet raises ObjectUpdate once per tracked object it wrote");
+        bool ordered = false;
+        if (Count(WXL_EV_ObjectUpdate) == 2)
+        {
+            std::vector<uint64_t> guids;
+            for (const Received& r : g_received)
+                if (r.event == WXL_EV_ObjectUpdate) guids.push_back(r.As<wxl_object_args>().guid);
+            ordered = guids[0] == wolf.guid && guids[1] == hawk.guid;
+        }
+        Check(ordered, "in the order the packet first named them, the untracked one left out");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(g_received.empty(), "a packet that wrote nothing raises nothing");
+
+        // An object let go before the packet ends is not announced.
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &hawk, hawk.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&hawk);
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(Count(WXL_EV_ObjectUpdate) == 0, "an object gone before the packet ends is not updated");
+
+        Mute(WXL_EV_ObjectUpdate);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        Unmute(WXL_EV_ObjectUpdate);
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(g_received.empty(), "writes made while nobody listened are not noted");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
     }
 
     /// MapArea: PrepareChunk's Before raises TerrainChunkBuild with the map, the tile and the chunk.
@@ -5220,6 +5520,94 @@ namespace
         ReAllocLink::original = nullptr;
         wxl::core::services::footprint::Reset();
     }
+
+    // --- SFile::OpenEx's two rows, chained as Install links them, and CMapObj::Load ---------------
+
+    std::string g_openedName;
+
+    /// A stdcall function of SFile::OpenEx's shape that finds nothing, noting the name it got.
+    __declspec(noinline) int32_t __stdcall FakeOpenEx(void*, const char* name, uint32_t, void** result)
+    {
+        g_openedName = name ? name : "";
+        if (result) *result = nullptr;
+        return 0;
+    }
+
+    /// Calls a detour the way SFile::ReadFile calls SFile::OpenEx: four dwords pushed, none
+    /// cleaned after the call (stdcall pops them); and records ESP on both sides.
+    __declspec(noinline) void CallLikeOpen(void* detour, const char* name, void** result)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  eax, result
+            push eax
+            push 0
+            push name
+            push 0
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using OpenGateSeam = wxl::core::seams::GateOf<wxl::seam::Storage::OpenFile::Convention,
+                                                  wxl::seam::Storage::OpenFile::Signature>;
+    using OpenGateLink = OpenGateSeam::Link<&wxl::seam::Storage::OpenFile::Gate>;
+    using OpenedLink = wxl::core::seams::DetourOf<wxl::seam::Storage::OpenEx::Convention,
+                                                  wxl::seam::Storage::OpenEx::Signature>::
+        Link<nullptr, &wxl::seam::Storage::OpenEx::After>;
+
+    uint32_t g_mapObjLoads = 0;
+    __declspec(noinline) void __fastcall FakeMapObjLoad(void*, void*) { ++g_mapObjLoads; }
+
+    /// Calls a thiscall detour that takes nothing on the stack, as PostloadCallback calls
+    /// CMapObj::Load at 0x007D7EB4: the object in ECX.
+    __declspec(noinline) void CallLikeMapObjLoad(void* detour, void* self)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  ecx, self
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using MapObjSeam = wxl::core::seams::DetourOf<wxl::seam::MapObj::Load::Convention,
+                                                  wxl::seam::MapObj::Load::Signature>;
+    using MapObjLink = MapObjSeam::Link<&wxl::seam::MapObj::Load::Before, nullptr>;
+
+    void CheckAssetDetours()
+    {
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_FileOpen, &OnFileOpen, nullptr, 0);
+        OpenGateLink::original = Opaque(reinterpret_cast<OpenGateSeam::Fn>(&OpenedLink::Detour));
+        OpenedLink::original   = Opaque(&FakeOpenEx);
+        void* const gate       = Opaque(reinterpret_cast<void*>(&OpenGateLink::Detour));
+
+        g_answerWith = "Mods\\example\\Fireball.blp";
+        void* file   = reinterpret_cast<void*>(1);
+        g_received.clear();
+        CallLikeOpen(gate, "Interface\\Icons\\Fireball.blp", &file);
+        Check(g_espBefore == g_espAfter, "the OpenFile gate and the OpenEx observer pop their four as stdcall does");
+        Check(g_openedName == g_answerWith, "the client is handed the path the FileOpen handler wrote");
+        const Received* opened = Only(WXL_EV_FileOpened);
+        Check(opened && opened->As<wxl_file_opened_args>().found == WXL_FALSE &&
+                  opened->As<wxl_file_opened_args>().path.size == strlen(g_answerWith),
+              "and the observer, nearer the function, reports the open of that path");
+        g_answerWith = nullptr;
+        g_host->Events().Unsubscribe(sub);
+        OpenGateLink::original = nullptr;
+        OpenedLink::original   = nullptr;
+
+        FakeMapObj keep;
+        strcpy(keep.name, "World\\wmo\\Test.wmo");
+        keep.bytes = "REVM";
+        MapObjLink::original = Opaque(reinterpret_cast<MapObjSeam::Fn>(&FakeMapObjLoad));
+        g_received.clear();
+        CallLikeMapObjLoad(Opaque(reinterpret_cast<void*>(&MapObjLink::Detour)), &keep);
+        Check(g_espBefore == g_espAfter && g_mapObjLoads == 1,
+              "the MapObj.Load detour takes the object in ECX, runs the original, cleans nothing");
+        Check(Only(WXL_EV_MapObjectLoad) != nullptr, "and Before raised MapObjectLoad for it");
+        MapObjLink::original = nullptr;
+    }
 #endif
 }
 
@@ -5347,6 +5735,11 @@ int main(int argc, char** argv)
     CheckPlayer();
     CheckGameUI();
     CheckMapArea();
+    CheckListening();
+    CheckAssets();
+    CheckDoodads();
+    CheckFileOpened();
+    CheckObjectUpdate();
     CheckFrameScript();
     CheckNetClient();
     CheckNetConnection();
@@ -5383,6 +5776,7 @@ int main(int argc, char** argv)
     CheckRegparmThunks();
     CheckChatDetours();
     CheckStormDetours();
+    CheckAssetDetours();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

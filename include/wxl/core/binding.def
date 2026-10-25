@@ -86,6 +86,7 @@
 #include "wxl/core/binding/consolevar.def"
 #include "wxl/core/binding/chat.def"
 #include "wxl/core/binding/memory.def"
+#include "wxl/core/binding/asset.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

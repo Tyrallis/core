@@ -15,6 +15,7 @@
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
+#include "wxl/core/init.h"
 #include "wxl/host/mod_host.hpp"
 
 #include <windows.h>
@@ -102,6 +103,14 @@ namespace
         wxl::core::objects::Service().DropWatches(token);
     }
 
+    /// An event gained its first handler or lost its last: the flag the client tests before a
+    /// seam whose body would only raise it.
+    void OnListenChanged(void*, wxl_event event, bool listening)
+    {
+        if (static_cast<uint32_t>(event) < static_cast<uint32_t>(WXL_EV_COUNT))
+            wxl_core_listening[event] = listening ? 1 : 0;
+    }
+
     // Heap-allocated and never freed: the wxl_host table points into it, and a mod disabled
     // rather than unloaded stays mapped with that pointer to the end of the process.
     wxl::host::ModHost* g_host = nullptr;
@@ -109,6 +118,8 @@ namespace
     LONG g_started = 0;
     bool g_up      = false;
 }
+
+extern "C" WXL_CORE_API volatile uint8_t wxl_core_listening[WXL_EV_COUNT] = {};
 
 namespace wxl::core
 {
@@ -163,6 +174,7 @@ namespace wxl::core
 
             g_host = new wxl::host::ModHost(std::move(cfg));
             g_host->SetDisableHandler(&OnModDisabled, nullptr);
+            g_host->SetListenHandler(&OnListenChanged, nullptr);
 
             attachment::Install();
 

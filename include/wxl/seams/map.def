@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Map domain: seams on CMap, the loaded world, where map doodads are placed.
+
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including map.def"
+#endif
+
+// A doodad is placed by one of three CMap::CreateDoodadDef overloads, which allocate a
+// CMapDoodadDef, set its place and build its model. Two of them answer the one already placed
+// when the map's doodad hash holds its id (a doodad a neighbouring chunk or a second visit of
+// the same object already placed): that is not a placement, and raises nothing. What tells them
+// apart is whether this call allocated the def: CMap::AllocDoodadDef, called by the three only
+// when they place one, notes the def it hands out, and the overload's After raises DoodadSpawn
+// only for that def. Main thread only.
+//
+// DoodadSpawn carries the model's path and the doodad's place in world coordinates, as the def
+// holds it once placed. Nothing is read when nobody listens, and on x64 the client skips the
+// calls then.
+
+// Allocates one doodad def from the map's object heap and constructs it. A static of CMap with
+// no argument: cdecl, nothing read on the stack, a bare `ret` (0x007C021F). Its three callers are
+// the overloads below (0x007BEB6B, 0x007BECFC, 0x007BEF69). After notes the def it answered.
+WXL_SEAM_AFTER(Map, AllocDoodadDef, "CMap::AllocDoodadDef", void*, cdecl, ())
+
+// A doodad of a terrain tile, from the tile's MDDF entry and the tile's centre: its position is
+// the entry's, turned into world axes and moved by the centre. Called by CMapChunk::CreateRefs
+// (0x007C63D4). cdecl, three dwords ([ebp+8] to [ebp+0x10]), a bare `ret` (0x007BEF31).
+WXL_SEAM_AFTER(Map, CreateDoodadDef, "CMap::CreateDoodadDef@0x007BECD0", void*, cdecl, (const char* file_name, void* doodad_def, const wxl_vec3* center))
+WXL_SEAM_RAISES(Map, CreateDoodadDef, DoodadSpawn)
+
+// A doodad the game places at a position with a facing, not from a map file (World's object
+// placement): it always allocates, with an id counted down from CMap::uniqueId. cdecl, four
+// dwords, the facing a float ([ebp+0x10]), a bare `ret` (0x007BECC9).
+WXL_SEAM_AFTER(Map, CreateDoodadDefAt, "CMap::CreateDoodadDef@0x007BEB40", void*, cdecl, (const char* file_name, const wxl_vec3* position, float facing, int32_t wait_for_load))
+WXL_SEAM_RAISES(Map, CreateDoodadDefAt, DoodadSpawn)
+
+// A doodad of a map object's doodad set, from the object's MODD entry and the placement's
+// matrix. Called by CMapObj::CreateRefs (0x007BF7E4). cdecl, six dwords, the set a
+// 16-bit value in a dword ([ebp+0x1C]), a bare `ret` (0x007BF11F).
+WXL_SEAM_AFTER(Map, CreateDoodadDefInMapObj, "CMap::CreateDoodadDef@0x007BEF40", void*, cdecl, (uint32_t doodad_ref, void* doodad_def, char* name, uint32_t key, void* mat, uint16_t doodad_set))
+WXL_SEAM_RAISES(Map, CreateDoodadDefInMapObj, DoodadSpawn)

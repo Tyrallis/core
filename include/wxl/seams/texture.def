@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Texture domain: a seam on the function every named texture of the client is asked for
+// through.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including texture.def"
+#endif
+
+// Answers the texture a file name gives: from the texture cache when the client already holds
+// it with the same flags, otherwise read (BLP, or TGA when the name says so) and cached. Every
+// model's textures, the interface's, the terrain's and the sky's come through it, about seventy
+// callers, so it runs on every reference, cached or not. The flags are a CGxTexFlags, one dword
+// of bit fields passed by value. A free function, overloaded: cdecl, the caller cleans (`ret` at
+// 0x004B97A4; four dwords read, [ebp+8] to [ebp+0x14]).
+//
+// Before raises TextureLoad with the name asked for, before the cache is looked at; nothing
+// when nobody listens, and on x64 the client skips the call then.
+WXL_SEAM_BEFORE(Texture, Create, "TextureCreate@0x004B9760", void*, cdecl, (const char* file_name, uint32_t tex_flags, void* status, uint32_t flags))
+WXL_SEAM_RAISES(Texture, Create, TextureLoad)

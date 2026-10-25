@@ -120,6 +120,18 @@ typedef struct wxl_core_init
 } wxl_core_init;
 
 /**
+ * @brief One byte per event of wxl/events.h, nonzero while at least one handler is subscribed
+ *        to it.
+ *
+ * The runtime writes it whenever an event gains its first handler or loses its last; the client
+ * reads it, through wxl::seam::Listening (wxl/seams/seams.h), before calling a seam whose body
+ * would only raise that event, so a seam nobody listens to costs a load and a branch instead of
+ * a call into the runtime. All zero until WarcraftXLInit has loaded the mods. Indexed by
+ * wxl_event; the client and the runtime come from one tree, so they agree on the count.
+ */
+WXL_CORE_API extern volatile uint8_t wxl_core_listening[];
+
+/**
  * @brief Brings the runtime up: the mod host, every mod under Mods\ next to the client
  *        executable, then WXL_STAGE_EARLY.
  *

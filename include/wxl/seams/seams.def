@@ -101,6 +101,10 @@
 #include "wxl/seams/realmconnection.def"
 #include "wxl/seams/login.def"
 #include "wxl/seams/chat.def"
+#include "wxl/seams/texture.def"
+#include "wxl/seams/m2shared.def"
+#include "wxl/seams/mapobj.def"
+#include "wxl/seams/map.def"
 #include "wxl/seams/storm.def"
 #include "wxl/seams/clientdb.def"
 

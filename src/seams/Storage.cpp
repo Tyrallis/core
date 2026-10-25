@@ -77,7 +77,7 @@ namespace wxl::seam::Storage::OpenFile
         }
 
         wxl::host::ModHost* host = wxl::core::Host();
-        if (!host)
+        if (!host || !host->Listening(WXL_EV_FileOpen))
         {
             Resolve(archive, name, flags);
             return false;
@@ -108,6 +108,26 @@ namespace wxl::seam::Storage::OpenFile
         *name = g_redirect;
         Resolve(archive, name, flags);
         return false;
+    }
+}
+
+namespace wxl::seam::Storage::OpenEx
+{
+    void WXL_CALL After(int32_t result, void*, const char* name, uint32_t, void** file)
+    {
+        // Any thread, every open: nothing is read until someone listens.
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !host->Listening(WXL_EV_FileOpened) || !name) return;
+        if (wxl::core::services::storage::Listing()) return;
+
+        const bool found = result != 0 && file && *file;
+        const uint64_t size = found ? wxl::core::binding::file_size(*file) : 0;
+
+        wxl_file_opened_args args{};
+        args.path  = wxl_str{name, static_cast<uint32_t>(std::strlen(name))};
+        args.found = found ? WXL_TRUE : WXL_FALSE;
+        args.size  = size > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(size);
+        host->Raise(WXL_EV_FileOpened, &args);
     }
 }
 

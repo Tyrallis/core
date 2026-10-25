@@ -16,10 +16,21 @@
 // Gated: a handler of FileOpen may write a path into wxl_file_open_args::redirect to have that
 // file opened instead. The gate never takes the call; it rewrites the name and lets the client's
 // own open run. Called on every thread that opens files.
-//
-// FileOpened is not raised: it carries the result, and the function has a dozen returns.
 WXL_SEAM_GATE(Storage, OpenFile, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
 WXL_SEAM_RAISES(Storage, OpenFile, FileOpen)
+
+// The same function, observed: a gate has no After, so the result of an open is a second row
+// on the same address. On x86 both are links of one chain, this one attached after the gate and
+// so nearer the function: it is handed the arguments the gate let through, the name a redirect
+// or a search folder chose included. On x64 the fork calls After at each of the function's
+// returns, after the gate's test at its head.
+//
+// After raises FileOpened with the name that was opened, whether a file came back, and its size
+// (0 when none did). Called on every thread that opens files; nothing is read when nobody
+// listens, and on x64 the client skips the calls then. The runtime's own opens (the archive
+// listing of wxl.storage's find) raise nothing, as they raise no FileOpen.
+WXL_SEAM_AFTER(Storage, OpenEx, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
+WXL_SEAM_RAISES(Storage, OpenEx, FileOpened)
 
 // Mounts an archive by path: an .MPQ file, or a folder named like one. Nonzero, with an SArchive
 // written through `archive`, when it was opened; its hash and block tables are read by then. A

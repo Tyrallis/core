@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -236,4 +237,60 @@ namespace wxl::seam::ObjectMgr::ObjDelete
 namespace wxl::seam::ObjectMgr::DestroyRemovedObject
 {
     void WXL_CALL Before(void* object) { Leave(object); }
+}
+
+// --- ObjectUpdate: the objects an update packet's field writes reached ---------------------
+
+namespace
+{
+    /// The objects the packet being applied wrote fields of, in the order it first named them,
+    /// with the handle each had then. Main thread only, like the object manager.
+    struct Noted
+    {
+        void*      object;
+        wxl_handle handle;
+    };
+
+    std::vector<Noted>        g_updated;
+    std::unordered_set<void*> g_noted; ///< the objects of g_updated, to note each once
+}
+
+namespace wxl::seam::ObjectMgr::FillInPartialObjectData
+{
+    void WXL_CALL After(int32_t result, void* object, uint64_t, void*, bool, bool)
+    {
+        if (!result || !object) return;
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !host->Listening(WXL_EV_ObjectUpdate)) return;
+
+        // An object the packet creates is not tracked yet: ObjectCreate announces it.
+        const wxl_handle handle = wxl::core::objects::HandleOf(object);
+        if (handle == WXL_HANDLE_NONE) return;
+        if (g_noted.insert(object).second) g_updated.push_back(Noted{object, handle});
+    }
+}
+
+namespace wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT
+{
+    void WXL_CALL After(int32_t, void*, uint32_t, uint32_t, void*)
+    {
+        if (g_updated.empty()) return;
+        // Taken first: a handler may cause another packet to be applied.
+        std::vector<Noted> updated;
+        updated.swap(g_updated);
+        g_noted.clear();
+
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host) return;
+        for (const Noted& noted : updated)
+        {
+            // Gone meanwhile (the packet's expiry, or a handler): the handle no longer names it.
+            if (wxl::core::objects::HandleOf(noted.object) != noted.handle) continue;
+            wxl_object_args args{};
+            args.object = noted.handle;
+            args.guid   = wxl::core::binding::object_guid(noted.object);
+            args.type   = wxl::core::binding::object_type_id(noted.object);
+            host->Raise(WXL_EV_ObjectUpdate, &args);
+        }
+    }
 }

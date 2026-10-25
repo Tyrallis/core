@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Asset domain of the client binding: what a model, a map object and a placed doodad answer
+// while the client loads them.
+//
+// `shared` is the CM2Shared* and `map_obj` the CMapObj* a seam was handed; `def` is the
+// CMapDoodadDef* a CMap::CreateDoodadDef overload answered.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including asset.def"
+#endif
+
+// The model's path, CM2Shared::m_fileName: what CM2Cache::CreateShared opened it by.
+WXL_BINDING(model_path, const char*, (const void* shared), (shared), 0)
+
+// The model file's bytes, CM2Shared::m_data, read whole by then, and their count, m_fileSize.
+// Null when the model holds none.
+WXL_BINDING(model_bytes, const void*, (const void* shared, uint32_t* size), (shared, size), 0)
+
+// Puts `size` other bytes in place of the model's: a copy in a buffer of the client's own
+// allocator for model data (SIMD::AllocA16), which becomes m_data, m_fileSize set to `size`, the
+// buffer read freed (SIMD::FreeA16). The client then parses the copy as it would have parsed the
+// file. False, the model untouched, when the copy could not be made.
+WXL_BINDING(model_replace_bytes, wxl_bool, (void* shared, const void* bytes, uint32_t size), (shared, bytes, size), WXL_FALSE)
+
+// The map object's path, CMapObj::m_wmoName, and its root file's bytes, m_pWmoData and
+// m_wmoFileSize. Null when it holds none.
+WXL_BINDING(map_obj_path, const char*, (const void* map_obj), (map_obj), 0)
+WXL_BINDING(map_obj_bytes, const void*, (const void* map_obj, uint32_t* size), (map_obj, size), 0)
+
+// Where a placed doodad is, in world coordinates: CMapDoodadDef::m_position.
+WXL_BINDING(doodad_position, wxl_bool, (const void* def, wxl_vec3* out), (def, out), WXL_FALSE)

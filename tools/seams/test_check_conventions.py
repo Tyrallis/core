@@ -772,6 +772,33 @@ GROUND_TRUTH = {
     "Storage.OpenArchive":             ("0x00421950", "stdcall", [], 4),
     "Storage.CloseArchive":            ("0x00421720", "stdcall", [], 1),
     "ClientDb.Initialize":             ("0x00634E00", "cdecl", [], 0),
+    # The observed half of SFile::OpenEx, the same function as Storage.OpenFile: `ret 0x10` at
+    # 0x00424C3C and 0x00424CCB.
+    "Storage.OpenEx":                  ("0x00424B50", "stdcall", [], 4),
+    # TextureCreate (the file-name overload) reads [ebp+8..0x14] and ends in a bare `ret`
+    # (0x004B97A4, 0x004B98EC); 0x0040A075 pushes four and cleans 0x10.
+    "Texture.Create":                  ("0x004B9760", "cdecl", [], 4),
+    # CM2Shared::LoadSucceededCallback reads its model at [ebp+8] and tail jumps into
+    # FinishLoading (0x0083D35E); AsyncFileReadPollHandler pushes the user arg and calls through
+    # ECX at 0x004B9B9E (the witness), then `add esp, 4`.
+    "M2Shared.LoadSucceededCallback":  ("0x0083D340", "cdecl", [], 1),
+    # CMapObj::Load: `mov edi, ecx` at 0x007D7479, nothing read on the stack, bare `ret` at
+    # 0x007D7700.
+    "MapObj.Load":                     ("0x007D7470", "thiscall", ["ecx"], 0),
+    # CMap::AllocDoodadDef reads nothing and ends in a bare `ret` (0x007C021F). The three
+    # CreateDoodadDef overloads read three ([ebp+8..0x10]), four (the facing a float at
+    # [ebp+0x10]) and six dwords (the doodad set a word at [ebp+0x1C]) and each ends in a bare
+    # `ret` (0x007BEF31, 0x007BECC9, 0x007BF11F).
+    "Map.AllocDoodadDef":              ("0x007C01F0", "cdecl", [], 0),
+    "Map.CreateDoodadDef":             ("0x007BECD0", "cdecl", [], 3),
+    "Map.CreateDoodadDefAt":           ("0x007BEB40", "cdecl", [], 4),
+    "Map.CreateDoodadDefInMapObj":     ("0x007BEF40", "cdecl", [], 6),
+    # FillInPartialObjectData reads [ebp+8..0x1C] (the bools as bytes at 0x004D544E, 0x004D54D1)
+    # and ends in a bare `ret`; CreateObject pushes six at 0x004D6C5B-63. Packet_SMSG_UPDATE_OBJECT
+    # reads time and msg at [ebp+0x10], [ebp+0x14], ends in a bare `ret` (0x004D74C9), and
+    # SMSG_COMPRESSED_UPDATE_OBJECT's handler pushes four and cleans 0x10 at 0x004D7597.
+    "ObjectMgr.FillInPartialObjectData": ("0x004D53C0", "cdecl", [], 6),
+    "ObjectMgr.Packet_SMSG_UPDATE_OBJECT": ("0x004D73A0", "cdecl", [], 4),
 }
 
 

@@ -83,3 +83,35 @@ WXL_SEAM_RAISES(ObjectMgr, InitializeShared, ObjectFieldChanged)
 // cdecl, nothing taken: 0x004D5C80 reads no [ebp+N] and returns with a bare `ret` (0x004D5D6A);
 // its one caller, ClientDestroyGame at 0x0040665F, pushes nothing for it.
 WXL_SEAM_BEFORE(ObjectMgr, DestroyShared, "ClntObjMgrDestroyShared", void, cdecl, ())
+
+// What ObjectUpdate is raised from: an object whose fields an update packet changed, once per
+// object and packet, when the whole packet has been applied. The client applies an
+// SMSG_UPDATE_OBJECT in two passes over its blocks: the first writes the fields
+// (FillInPartialObjectData), the second calls the mirror handlers (ObjectFieldChanged among
+// them) and finishes the creates. So the seam on the field writes notes the objects, and the one
+// on the packet raises for each when the packet is done, in the order the packet first named
+// them. A create is not an update: an object the packet creates is announced by ObjectCreate
+// and not noted (it is not tracked yet when its fields are written), nor is an object the packet
+// only moves. An object a packet re-creates while the client still holds it has its fields
+// rewritten, and is an update. SMSG_COMPRESSED_UPDATE_OBJECT inflates its body and calls the
+// same handler, so it is covered. Main thread only.
+
+// Writes an update block's fields into an object, dword by dword as the block's mask names them.
+// A static of ObjectMgrClient.cpp with three callers: PartialUpdateFromFullUpdate (a values
+// update) and CreateObject twice (an object the client still held, then a new one, before
+// InitObject). After notes the object when it is tracked, the write took and someone listens.
+//
+// cdecl: the object, the guid as two dwords, the message and two bools, six dwords on the stack
+// ([ebp+8] to [ebp+0x1C]) cleaned by the caller (a bare `ret`, 0x004D53E8). Evidence: CreateObject
+// at 0x004D6C5B-63 pushes 1, 0, the message, both guid halves and the object.
+WXL_SEAM_AFTER(ObjectMgr, FillInPartialObjectData, "FillInPartialObjectData", int32_t, cdecl, (void* object, uint64_t guid, void* msg, bool skip_mirror_update, bool zero_fill_absent))
+
+// The SMSG_UPDATE_OBJECT handler: out-of-range objects first, then both passes over the packet's
+// blocks, then the lazy-cleanup expiry. Registered with the connection by ClntObjMgrInitialize
+// and called by SMSG_COMPRESSED_UPDATE_OBJECT's (0x004D74D0) with the inflated body. After raises
+// ObjectUpdate for each object the packet's field writes noted that is still tracked.
+//
+// cdecl, four dwords (the handler's param, the opcode, the time, the message; [ebp+8] to
+// [ebp+0x14]) and a bare `ret` (0x004D74C9), as every message handler of the client.
+WXL_SEAM_AFTER(ObjectMgr, Packet_SMSG_UPDATE_OBJECT, "Packet_SMSG_UPDATE_OBJECT", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(ObjectMgr, Packet_SMSG_UPDATE_OBJECT, ObjectUpdate)

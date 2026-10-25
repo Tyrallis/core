@@ -903,3 +903,66 @@ namespace wxl::core::binding
         return told;
     }
 }
+
+// --- Asset: models, map objects, doodads (asset.def) ----------------------------------------
+
+namespace
+{
+    // The allocator of model data: 16-byte aligned blocks of Storm's heap (SMemAlloc).
+    using AllocA16Fn = void*(__cdecl*)(uint32_t size, const char* file, int32_t line);
+    using FreeA16Fn  = void(__cdecl*)(void* block);
+}
+
+namespace wxl::core::binding
+{
+    const char* model_path(const void* shared)
+    {
+        if (!IsClient() || !shared) return nullptr;
+        return static_cast<const char*>(shared) + WXL_FIELD("CM2Shared", "m_fileName");
+    }
+
+    const void* model_bytes(const void* shared, uint32_t* size)
+    {
+        if (!IsClient() || !shared) return nullptr;
+        if (size) *size = Read<uint32_t>(shared, WXL_FIELD("CM2Shared", "m_fileSize"));
+        return Read<const void*>(shared, WXL_FIELD("CM2Shared", "m_data"));
+    }
+
+    wxl_bool model_replace_bytes(void* shared, const void* bytes, uint32_t size)
+    {
+        if (!IsClient() || !shared || !bytes || !size) return WXL_FALSE;
+        const AllocA16Fn alloc = reinterpret_cast<AllocA16Fn>(WXL_SITE("SIMD::AllocA16", 0));
+        const FreeA16Fn  release = reinterpret_cast<FreeA16Fn>(WXL_SITE("SIMD::FreeA16", 0));
+        void* copy = alloc(size, __FILE__, __LINE__);
+        if (!copy) return WXL_FALSE;
+        std::memcpy(copy, bytes, size);
+        char* base = static_cast<char*>(shared);
+        void* read = Read<void*>(shared, WXL_FIELD("CM2Shared", "m_data"));
+        std::memcpy(base + WXL_FIELD("CM2Shared", "m_data"), &copy, sizeof copy);
+        std::memcpy(base + WXL_FIELD("CM2Shared", "m_fileSize"), &size, sizeof size);
+        if (read) release(read);
+        return WXL_TRUE;
+    }
+
+    const char* map_obj_path(const void* map_obj)
+    {
+        if (!IsClient() || !map_obj) return nullptr;
+        return static_cast<const char*>(map_obj) + WXL_FIELD("CMapObj", "m_wmoName");
+    }
+
+    const void* map_obj_bytes(const void* map_obj, uint32_t* size)
+    {
+        if (!IsClient() || !map_obj) return nullptr;
+        if (size) *size = Read<uint32_t>(map_obj, WXL_FIELD("CMapObj", "m_wmoFileSize"));
+        return Read<const void*>(map_obj, WXL_FIELD("CMapObj", "m_pWmoData"));
+    }
+
+    wxl_bool doodad_position(const void* def, wxl_vec3* out)
+    {
+        if (!IsClient() || !def || !out) return WXL_FALSE;
+        out->x = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.x"));
+        out->y = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.y"));
+        out->z = Read<float>(def, WXL_FIELD("CMapDoodadDef", "m_position.z"));
+        return WXL_TRUE;
+    }
+}
