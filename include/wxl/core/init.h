@@ -43,6 +43,51 @@ typedef int32_t(WXL_CALL* wxl_core_name_fn)(const char* name, void* user);
 typedef int32_t(WXL_CALL* wxl_core_mirror_fn)(uint64_t guid, uint32_t offset, uint32_t size,
                                               const void* old_value, void* param);
 
+/// What a graphics resource is, as gx_resources tells it.
+#define WXL_CORE_GPU_TEXTURE 0u ///< a texture: 2D, cube or volume, every level
+#define WXL_CORE_GPU_BUFFER  1u ///< a vertex or index buffer
+
+/// One texture or buffer of the graphics device. `pool` is its D3DPOOL: 0 default, 1 managed,
+/// 2 system memory, 3 scratch. `bytes` is what its format and dimensions take, every level.
+typedef struct wxl_core_gpu_resource
+{
+    uint32_t kind;
+    uint32_t pool;
+    uint64_t bytes;
+} wxl_core_gpu_resource;
+
+typedef void(WXL_CALL* wxl_core_gpu_fn)(const wxl_core_gpu_resource* resource, void* user);
+
+/// One mounted archive: what its header says of its tables, and what they hold in memory.
+typedef struct wxl_core_archive
+{
+    const char* path;
+    int32_t     priority;
+    uint32_t    hash_entries;
+    uint32_t    block_entries;
+    uint64_t    bytes; ///< its hash and block tables, unpacked or packed, and its listfile's names
+} wxl_core_archive;
+
+typedef void(WXL_CALL* wxl_core_archive_fn)(const wxl_core_archive* archive, void* user);
+
+/// How many blocks a client database holds at most: its records, its strings, its index.
+#define WXL_CORE_DB_BLOCKS 3
+
+/// One client database. Each block is an allocation of the client's, null when it has none, with
+/// what it holds as far as the store's own counts tell (0 for the strings, which no count
+/// gives); the runtime knows the exact size of a block Storm handed out while it was counting.
+typedef struct wxl_core_db
+{
+    const char* file;
+    wxl_bool    loaded;
+    uint32_t    records;
+    uint32_t    record_size; ///< bytes per record in memory
+    const void* blocks[WXL_CORE_DB_BLOCKS];
+    uint64_t    estimates[WXL_CORE_DB_BLOCKS];
+} wxl_core_db;
+
+typedef void(WXL_CALL* wxl_core_db_fn)(const wxl_core_db* db, void* user);
+
 /// One string per row of wxl/core/binding.def, "name: ret (params)", in table order. The
 /// client hands its copy over in wxl_core_init and the runtime compares it with its own, so a
 /// client built from a different table is refused by name instead of having its accessors

@@ -10,6 +10,7 @@
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
+#include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
@@ -554,6 +555,75 @@ namespace
         return 1;
     }
 
+    // What wxl.footprint reads of the client: a texture of each pool and a buffer, the sound and
+    // script heaps, two archives, two databases.
+    wxl_core_gpu_resource g_gpu[] = {
+        {WXL_CORE_GPU_TEXTURE, 1, 4096}, {WXL_CORE_GPU_TEXTURE, 1, 1024}, {WXL_CORE_GPU_TEXTURE, 0, 8192},
+        {WXL_CORE_GPU_BUFFER, 0, 65536},
+    };
+
+    uint32_t WXL_CALL FakeGxResources(wxl_core_gpu_fn fn, void* user)
+    {
+        for (const wxl_core_gpu_resource& resource : g_gpu) fn(&resource, user);
+        return static_cast<uint32_t>(sizeof g_gpu / sizeof g_gpu[0]);
+    }
+
+    wxl_bool WXL_CALL FakeSoundHeap(uint64_t* current, uint64_t* peak)
+    {
+        *current = 3000000;
+        *peak    = 5000000;
+        return WXL_TRUE;
+    }
+
+    uint64_t WXL_CALL FakeScriptHeap() { return 12345678; }
+
+    wxl_core_archive g_archives[] = {
+        {"Data\\common.MPQ", 0, 65536, 40000, 2000000},
+        {"Data\\patch-3.MPQ", 30, 16384, 9000, 500000},
+    };
+
+    /// An SArchive as SFile::OpenArchive hands one out: its type, then its record.
+    struct FakeSArchive
+    {
+        uint32_t          type;
+        wxl_core_archive* record;
+    };
+
+    uint32_t WXL_CALL FakeArchiveTables(wxl_core_archive_fn fn, void* user)
+    {
+        for (const wxl_core_archive& archive : g_archives) fn(&archive, user);
+        return 2;
+    }
+
+    wxl_bool WXL_CALL FakeArchiveOf(void* archive, wxl_core_archive* out)
+    {
+        const FakeSArchive* handle = static_cast<const FakeSArchive*>(archive);
+        if (!handle || handle->type != 0 || !handle->record) return WXL_FALSE;
+        *out = *handle->record;
+        return WXL_TRUE;
+    }
+
+    alignas(8) char g_spellRecords[64];
+    alignas(8) char g_spellStrings[32];
+
+    uint32_t WXL_CALL FakeClientDbs(wxl_core_db_fn fn, void* user)
+    {
+        wxl_core_db spell{};
+        spell.file         = "DBFilesClient\\Spell.dbc";
+        spell.loaded       = WXL_TRUE;
+        spell.records      = 2;
+        spell.record_size  = 32;
+        spell.blocks[0]    = g_spellRecords;
+        spell.estimates[0] = 64;
+        spell.blocks[1]    = g_spellStrings;
+        spell.blocks[2]    = nullptr;
+        fn(&spell, user);
+        wxl_core_db unread{};
+        unread.file = "DBFilesClient\\Map.dbc";
+        fn(&unread, user);
+        return 2;
+    }
+
     // The graphics device, as the paint and the device's resets see it.
     bool     g_gxContext = true;
     bool     g_gxVisible = true;
@@ -722,6 +792,12 @@ namespace
         init.object_watch_one       = &FakeWatchOne;
         init.object_unwatch_type    = &FakeUnwatchType;
         init.object_unwatch_one     = &FakeUnwatchOne;
+        init.gx_resources           = &FakeGxResources;
+        init.sound_heap             = &FakeSoundHeap;
+        init.script_heap            = &FakeScriptHeap;
+        init.archive_tables         = &FakeArchiveTables;
+        init.archive_of             = &FakeArchiveOf;
+        init.client_dbs             = &FakeClientDbs;
         return init;
     }
 }
@@ -4151,6 +4227,194 @@ namespace
         g_vm.live = false;
     }
 
+    // --- wxl.footprint: Storm's allocations, the client's consumers, the address space -------
+
+    std::string_view Text(wxl_str text) { return std::string_view(text.data ? text.data : "", text.size); }
+
+    /// The source row of a file in the last picture, or null.
+    const wxl_footprint_source* SourceNamed(const std::vector<wxl_footprint_source>& rows, const char* file)
+    {
+        for (const wxl_footprint_source& row : rows)
+            if (row.file.size == std::strlen(file) && std::memcmp(row.file.data, file, row.file.size) == 0) return &row;
+        return nullptr;
+    }
+
+    const wxl_footprint_category* CategoryNamed(const std::vector<wxl_footprint_category>& rows, const char* name)
+    {
+        for (const wxl_footprint_category& row : rows)
+            if (row.name.size == std::strlen(name) && std::memcmp(row.name.data, name, row.name.size) == 0) return &row;
+        return nullptr;
+    }
+
+    template <class T>
+    std::vector<T> Listed(uint32_t (WXL_CALL* list)(T*, uint32_t))
+    {
+        std::vector<T> rows(list(nullptr, 0));
+        for (T& row : rows) row.struct_size = sizeof(T);
+        rows.resize(list(rows.data(), static_cast<uint32_t>(rows.size())) < rows.size() ? 0 : rows.size());
+        return rows;
+    }
+
+    void CheckFootprint()
+    {
+        namespace Storm = wxl::seam::Storm;
+        const wxl_footprint_api& api = wxl::core::services::FootprintApi();
+        wxl::core::services::footprint::Reset();
+
+        static const char kClient[] = ".\\Client.cpp";
+        static const char kNew[]    = "new";
+        void* const       a         = reinterpret_cast<void*>(0x10001000);
+        void* const       b         = reinterpret_cast<void*>(0x10002000);
+        void* const       c         = reinterpret_cast<void*>(0x10003000);
+
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);
+        Check(api.running() == WXL_FALSE, "accounting is off until a mod starts it: an allocation counts nothing");
+        api.snapshot();
+        Check(Listed(api.sources).empty() && !CategoryNamed(Listed(api.categories), "storm"),
+              "and a picture taken then has no source and no storm category");
+
+        Check(api.start() == WXL_OK && api.running() == WXL_TRUE, "start begins accounting");
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);  // 104 with Storm's rounding
+        Storm::SMemAlloc::After(b, 8, kClient, 11, 0);
+        Storm::SMemAlloc::After(c, 1000, kNew, -1, 0);
+        Storm::SMemFree::Before(b, "free", 0, 0);
+        Storm::SMemFree::Before(reinterpret_cast<void*>(0x20000000), "free", 0, 0); // never counted
+        api.snapshot();
+        std::vector<wxl_footprint_source> sources = Listed(api.sources);
+        const wxl_footprint_source*       client  = SourceNamed(sources, kClient);
+        const wxl_footprint_source*       news    = SourceNamed(sources, kNew);
+        Check(client && client->bytes == 104 && client->count == 1 && client->allocations == 2 && client->peak == 112,
+              "a source counts its live bytes rounded to 8, its live blocks, every allocation and its peak");
+        Check(news && news->bytes == 1000 && sources.front().bytes == 1000,
+              "each file is its own row, and the largest comes first");
+        const std::vector<wxl_footprint_category> categories = Listed(api.categories);
+        const wxl_footprint_category*             storm      = CategoryNamed(categories, "storm");
+        Check(storm && storm->bytes == 1104 && storm->count == 2 && storm->peak == 1112,
+              "the storm category is every source together, with its own peak");
+
+        // SMemReAlloc: moved, failed, freed, and the calls that leave the block alone.
+        void* const d = reinterpret_cast<void*>(0x10004000);
+        Storm::SMemReAlloc::Before(a, 300, kNew, 0, 0);
+        Storm::SMemReAlloc::After(d, a, 300, kNew, 0, 0);
+        Storm::SMemReAlloc::Before(c, 4000, kNew, 0, 0);
+        Storm::SMemReAlloc::After(nullptr, c, 4000, kNew, 0, 0); // the call failed: c stays
+        Storm::SMemReAlloc::Before(c, 64, kNew, 0, 0x10);
+        Storm::SMemReAlloc::After(nullptr, c, 64, kNew, 0, 0x10); // no move allowed: c stays
+        api.snapshot();
+        sources = Listed(api.sources);
+        client  = SourceNamed(sources, kClient);
+        news    = SourceNamed(sources, kNew);
+        Check(client && client->bytes == 0 && client->count == 0 && news && news->bytes == 1304 && news->count == 2,
+              "a block that moves is counted under the file that moved it; one a call left alone stays");
+        Storm::SMemReAlloc::Before(d, 0, kNew, 0, 0);
+        Storm::SMemReAlloc::After(nullptr, d, 0, kNew, 0, 0);
+        api.snapshot();
+        sources = Listed(api.sources);
+        news    = SourceNamed(sources, kNew);
+        Check(news && news->bytes == 1000 && news->count == 1, "and a resize to nothing frees it");
+
+        // The client's consumers, read when the picture is taken.
+        const std::vector<wxl_footprint_category> seen = Listed(api.categories);
+        const wxl_footprint_category* managed = CategoryNamed(seen, "textures.managed");
+        const wxl_footprint_category* target  = CategoryNamed(seen, "textures.default");
+        const wxl_footprint_category* buffers = CategoryNamed(seen, "buffers.default");
+        const wxl_footprint_category* sound   = CategoryNamed(seen, "sound");
+        const wxl_footprint_category* script  = CategoryNamed(seen, "script");
+        const wxl_footprint_category* paks    = CategoryNamed(seen, "archives");
+        Check(managed && managed->bytes == 5120 && managed->count == 2 && target && target->bytes == 8192 && buffers &&
+                  buffers->bytes == 65536,
+              "the device's textures and buffers are summed by pool");
+        Check(sound && sound->bytes == 3000000 && sound->peak == 5000000 && script && script->bytes == 12345678 &&
+                  paks && paks->bytes == 2500000 && paks->count == 2,
+              "the sound and script heaps and the archives' tables are categories of their own");
+        Check(std::is_sorted(seen.begin(), seen.end(),
+                             [](const wxl_footprint_category& x, const wxl_footprint_category& y) { return x.bytes > y.bytes; }),
+              "categories come largest first");
+
+        const std::vector<wxl_footprint_archive> archives = Listed(api.archives);
+        Check(archives.size() == 2 && archives[1].priority == 30 && archives[1].hash_entries == 16384 &&
+                  Text(archives[1].path) == "Data\\patch-3.MPQ",
+              "each archive is listed with its priority, its tables and its path");
+
+        // A database: a block Storm handed out while counting is known exactly; others are estimated.
+        Storm::SMemAlloc::After(g_spellStrings, 20, kClient, 0, 0);
+        api.snapshot();
+        const std::vector<wxl_footprint_table> tables = Listed(api.tables);
+        Check(tables.size() == 1 && Text(tables[0].name) == "DBFilesClient\\Spell.dbc" && tables[0].records == 2 &&
+                  tables[0].bytes == 64 + 24,
+              "a loaded database counts its records, and its strings as Storm handed them out; one unread is left out");
+        Storm::SMemFree::Before(g_spellStrings, "free", 0, 0);
+
+        const std::vector<wxl_footprint_region> regions = Listed(api.regions);
+        uint64_t committed = 0, freeLargest = 0;
+        for (const wxl_footprint_region& region : regions)
+        {
+            if (Text(region.state) == "committed") committed += region.bytes;
+            if (Text(region.state) == "free") freeLargest = region.largest;
+        }
+        Check(regions.size() == 7 && committed > 0 && freeLargest > 0,
+              "the address space is listed by state and type, with the largest free block");
+
+        // What a mod reports of its own.
+        Check(api.report(Str(""), 1, 1) == WXL_E_INVALID, "a report needs a name");
+        api.report(Str("cache"), 777, 3);
+        api.snapshot();
+        const std::vector<wxl_footprint_category> reported = Listed(api.categories);
+        const wxl_footprint_category*             cache    = CategoryNamed(reported, "cache");
+        Check(cache && cache->bytes == 777 && cache->count == 3 && Text(cache->owner) == "runtime",
+              "a report is a category, owned by whoever reported it");
+        api.report(Str("cache"), 0, 0);
+        api.snapshot();
+        Check(!CategoryNamed(Listed(api.categories), "cache"), "and a report of nothing removes it");
+
+        // MemoryPressure: armed by a threshold, raised once under it, again only after recovering.
+        wxl_memory_pressure_args pressure{};
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "with no threshold nothing is due");
+        api.watch_pressure(~0ull);
+        Check(wxl::core::services::footprint::PressureDue(&pressure) && pressure.largest_free > 0 &&
+                  pressure.threshold == ~0ull && pressure.committed > 0,
+              "a threshold above the largest free block is due at the first look, with what was seen");
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "and not again within the second");
+        wxl::core::services::footprint::ForgetMod(0);
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "a mod's threshold goes with it");
+
+        api.stop();
+        Check(api.running() == WXL_FALSE, "stop ends accounting");
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);
+        api.snapshot();
+        sources = Listed(api.sources);
+        news    = SourceNamed(sources, kNew);
+        const wxl_footprint_source* stale = SourceNamed(sources, kClient);
+        Check(news && news->bytes == 1000 && stale && stale->allocations == 3,
+              "the last counts stay after stop, and nothing more is counted");
+        wxl::core::services::footprint::Reset();
+    }
+
+    void CheckArchivesAndDatabases()
+    {
+        FakeSArchive patch{0, &g_archives[1]};
+        void*        handle = &patch;
+
+        g_received.clear();
+        wxl::seam::Storage::OpenArchive::After(1, "Data\\patch-3.MPQ", 30, 0, &handle);
+        const Received* mounted = Only(WXL_EV_ArchiveMounted);
+        Check(mounted && mounted->As<wxl_archive_args>().priority == 30 &&
+                  mounted->As<wxl_archive_args>().block_entries == 9000 && mounted->As<wxl_archive_args>().bytes == 500000,
+              "Storage.OpenArchive raises ArchiveMounted with the archive's priority and tables");
+        g_received.clear();
+        wxl::seam::Storage::OpenArchive::After(0, "Data\\absent.MPQ", 30, 0, &handle);
+        Check(g_received.empty(), "and nothing for an archive that did not open");
+        wxl::seam::Storage::CloseArchive::Before(handle);
+        Check(Only(WXL_EV_ArchiveUnmounted) != nullptr, "Storage.CloseArchive raises ArchiveUnmounted before it closes");
+
+        g_received.clear();
+        wxl::seam::ClientDb::Initialize::After();
+        const Received* loaded = Only(WXL_EV_ClientDbLoaded);
+        Check(loaded && loaded->As<wxl_client_db_args>().record_count == 2 &&
+                  loaded->As<wxl_client_db_args>().records == g_spellRecords,
+              "ClientDb.Initialize raises ClientDbLoaded for each database the client loaded, and only those");
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -4836,6 +5100,126 @@ namespace
         Queue::original   = nullptr;
         Destroy::original = nullptr;
     }
+
+    // --- Storm's allocator, through the detours the client's calls reach -----------------------
+
+    alignas(16) char g_fakeHeap[1 << 16];
+    uint32_t         g_fakeNext  = 0;
+    void*            g_stormAnswered  = nullptr;
+    uint32_t         g_freed     = 0;
+
+    __declspec(noinline) void* __stdcall FakeSMemAlloc(size_t bytes, const char*, int32_t, uint32_t)
+    {
+        if (g_fakeNext + bytes + 8 > sizeof g_fakeHeap) g_fakeNext = 0;
+        void* block = g_fakeHeap + g_fakeNext;
+        g_fakeNext += static_cast<uint32_t>((bytes + 7) & ~static_cast<size_t>(7)) + 8;
+        return block;
+    }
+
+    __declspec(noinline) int32_t __stdcall FakeSMemFree(void*, const char*, int32_t, uint32_t)
+    {
+        ++g_freed;
+        return 1;
+    }
+
+    __declspec(noinline) void* __stdcall FakeSMemReAlloc(void*, size_t bytes, const char* file, int32_t line,
+                                                         uint32_t flags)
+    {
+        return FakeSMemAlloc(bytes, file, line, flags);
+    }
+
+    namespace StormSeam = wxl::seam::Storm;
+    using AllocLink = wxl::core::seams::DetourOf<StormSeam::SMemAlloc::Convention,
+                                                 StormSeam::SMemAlloc::Signature>::Link<nullptr, &StormSeam::SMemAlloc::After>;
+    using FreeLink  = wxl::core::seams::DetourOf<StormSeam::SMemFree::Convention,
+                                                 StormSeam::SMemFree::Signature>::Link<&StormSeam::SMemFree::Before, nullptr>;
+    using ReAllocLink = wxl::core::seams::DetourOf<StormSeam::SMemReAlloc::Convention, StormSeam::SMemReAlloc::Signature>::
+        Link<&StormSeam::SMemReAlloc::Before, &StormSeam::SMemReAlloc::After>;
+
+    /// Calls a detour as operator new calls SMemAlloc at 0x00401020: flags, line, file and size
+    /// pushed, the call, no cleanup -- the callee pops them.
+    __declspec(noinline) void CallLikeNew(void* detour, size_t bytes, const char* file)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push -1
+            push file
+            push bytes
+            call detour
+            mov  dword ptr [g_stormAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour as SMemFree is called: four pushed, the callee pops them.
+    __declspec(noinline) void CallLikeFree(void* detour, void* block)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push 0
+            push 0
+            push block
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour as SMemReAlloc is called: five pushed, the callee pops them.
+    __declspec(noinline) void CallLikeReAlloc(void* detour, void* block, size_t bytes, const char* file)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push 0
+            push file
+            push bytes
+            push block
+            call detour
+            mov  dword ptr [g_stormAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    void CheckStormDetours()
+    {
+        const wxl_footprint_api& api = wxl::core::services::FootprintApi();
+        wxl::core::services::footprint::Reset();
+        api.start();
+        static const char kFile[] = ".\\Detour.cpp";
+
+        AllocLink::original   = Opaque(&FakeSMemAlloc);
+        FreeLink::original    = Opaque(&FakeSMemFree);
+        ReAllocLink::original = Opaque(&FakeSMemReAlloc);
+        void* const alloc     = Opaque(reinterpret_cast<void*>(&AllocLink::Detour));
+        void* const release   = Opaque(reinterpret_cast<void*>(&FreeLink::Detour));
+        void* const resize    = Opaque(reinterpret_cast<void*>(&ReAllocLink::Detour));
+
+        CallLikeNew(alloc, 100, kFile);
+        void* const block = g_stormAnswered;
+        Check(g_espBefore == g_espAfter && block != nullptr,
+              "the SMemAlloc detour pops its four as stdcall does and answers the original's block");
+        CallLikeReAlloc(resize, block, 200, kFile);
+        void* const grown = g_stormAnswered;
+        Check(g_espBefore == g_espAfter && grown != nullptr && grown != block,
+              "the SMemReAlloc detour pops its five and answers the original's block");
+        CallLikeFree(release, grown);
+        Check(g_espBefore == g_espAfter && g_freed == 1, "the SMemFree detour pops its four and frees");
+
+        api.snapshot();
+        std::vector<wxl_footprint_source> rows(api.sources(nullptr, 0));
+        for (wxl_footprint_source& row : rows) row.struct_size = sizeof row;
+        api.sources(rows.data(), static_cast<uint32_t>(rows.size()));
+        const wxl_footprint_source* seen = rows.empty() ? nullptr : &rows.front();
+        Check(seen && seen->allocations == 2 && seen->bytes == 0 && seen->peak == 200,
+              "and what went through them was counted: two allocations, nothing left");
+
+        AllocLink::original   = nullptr;
+        FreeLink::original    = nullptr;
+        ReAllocLink::original = nullptr;
+        wxl::core::services::footprint::Reset();
+    }
 #endif
 }
 
@@ -4887,6 +5271,48 @@ void Bench()
     time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
     wxl::core::services::data::Clear();
+
+    // Storm's seams: an allocation and its free, the client's commonest pair of calls, with
+    // accounting off and on, from one thread and from four at once.
+    const wxl_footprint_api& footprint = wxl::core::services::FootprintApi();
+    static const char        kFile[]   = ".\\Bench.cpp";
+    constexpr int            kPairs    = 1000000;
+    const auto pairs = [&](uintptr_t base, int count) {
+        for (int i = 0; i < count; ++i)
+        {
+            void* const block = reinterpret_cast<void*>(base + static_cast<uintptr_t>(i) * 16);
+            wxl::seam::Storm::SMemAlloc::After(block, 48, kFile, 1, 0);
+            wxl::seam::Storm::SMemFree::Before(block, kFile, 2, 0);
+        }
+    };
+    const auto rate = [&](const char* what, int threads) {
+        const Clock::time_point start = Clock::now();
+        std::vector<std::thread> workers;
+        for (int t = 0; t < threads; ++t)
+            workers.emplace_back([&, t] { pairs(0x10000000u + static_cast<uintptr_t>(t) * 0x01000000u, kPairs / threads); });
+        for (std::thread& worker : workers) worker.join();
+        const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+        printf("  %-46s %8.1f ns/pair, %6.2f M alloc+free/s\n", what, seconds * 1e9 / kPairs, kPairs / seconds / 1e6);
+    };
+    wxl::core::services::footprint::Reset();
+    rate("storm seams, accounting off", 1);
+    footprint.start();
+    rate("storm seams, accounting on", 1);
+    rate("storm seams, accounting on, 4 threads", 4);
+    // A live set the size of a client's: 1,000,000 blocks kept while the pairs run.
+    for (int i = 0; i < 1000000; ++i)
+        wxl::seam::Storm::SMemAlloc::After(reinterpret_cast<void*>(0x60000000u + static_cast<uintptr_t>(i) * 32), 64,
+                                           kFile, 3, 0);
+    rate("storm seams, on, 1,000,000 blocks live", 1);
+    footprint.snapshot();
+    std::vector<wxl_footprint_category> categories(footprint.categories(nullptr, 0));
+    for (wxl_footprint_category& c : categories) c.struct_size = sizeof c;
+    footprint.categories(categories.data(), static_cast<uint32_t>(categories.size()));
+    for (const wxl_footprint_category& c : categories)
+        if (std::string_view(c.name.data, c.name.size) == "accounting")
+            printf("  %-46s %8.1f MB for 1,000,000 live blocks\n", "accounting's own tables", c.bytes / 1048576.0);
+    time("snapshot, 1,000,000 blocks live", 20, [&] { footprint.snapshot(); });
+    wxl::core::services::footprint::Reset();
 }
 
 int main(int argc, char** argv)
@@ -4946,6 +5372,8 @@ int main(int argc, char** argv)
     CheckGlue();
     CheckChat();
     CheckEnergize();
+    CheckFootprint();
+    CheckArchivesAndDatabases();
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckOneSidedShim();
@@ -4954,6 +5382,7 @@ int main(int argc, char** argv)
     CheckMirrorDetours();
     CheckRegparmThunks();
     CheckChatDetours();
+    CheckStormDetours();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Memory domain of the client binding: the big consumers of the client's memory, as
+// wxl.footprint reads them when a mod takes a picture. Every row walks the client's own lists on
+// the calling thread, which must be the main thread.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including memory.def"
+#endif
+
+// Tells `fn` every texture and buffer the graphics device holds -- the textures of its list that
+// are created, the vertex and index buffers of its pools -- with its pool and size; answers how
+// many it told. None on a device that is not Direct3D 9.
+WXL_BINDING(gx_resources, uint32_t, (wxl_core_gpu_fn fn, void* user), (fn, user), 0)
+
+// The sound engine's heap: what it holds now and the most it has held. False before the sound
+// engine has one.
+WXL_BINDING(sound_heap, wxl_bool, (uint64_t* current, uint64_t* peak), (current, peak), WXL_FALSE)
+
+// The bytes the client's own Lua state holds, its garbage included; 0 while none exists.
+WXL_BINDING(script_heap, uint64_t, (void), (), 0)
+
+// Tells `fn` every mounted archive with what its tables hold, in the client's order; answers how
+// many it told.
+WXL_BINDING(archive_tables, uint32_t, (wxl_core_archive_fn fn, void* user), (fn, user), 0)
+
+// The same for one archive, given as the SArchive* SFile::OpenArchive answered. False when it
+// holds no archive.
+WXL_BINDING(archive_of, wxl_bool, (void* archive, wxl_core_archive* out), (archive, out), WXL_FALSE)
+
+// Tells `fn` every client database of wxl/core/client_dbs.def, in that order, loaded or not;
+// answers how many it told.
+WXL_BINDING(client_dbs, uint32_t, (wxl_core_db_fn fn, void* user), (fn, user), 0)

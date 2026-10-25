@@ -5,6 +5,7 @@
 
 #include "wxl/seams/seams.h"
 
+#include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
@@ -107,5 +108,44 @@ namespace wxl::seam::Storage::OpenFile
         *name = g_redirect;
         Resolve(archive, name, flags);
         return false;
+    }
+}
+
+namespace
+{
+    /// An archive's event, as the client describes the archive; false when it describes none.
+    bool ArchiveArgs(void* archive, wxl_archive_args* args)
+    {
+        wxl_core_archive described{};
+        if (!archive || !wxl::core::binding::archive_of(archive, &described)) return false;
+        const char* path    = described.path ? described.path : "";
+        args->path          = wxl_str{path, static_cast<uint32_t>(std::strlen(path))};
+        args->priority      = described.priority;
+        args->hash_entries  = described.hash_entries;
+        args->block_entries = described.block_entries;
+        args->bytes         = described.bytes;
+        return true;
+    }
+}
+
+namespace wxl::seam::Storage::OpenArchive
+{
+    void WXL_CALL After(int32_t result, const char*, int32_t, uint32_t, void** archive)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        wxl_archive_args    args{};
+        if (!host || !result || !archive || !ArchiveArgs(*archive, &args)) return;
+        host->Raise(WXL_EV_ArchiveMounted, &args);
+    }
+}
+
+namespace wxl::seam::Storage::CloseArchive
+{
+    void WXL_CALL Before(void* archive)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        wxl_archive_args    args{};
+        if (!host || !ArchiveArgs(archive, &args)) return;
+        host->Raise(WXL_EV_ArchiveUnmounted, &args);
     }
 }

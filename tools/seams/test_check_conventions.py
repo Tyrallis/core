@@ -759,6 +759,19 @@ GROUND_TRUTH = {
     "Chat.Script_SendChatMessage":     ("0x0050D170", "cdecl", [], 1),
     "Chat.Script_SendAddonMessage":    ("0x00500560", "cdecl", [], 1),
     "Chat.Packet_SMSG_LOG_XPGAIN":     ("0x0050C720", "cdecl", [], 4),
+    # Storm's allocator: SMemAlloc reads [ebp+8..0x14] and ends in `ret 0x10` (0x0076E586,
+    # 0x0076E597); operator new (0x00401010) pushes four and cleans none. SMemFree reads its
+    # block at [ebp+8] and ends in `ret 0x10` (0x0076E5C1). SMemReAlloc reads flags at
+    # [ebp+0x18] (0x0076E5E5) and every return is `ret 0x14`.
+    "Storm.SMemAlloc":                 ("0x0076E540", "stdcall", [], 4),
+    "Storm.SMemFree":                  ("0x0076E5A0", "stdcall", [], 4),
+    "Storm.SMemReAlloc":               ("0x0076E5E0", "stdcall", [], 5),
+    # SFile::OpenArchive ends in `ret 0x10` (0x004219E2, 0x00421A02), SFile::CloseArchive in
+    # `ret 4` (0x00421742). ClientDBInitialize reads nothing on the stack and ends in a bare
+    # `ret` at 0x00634E58.
+    "Storage.OpenArchive":             ("0x00421950", "stdcall", [], 4),
+    "Storage.CloseArchive":            ("0x00421720", "stdcall", [], 1),
+    "ClientDb.Initialize":             ("0x00634E00", "cdecl", [], 0),
 }
 
 

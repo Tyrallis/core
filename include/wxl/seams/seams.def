@@ -101,6 +101,8 @@
 #include "wxl/seams/realmconnection.def"
 #include "wxl/seams/login.def"
 #include "wxl/seams/chat.def"
+#include "wxl/seams/storm.def"
+#include "wxl/seams/clientdb.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

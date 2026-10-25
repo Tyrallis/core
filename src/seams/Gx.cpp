@@ -8,6 +8,7 @@
 #include "binding/Binding.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Frame.hpp"
+#include "services/FootprintService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -31,10 +32,16 @@ namespace wxl::seam::Gx::ScenePresent
     {
         // Only the frame Scrn.OnPaint opened ends here. The loading screen presents frames of
         // its own, and a paint with nothing to draw into presents anyway; neither opened one.
+        wxl::host::ModHost* host = wxl::core::Host();
+
+        // The address space is looked at here, about once a second, while a mod watches it: the
+        // client presents through the loading screen too, which is when memory runs short.
+        wxl_memory_pressure_args pressure{};
+        if (host && wxl::core::services::footprint::PressureDue(&pressure))
+            host->Raise(WXL_EV_MemoryPressure, &pressure);
+
         wxl_frame_args args{};
         if (!wxl::core::frame::End(args)) return;
-
-        wxl::host::ModHost* host = wxl::core::Host();
         if (!host) return;
         host->Raise(WXL_EV_FrameEnd, &args);
     }

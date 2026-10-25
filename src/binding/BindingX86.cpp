@@ -11,6 +11,7 @@
 #include "runtime/Image.hpp"
 
 #include "wxl/events.h"
+#include "wxl/core/gpu.hpp"
 #include "wxl/offsets/layout.hpp"
 #include "wxl/offsets/site.hpp"
 #include "wxl/services/script.h"
@@ -121,6 +122,47 @@ namespace
     // the convention they are declared with, cdecl, is the one they carry.
     using GxFlag       = int32_t(__cdecl*)();
     using GxWindowSize = void(__cdecl*)(float* rect); ///< a CRect: minY, minX, maxY, maxX
+
+    /// The ARCHIVEREC* of every mounted archive, in the client's order.
+    std::vector<void*> ArchiveRecords()
+    {
+        std::vector<void*> records;
+        // System_MPQGlobals::GetArchiveList answers the std::set of mounted archives. Its layout
+        // is MSVC 9's, as FindArchiveByName (0x00453FC0) and the set iterator's ++ (0x00429F90)
+        // read it: the head node at +4; a node's left, parent and right at 0, 4 and 8, its value
+        // (the ARCHIVEREC*) at 0xC, its is-nil flag at 0x11. The head is the nil node.
+        using GetList = const uint8_t*(__cdecl*)();
+        const uint8_t* set =
+            reinterpret_cast<GetList>(WXL_SITE("System_MPQGlobals::GetArchiveList", 0))();
+        if (!set) return records;
+        const auto link = [](const uint8_t* node, size_t at) {
+            return *reinterpret_cast<const uint8_t* const*>(node + at);
+        };
+        const auto nil = [](const uint8_t* node) { return node[0x11] != 0; };
+
+        const uint8_t* head = link(set, 4);
+        const uint8_t* node = link(head, 0);
+        while (node && !nil(node) && records.size() < 4096)
+        {
+            records.push_back(*reinterpret_cast<void* const*>(node + 0xC));
+            if (!nil(link(node, 8)))
+            {
+                node = link(node, 8);
+                while (!nil(link(node, 0))) node = link(node, 0);
+            }
+            else
+            {
+                const uint8_t* parent = link(node, 4);
+                while (!nil(parent) && node == link(parent, 8))
+                {
+                    node   = parent;
+                    parent = link(parent, 4);
+                }
+                node = parent;
+            }
+        }
+        return records;
+    }
 
     /// The device the client draws with, or null before it is made and after it is torn down.
     const void* GxDevice() { return *reinterpret_cast<void* const*>(WXL_STATIC("g_theGxDevicePtr")); }
@@ -539,43 +581,9 @@ namespace wxl::core::binding
     {
         if (!IsClient() || !fn) return 0;
 
-        // System_MPQGlobals::GetArchiveList answers the std::set of mounted archives. Its layout
-        // is MSVC 9's, as FindArchiveByName (0x00453FC0) and the set iterator's ++ (0x00429F90)
-        // read it: the head node at +4; a node's left, parent and right at 0, 4 and 8, its value
-        // (the ARCHIVEREC*) at 0xC, its is-nil flag at 0x11. The head is the nil node.
-        using GetList = const uint8_t*(__cdecl*)();
-        using List    = int32_t(__stdcall*)(void* archive, wxl_core_name_fn callback, void* param);
-        const uint8_t* set =
-            reinterpret_cast<GetList>(WXL_SITE("System_MPQGlobals::GetArchiveList", 0))();
-        if (!set) return 0;
-        const auto link = [](const uint8_t* node, size_t at) {
-            return *reinterpret_cast<const uint8_t* const*>(node + at);
-        };
-        const auto nil = [](const uint8_t* node) { return node[0x11] != 0; };
-
         // The records first, walked in order; the listing opens files, which may reach the set.
-        std::vector<void*> records;
-        const uint8_t*     head = link(set, 4);
-        const uint8_t*     node = link(head, 0);
-        while (node && !nil(node) && records.size() < 4096)
-        {
-            records.push_back(*reinterpret_cast<void* const*>(node + 0xC));
-            if (!nil(link(node, 8)))
-            {
-                node = link(node, 8);
-                while (!nil(link(node, 0))) node = link(node, 0);
-            }
-            else
-            {
-                const uint8_t* parent = link(node, 4);
-                while (!nil(parent) && node == link(parent, 8))
-                {
-                    node   = parent;
-                    parent = link(parent, 4);
-                }
-                node = parent;
-            }
-        }
+        const std::vector<void*> records = ArchiveRecords();
+        using List = int32_t(__stdcall*)(void* archive, wxl_core_name_fn callback, void* param);
 
         // SFile::List takes an SArchive: its type (0, an MPQ) then the record, as OpenEx reads it
         // ([eax], [eax+4] at 0x00424C6F). stdcall: `ret 0xc` at 0x004250C8.
@@ -672,5 +680,226 @@ namespace wxl::core::binding
         case WXL_OBJECT_CONTAINER: return CallName(WXL_SITE("CGItem_C::GetObjectName", 0), object);
         default: return nullptr;
         }
+    }
+
+    // --- Memory ---------------------------------------------------------------------------
+
+    namespace
+    {
+        /**
+         * @brief Calls `visit` with every element of a TSList, from its terminator.
+         *
+         * A TSList starts with the offset of the link inside each element; a link is its
+         * previous link then its next element, and the terminator's next is the first element. A
+         * next with its low bit set (or null) is the terminator again: the end.
+         */
+        template <class F>
+        void WalkList(const uint8_t* list, std::size_t terminatorNext, F&& visit)
+        {
+            const std::ptrdiff_t linkOffset = Read<std::ptrdiff_t>(list, 0);
+            const uint8_t*       node       = Read<const uint8_t*>(list, terminatorNext);
+            for (uint32_t guard = 0; node && !(reinterpret_cast<uintptr_t>(node) & 1) && guard < (1u << 20); ++guard)
+            {
+                visit(node);
+                node = Read<const uint8_t*>(node, static_cast<std::size_t>(linkOffset) + sizeof(void*));
+            }
+        }
+
+        /// The bytes a MSVC 9 std::vector reserves: its first and its end of storage, at +4 and +0xC
+        /// (InitializeTables reads the hash table's at [rec+0x1C0] and [rec+0x1C4], 0x0045B8F4).
+        uint64_t VectorBytes(const uint8_t* vector)
+        {
+            const uintptr_t first = Read<uintptr_t>(vector, 4);
+            const uintptr_t end   = Read<uintptr_t>(vector, 0xC);
+            return first && end > first ? end - first : 0;
+        }
+
+        /// The bytes a BitPacked* holds: its bit count at +4, rounded up to bytes.
+        uint64_t BitPackedBytes(const uint8_t* bits)
+        {
+            return bits ? (static_cast<uint64_t>(Read<uint32_t>(bits, 4)) + 7) / 8 + 8 : 0;
+        }
+
+        /**
+         * @brief What one ARCHIVEREC says of itself.
+         *
+         * The layout is the fork's (SFileArchives.h, measured for Win32 in its comments), checked
+         * against the code that reads it: the tables-initialised flag at 0x1D9, the unpacked hash
+         * table (a vector of 16-byte entries) at 0x1BC, the packed block table at 0x1A4 and the
+         * header's hash table size at 0x40 (all read by ARCHIVEREC::InitializeTables, 0x0045B8D2
+         * to 0x0045B926). The priority is at 0x1C, the name inline at 0x84, the header's block
+         * table size at 0x44, the unpacked block table (0x31-byte entries) at 0x1AC, the packed
+         * hash table at 0x1A8 and the listfile, a std::map of names, at 0x204 with its size at +8.
+         * A listfile name is counted at 96 bytes: a map node and the name's heap block.
+         */
+        bool DescribeArchive(const uint8_t* rec, wxl_core_archive* out)
+        {
+            if (!rec || !out) return false;
+            out->path          = reinterpret_cast<const char*>(rec + 0x84);
+            out->priority      = Read<int32_t>(rec, 0x1C);
+            out->hash_entries  = Read<uint32_t>(rec, 0x40);
+            out->block_entries = Read<uint32_t>(rec, 0x44);
+
+            uint64_t bytes = VectorBytes(rec + 0x1BC) + VectorBytes(rec + 0x1AC);
+            if (const uint8_t* blocks = Read<const uint8_t*>(rec, 0x1A4))
+            {
+                // BlockEntryTable: its vectors of flags, file times, CRCs and MD5s at 0, 0x54,
+                // 0x64 and 0x74, its packed hashes and entries at 0x48 and 0x4C; 0x88 bytes itself.
+                bytes += 0x88 + VectorBytes(blocks) + VectorBytes(blocks + 0x54) + VectorBytes(blocks + 0x64) +
+                         VectorBytes(blocks + 0x74) + BitPackedBytes(Read<const uint8_t*>(blocks, 0x48)) +
+                         BitPackedBytes(Read<const uint8_t*>(blocks, 0x4C));
+            }
+            if (const uint8_t* hashes = Read<const uint8_t*>(rec, 0x1A8))
+            {
+                // HashEntryTable: a tag byte per slot (the count at 0x14), packed indices at 0x10.
+                bytes += 0x38 + Read<uint32_t>(hashes, 0x14) + BitPackedBytes(Read<const uint8_t*>(hashes, 0x10));
+            }
+            bytes += static_cast<uint64_t>(Read<uint32_t>(rec, 0x204 + 8)) * 96u;
+            out->bytes = bytes;
+            return true;
+        }
+
+        // The client's Lua: lua_gc(L, LUA_GCCOUNT) in kilobytes and LUA_GCCOUNTB, the rest in bytes.
+        using LuaGc = int32_t(__cdecl*)(void* L, int32_t what, int32_t data);
+        constexpr int32_t kLuaGcCount  = 3;
+        constexpr int32_t kLuaGcCountB = 4;
+    }
+
+    uint32_t gx_resources(wxl_core_gpu_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        const uint8_t* device = static_cast<const uint8_t*>(GxDevice());
+        if (!device) return 0;
+        // EGxApi: 1 is Direct3D 9, 2 Direct3D 9Ex; the others hold no IDirect3D resources.
+        const int32_t api = Read<int32_t>(device, WXL_FIELD("CGxDevice", "m_api"));
+        if (api != 1 && api != 2) return 0;
+
+        uint32_t told = 0;
+        // The textures: each one created holds its IDirect3DBaseTexture9 in m_apiSpecificData; one
+        // waiting to be created again holds a placeholder there and is skipped.
+        WalkList(device + WXL_FIELD("CGxDevice", "m_textures"),
+                 WXL_FIELD("CGxDevice", "m_textures.m_terminator.m_next") - WXL_FIELD("CGxDevice", "m_textures"),
+                 [&](const uint8_t* texture) {
+                     if (Read<int8_t>(texture, WXL_FIELD("CGxTex", "m_needsCreation"))) return;
+                     auto* object = Read<IDirect3DBaseTexture9*>(texture, WXL_FIELD("CGxTex", "m_apiSpecificData"));
+                     wxl_core_gpu_resource resource{};
+                     if (object && wxl::core::gpu::DescribeTexture(object, &resource))
+                     {
+                         fn(&resource, user);
+                         ++told;
+                     }
+                 });
+        // The pools: each one holds its IDirect3DVertexBuffer9 or IndexBuffer9 in m_apiSpecific.
+        WalkList(device + WXL_FIELD("CGxDevice", "m_poolList"),
+                 WXL_FIELD("CGxDevice", "m_poolList.m_terminator.m_next") - WXL_FIELD("CGxDevice", "m_poolList"),
+                 [&](const uint8_t* pool) {
+                     auto* object = Read<IDirect3DResource9*>(pool, WXL_FIELD("CGxPool", "m_apiSpecific"));
+                     wxl_core_gpu_resource resource{};
+                     if (object && wxl::core::gpu::DescribeBuffer(object, &resource))
+                     {
+                         fn(&resource, user);
+                         ++told;
+                     }
+                 });
+        return told;
+    }
+
+    wxl_bool sound_heap(uint64_t* current, uint64_t* peak)
+    {
+        if (!IsClient() || !current || !peak) return WXL_FALSE;
+        // FMOD::gGlobal, the sound engine's globals, as FMOD_Memory_allocC loads it: `mov eax,
+        // [gGlobal]` (A1, then the address) at +0x11. Its gSystemPool at +4 is the MemPool every
+        // FMOD allocation goes through, which counts what it holds at +0x1C and the most it held
+        // at +0x120 (MemPool::alloc: `add [esi+0x1c], edx`, then `cmp eax, [esi+0x120]` and
+        // `mov [esi+0x120], eax`, 0x008CFE9C to 0x008CFEB7).
+        const uint8_t* load = reinterpret_cast<const uint8_t*>(WXL_SITE("FMOD_Memory_allocC", 0x11));
+        if (load[0] != 0xA1) return WXL_FALSE;
+        const uint8_t* global = Read<const uint8_t*>(Read<const void*>(load, 1), 0);
+        const uint8_t* pool   = global ? Read<const uint8_t*>(global, 4) : nullptr;
+        if (!pool) return WXL_FALSE;
+        *current = Read<uint32_t>(pool, 0x1C);
+        *peak    = Read<uint32_t>(pool, 0x120);
+        return WXL_TRUE;
+    }
+
+    uint64_t script_heap()
+    {
+        void* L = IsClient() ? script_state() : nullptr;
+        if (!L) return 0;
+        const LuaGc gc = reinterpret_cast<LuaGc>(WXL_SITE("lua_gc", 0));
+        return static_cast<uint64_t>(gc(L, kLuaGcCount, 0)) * 1024u + static_cast<uint64_t>(gc(L, kLuaGcCountB, 0));
+    }
+
+    uint32_t archive_tables(wxl_core_archive_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        uint32_t told = 0;
+        for (void* record : ArchiveRecords())
+        {
+            wxl_core_archive archive{};
+            if (!DescribeArchive(static_cast<const uint8_t*>(record), &archive)) continue;
+            fn(&archive, user);
+            ++told;
+        }
+        return told;
+    }
+
+    wxl_bool archive_of(void* archive, wxl_core_archive* out)
+    {
+        // An SArchive: its type, 0 for an MPQ, then its ARCHIVEREC* (SFile2-Core.h).
+        if (!IsClient() || !archive || !out || Read<uint32_t>(archive, 0) != 0) return WXL_FALSE;
+        return DescribeArchive(Read<const uint8_t*>(archive, 4), out) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    uint32_t client_dbs(wxl_core_db_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+        // Every store shares WowClientDB_Base's counts; a plain store has its records at 0x1C and
+        // its index by id at 0x20, a compressed one its records (maybe compressed) at 0x18 and its
+        // row pointers -- the index by id after them, in the same block -- at 0x1C.
+        struct Row
+        {
+            uintptr_t   address;
+            const char* file;
+            uint32_t    row_size;
+            bool        rle;
+        };
+        static const Row kRows[] = {
+#define WXL_DB_RLE_plain false
+#define WXL_DB_RLE_rle   true
+#define WXL_CLIENT_DB(global, Rec, store, file, row_size) {WXL_STATIC(#global), file, row_size, WXL_DB_RLE_##store},
+#include "wxl/core/client_dbs.def"
+#undef WXL_CLIENT_DB
+#undef WXL_DB_RLE_rle
+#undef WXL_DB_RLE_plain
+        };
+        constexpr std::size_t kPlainRecords = WXL_FIELD("WowClientDB_SpellRec", "m_records");
+        constexpr std::size_t kPlainIndex   = WXL_FIELD("WowClientDB_SpellRec", "m_recordsById");
+        constexpr std::size_t kRleData      = WXL_FIELD("WowClientDB_RLE_SpellRec", "m_data");
+        constexpr std::size_t kRleRows      = WXL_FIELD("WowClientDB_RLE_SpellRec", "m_records");
+
+        uint32_t told = 0;
+        for (const Row& row : kRows)
+        {
+            const void* store   = reinterpret_cast<const void*>(row.address);
+            const int32_t count = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_numRecords"));
+            const int32_t minId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_minID"));
+            const int32_t maxId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_maxID"));
+            const uint64_t ids  = count > 0 && maxId >= minId ? static_cast<uint64_t>(maxId - minId) + 1 : 0;
+
+            wxl_core_db db{};
+            db.file        = row.file;
+            db.loaded      = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_loaded")) ? WXL_TRUE : WXL_FALSE;
+            db.records     = count > 0 ? static_cast<uint32_t>(count) : 0u;
+            db.record_size = row.row_size;
+            db.blocks[0]   = Read<const void*>(store, row.rle ? kRleData : kPlainRecords);
+            db.estimates[0] = static_cast<uint64_t>(db.records) * row.row_size;
+            db.blocks[1]   = Read<const void*>(store, WXL_FIELD("WowClientDB_SpellRec", "m_strings"));
+            db.blocks[2]   = Read<const void*>(store, row.rle ? kRleRows : kPlainIndex);
+            db.estimates[2] = (row.rle ? db.records + ids : ids) * sizeof(void*);
+            fn(&db, user);
+            ++told;
+        }
+        return told;
     }
 }

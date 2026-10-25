@@ -11,6 +11,7 @@
 #include "objects/Objects.hpp"
 #include "runtime/Attachment.hpp"
 #include "services/DataService.hpp"
+#include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
@@ -95,6 +96,8 @@ namespace
         wxl::core::services::storage::CloseFilesOf(token);
         wxl::core::services::storage::RemoveSearchPathsOf(token);
         wxl::core::services::data::ForgetMod(token);
+        // What it reported of its memory, and the threshold it watched, go too.
+        wxl::core::services::footprint::ForgetMod(token);
         // Its watches go with it: the client stops reporting what no other mod watches.
         wxl::core::objects::Service().DropWatches(token);
     }
