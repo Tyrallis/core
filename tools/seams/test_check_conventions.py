@@ -795,6 +795,25 @@ GROUND_TRUTH = {
     # CM2Shared::FinishLoadingSkinProfile: `mov edi, ecx` (0x00838494), [ebp+8] read, `ret 4`
     # (0x008384A3).
     "M2Shared.FinishLoadingSkinProfile": ("0x00838490", "thiscall", ["ecx"], 1),
+    # The model loader's later stages: CM2Shared::Initialize `mov esi, ecx` (0x0083CC88), plain
+    # `ret` (0x0083CD29); InitializeSkinProfile `mov ebx, ecx` (0x00837A47), `ret` (0x00837AFE);
+    # FinishLoadingLowPrioritySequence reads [ebp+8], [ebp+0xc] and [ebp+0x10], `ret 0xc` (0x0083CA73).
+    "M2Shared.Initialize":             ("0x0083CC80", "thiscall", ["ecx"], 0),
+    "M2Shared.InitializeSkinProfile":  ("0x00837A40", "thiscall", ["ecx"], 0),
+    "M2Shared.FinishLoadingLowPrioritySequence": ("0x0083C6E0", "thiscall", ["ecx"], 3),
+    # The model renderer and animator: DrawBatch `ret` with `this` in ECX; AnimateMT and
+    # AnimateMTSimple `mov esi, ecx` and `ret 0x14` (0x00830968, 0x0082E545): five dwords, the two
+    # floats among them.
+    "M2.DrawBatch":                    ("0x008203B0", "thiscall", ["ecx"], 0),
+    "M2.AnimateMT":                    ("0x0082F0F0", "thiscall", ["ecx"], 5),
+    "M2.AnimateMTSimple":              ("0x0082E140", "thiscall", ["ecx"], 5),
+    # The character appearance: AddItem(slot, rec, visual) `ret 0xc` (0x004F26C2), RemoveItem(slot)
+    # `ret 4` (0x004EE53C); FreeComponent and RemoveVisuals are class statics reading [ebp+8] and
+    # ending in a plain `ret` (0x004F16E7, 0x004EB060).
+    "Component.AddItem":               ("0x004F2640", "thiscall", ["ecx"], 3),
+    "Component.RemoveItem":            ("0x004EE460", "thiscall", ["ecx"], 1),
+    "Component.FreeComponent":         ("0x004F16C0", "cdecl", [], 1),
+    "Component.RemoveVisuals":         ("0x004EAF70", "cdecl", [], 1),
     # CBLPFile::Open: [ebp+8] (0x006AFF16) and `mov esi, ecx` (0x006AFF1B), `ret 8` (0x006AFF3A).
     # CBLPFile::Source: `mov ebx, ecx` (0x006AE904), [ebp+8] (0x006AE924), `ret 4` (0x006AE955).
     "BLPFile.Open":                    ("0x006AFF10", "thiscall", ["ecx"], 2),
