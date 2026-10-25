@@ -40,6 +40,7 @@ namespace wxl::core::seams
         bool U8(uint8_t& out) { return Take(&out, sizeof out); }
         bool U32(uint32_t& out) { return Take(&out, sizeof out); }
         bool U64(uint64_t& out) { return Take(&out, sizeof out); }
+        bool F32(float& out) { return Take(&out, sizeof out); }
 
         bool Skip(size_t count)
         {

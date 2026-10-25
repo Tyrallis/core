@@ -451,6 +451,82 @@ namespace wxl::core::binding
         return WXL_TRUE;
     }
 
+    // wxl.gx is served only where the client hands its device and model renderer over (x64).
+    // Here the rows answer absent, and the M2 seam's body finds nothing to report.
+    // Not measured on x86 yet: the reaction answers absent there.
+    int32_t unit_reaction(const void*, const void*) { return -1; }
+
+    void* gx_d3d9_device() { return nullptr; }
+
+    void gx_invalidate_state() {}
+
+    void* gx_object_model(const void*) { return nullptr; }
+
+    wxl_bool gx_model_draw(const void*, wxl_gx_model_draw*) { return WXL_FALSE; }
+
+    // wxl.m2 is served only where the client hands its appearances and models over (x64). Here
+    // the rows answer absent, and the Component and AnimateMT seams find nothing to hand on.
+    wxl_bool component_wearer(const void*, uint32_t, wxl_m2_equipment*) { return WXL_FALSE; }
+
+    wxl_bool m2_item_display(uint32_t, wxl_m2_item_display*) { return WXL_FALSE; }
+
+    const char* m2_race_prefix(uint32_t) { return nullptr; }
+
+    void* m2_create_model(void*, const char*) { return nullptr; }
+
+    void m2_release_model(void*) {}
+
+    wxl_bool m2_attach_model(void*, void*, uint32_t, wxl_bool) { return WXL_FALSE; }
+
+    void m2_detach_model(void*) {}
+
+    void* m2_model_parent(const void*) { return nullptr; }
+
+    void* m2_model_source(const void*) { return nullptr; }
+
+    void m2_set_geosets(void*, uint32_t, uint32_t, wxl_bool) {}
+
+    wxl_bool m2_replace_texture(void*, uint32_t, const char*) { return WXL_FALSE; }
+
+    wxl_bool m2_pose_from_parent(void*) { return WXL_FALSE; }
+
+    uint32_t m2_children(const void*, void**, uint32_t) { return 0; }
+
+    wxl_bool m2_attach_info(const void*, uint32_t*, wxl_bool*) { return WXL_FALSE; }
+
+    wxl_bool m2_attach_copy(void*, void*, uint32_t, wxl_bool) { return WXL_FALSE; }
+
+    void* m2_model_file(const void*) { return nullptr; }
+
+    wxl_bool m2_attachment_point(const void*, uint32_t, wxl_vec3*) { return WXL_FALSE; }
+
+    wxl_bool m2_has_key_bone(const void*, uint32_t) { return WXL_FALSE; }
+
+    wxl_bool m2_pose_on_bone(void*, uint32_t, const wxl_vec3*) { return WXL_FALSE; }
+
+    // wxl.m2file is served only where the client hands its model loader over (x64). Here the rows
+    // answer absent, and the loader seams find no file to hand on.
+    wxl_bool m2_file_info(const void*, wxl_m2file*) { return WXL_FALSE; }
+
+    void m2_file_set_size(void*, uint32_t) {}
+
+    void m2_file_animate_bones(void*) {}
+
+    void* m2_create_world_model(const char*) { return nullptr; }
+    wxl_bool m2_place_world(void*, const wxl_m2_placement*) { return WXL_FALSE; }
+    void m2_unplace_world(void*) {}
+    void m2_set_transform(void*, const wxl_m2_placement*) {}
+    void m2_play_animation(void*, uint32_t, float) {}
+    wxl_bool m2_loaded(const void*) { return WXL_FALSE; }
+    uint32_t m2_animation_length(void*, uint32_t) { return 0; }
+    void m2_set_alpha(void*, float) {}
+    void m2_set_emitting(void*, wxl_bool) {}
+    void* m2_object_model(void*) { return nullptr; }
+    wxl_bool m2_attachment_world(void*, uint32_t, wxl_vec3*) { return WXL_FALSE; }
+    wxl_bool m2_ground_height(const wxl_vec3*, float, float, float*) { return WXL_FALSE; }
+    wxl_bool m2_bones(void*, wxl_m2_bones*) { return WXL_FALSE; }
+    wxl_bool m2_file_bone(const void*, uint32_t, int16_t*, wxl_vec3*) { return WXL_FALSE; }
+
     wxl_bool object_position(const void* object, wxl_vec3* out)
     {
         if (!IsClient() || !object || !out) return WXL_FALSE;
