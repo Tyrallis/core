@@ -6,6 +6,7 @@
 #include "binding/Binding.hpp"
 #include "binding/BindingX86.hpp"
 #include "binding/CallX86.hpp"
+#include "binding/ModelDrawX86.hpp"
 
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
@@ -696,9 +697,17 @@ namespace wxl::core::binding
                      WXL_FIELD("CGxDeviceD3d9Ex", "m_deviceStates"), WXL_MEMBER_SIZE("CGxDeviceD3d9Ex", "m_deviceStates")>(device);
     }
 
-    // The stock client keeps no record of its last draw's numbers: M2.DrawBatch is x64 only, and
-    // nothing calls this here.
-    wxl_bool gx_model_draw(const void*, wxl_model_batch_args*) { return WXL_FALSE; }
+    // CM2SceneRender::DrawBatch keeps no record of its draw's numbers: rebuilt from what it drew
+    // with (ModelDrawX86.hpp).
+    wxl_bool gx_model_draw(const void* render, wxl_model_batch_args* out)
+    {
+        if (!IsClient()) return WXL_FALSE;
+        const x86::model_draw::Globals globals{
+            GxDevice(), *reinterpret_cast<const int32_t*>(WXL_STATIC("CShaderEffect::s_enableShaders")),
+            reinterpret_cast<const uint32_t*>(WXL_STATIC("CGxDeviceD3d::s_primitiveConversion")),
+            reinterpret_cast<const uint32_t*>(WXL_STATIC("CGxDeviceD3d9Ex::s_primitiveConversion"))};
+        return x86::model_draw::Rebuild(render, globals, out) ? WXL_TRUE : WXL_FALSE;
+    }
 
     // --- M2: wxl.m2, AppearanceChanged ----------------------------------------------------------
 

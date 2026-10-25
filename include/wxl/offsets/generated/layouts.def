@@ -12,7 +12,7 @@
 // Rows are sorted by id, then TYPE, then FIELD by offset and member, then SIZE by member, so the
 // file diffs cleanly after an upstream pull.
 //
-// 133 types, 819 field offsets, 11 member sizes.
+// 133 types, 825 field offsets, 11 member sizes.
 WXL_LAYOUT_TYPE(AuraData, "AuraData", 0x18, "WoW/Source/Object/ObjectClient/AuraData.h", 12)
 WXL_LAYOUT_FIELD(AuraData, "m_creator", 0x0, "WoW/Source/Object/ObjectClient/AuraData.h", 12)
 WXL_LAYOUT_FIELD(AuraData, "m_spellId", 0x8, "WoW/Source/Object/ObjectClient/AuraData.h", 12)
@@ -320,6 +320,7 @@ WXL_LAYOUT_FIELD(CGxDevice, "m_textures", 0x2904, "Engine/Source/Gx/CGxDevice/CG
 WXL_LAYOUT_FIELD(CGxDevice, "m_textures.m_terminator.m_next", 0x290C, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
 WXL_LAYOUT_FIELD(CGxDevice, "m_textureTarget", 0x2910, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
 WXL_LAYOUT_FIELD(CGxDevice, "m_textureTarget[0].m_apiSpecific", 0x2918, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
+WXL_LAYOUT_FIELD(CGxDevice, "m_textureTarget[1].m_apiSpecific", 0x2924, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
 WXL_LAYOUT_FIELD(CGxDevice, "m_scrShotClick", 0x2934, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
 WXL_LAYOUT_FIELD(CGxDevice, "m_scrShotWidth", 0x2938, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
 WXL_LAYOUT_FIELD(CGxDevice, "m_scrShotHeight", 0x293C, "Engine/Source/Gx/CGxDevice/CGxDevice.h", 71)
@@ -481,6 +482,7 @@ WXL_LAYOUT_FIELD(CM2Scene, "m_frameStamp", 0x14, "Engine/Source/Model2/M2Scene.h
 WXL_LAYOUT_FIELD(CM2Scene, "m_animateList", 0x28, "Engine/Source/Model2/M2Scene.h", 54)
 WXL_LAYOUT_FIELD(CM2Scene, "m_view", 0x84, "Engine/Source/Model2/M2Scene.h", 54)
 WXL_LAYOUT_TYPE(CM2SceneRender, "CM2SceneRender", 0xBC, "Engine/Source/Model2/CM2SceneRender.h", 22)
+WXL_LAYOUT_FIELD(CM2SceneRender, "m_cache", 0x44, "Engine/Source/Model2/CM2SceneRender.h", 22)
 WXL_LAYOUT_FIELD(CM2SceneRender, "m_curElement", 0x50, "Engine/Source/Model2/CM2SceneRender.h", 22)
 WXL_LAYOUT_FIELD(CM2SceneRender, "m_curModel", 0x60, "Engine/Source/Model2/CM2SceneRender.h", 22)
 WXL_LAYOUT_FIELD(CM2SceneRender, "m_curSkinSection", 0x90, "Engine/Source/Model2/CM2SceneRender.h", 22)
@@ -888,6 +890,10 @@ WXL_LAYOUT_FIELD(M2Sequence, "m_bounds.m_radius", 0x38, "Engine/Source/Model2/M2
 WXL_LAYOUT_FIELD(M2Sequence, "m_variationNext", 0x3C, "Engine/Source/Model2/M2Data.h", 85)
 WXL_LAYOUT_FIELD(M2Sequence, "m_aliasNext", 0x3E, "Engine/Source/Model2/M2Data.h", 85)
 WXL_LAYOUT_TYPE(M2SkinSection, "M2SkinSection", 0x30, "Engine/Source/Model2/M2Data.h", 301)
+WXL_LAYOUT_FIELD(M2SkinSection, "m_vertexStart", 0x4, "Engine/Source/Model2/M2Data.h", 301)
+WXL_LAYOUT_FIELD(M2SkinSection, "m_vertexCount", 0x6, "Engine/Source/Model2/M2Data.h", 301)
+WXL_LAYOUT_FIELD(M2SkinSection, "m_indexStart", 0x8, "Engine/Source/Model2/M2Data.h", 301)
+WXL_LAYOUT_FIELD(M2SkinSection, "m_indexCount", 0xA, "Engine/Source/Model2/M2Data.h", 301)
 WXL_LAYOUT_TYPE(M2Track_C3Vector, "M2Track<C3Vector>", 0x14, "Engine/Source/Model2/M2Data.h", 62)
 WXL_LAYOUT_FIELD(M2Track_C3Vector, "m_sequenceTimes.m_count", 0x4, "Engine/Source/Model2/M2Data.h", 62)
 WXL_LAYOUT_FIELD(M2Track_C3Vector, "m_sequenceTimes.m_offset", 0x8, "Engine/Source/Model2/M2Data.h", 62)

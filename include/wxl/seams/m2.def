@@ -10,11 +10,12 @@
 // Draws one batch of a model: sets its material, textures and bones, then issues the device's
 // draw. CM2SceneRender::Draw calls it for every element of type 0, the plain batches every
 // creature, player and doodad model is made of. After is where the batch is drawn and everything
-// it was drawn with is still bound: ModelBatchDrawn, with the numbers of the device's draw, which
-// only the recompiled client keeps (Gx.h, g_gxLastIndexedDraw). thiscall.
+// it was drawn with is still bound: ModelBatchDrawn, with the numbers of the device's draw. The
+// recompiled client records them as the device draws (Gx.h, g_gxLastIndexedDraw); on the stock
+// client they are rebuilt from the skin section the batch was built from (`this` + 0x90, which
+// outlives the call) and the device's buffers and viewport. thiscall.
 WXL_SEAM_AFTER(M2, DrawBatch, "CM2SceneRender::DrawBatch", void, thiscall, (void* self))
 WXL_SEAM_RAISES(M2, DrawBatch, ModelBatchDrawn)
-WXL_SEAM_X64_ONLY(M2, DrawBatch, "the stock client keeps no record of its last draw's numbers")
 
 // Animates one model for the frame: its bones' sequences, then every bone's matrix in view space,
 // then colours, lights, ribbons, particles and its attachments, which it animates in turn. Runs on

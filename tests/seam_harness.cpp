@@ -40,6 +40,7 @@
 
 #if defined(_M_IX86)
     #include "binding/CallX86.hpp"
+    #include "binding/ModelDrawX86.hpp"
     #include "seams/Detour.hpp"
     #include "hook/Engine.hpp"
     #include "hook/Safety.hpp"
@@ -2555,6 +2556,11 @@ namespace
         Check(!g_host->Listening(WXL_EV_TextureLoad), "with its one subscription gone, nobody listens");
         Unmute(WXL_EV_TextureLoad);
         Check(g_host->Listening(WXL_EV_TextureLoad), "and subscribing again is heard at once");
+        Mute(WXL_EV_ModelBatchDrawn);
+        const bool quiet = !wxl::seam::Listening(WXL_EV_ModelBatchDrawn);
+        Unmute(WXL_EV_ModelBatchDrawn);
+        Check(quiet && wxl::seam::Listening(WXL_EV_ModelBatchDrawn),
+              "the flag a hot seam reads first follows its event's first and last handler");
     }
 
     /// Texture, M2Shared and MapObj: an asset named, read or walked raises its event with what
@@ -9378,22 +9384,118 @@ namespace
 #endif
 
     /// The seams the stock client cannot take: not attached there, their events not announced.
+    /// No row needs it today: both clients take every seam and announce every event.
     void CheckX64Only()
     {
-        const char* why = wxl::core::seams::X64Only("M2.DrawBatch");
-        Check(why && *why, "M2.DrawBatch says why the stock client cannot take it");
-        Check(!wxl::core::seams::X64Only("M2.AnimateMT") && !wxl::core::seams::X64Only("Component.AddItem"),
-              "the other model seams are on both clients");
+        Check(!wxl::core::seams::X64Only("M2.DrawBatch") && !wxl::core::seams::X64Only("M2.AnimateMT") &&
+                  !wxl::core::seams::X64Only("Component.AddItem") && !wxl::core::seams::X64Only(nullptr),
+              "every model seam is on both clients");
         const std::vector<wxl_event> all   = wxl::core::seams::RaisedEvents(false);
         const std::vector<wxl_event> stock = wxl::core::seams::RaisedEvents(true);
-        const auto has = [](const std::vector<wxl_event>& list, wxl_event event) {
-            return std::find(list.begin(), list.end(), event) != list.end();
-        };
-        Check(has(all, WXL_EV_ModelBatchDrawn) && !has(stock, WXL_EV_ModelBatchDrawn) && has(stock, WXL_EV_ModelParsed) &&
-                  has(stock, WXL_EV_AppearanceChanged) && stock.size() + 1 == all.size(),
-              "the stock client announces every event but ModelBatchDrawn");
+        Check(stock == all && std::find(stock.begin(), stock.end(), WXL_EV_ModelBatchDrawn) != stock.end(),
+              "the stock client announces every event, ModelBatchDrawn with them");
     }
+
+#if defined(_M_IX86)
+    // --- The x86 rebuild of a drawn batch's numbers, over stand-ins laid out as Wow.exe's --------
+
+    /// Zeroed bytes the size of one of the client's structs, written at measured offsets.
+    struct Block
+    {
+        std::vector<uint8_t> bytes;
+        explicit Block(std::size_t size) : bytes(size, 0) {}
+        template <class T>
+        void Put(std::size_t offset, T value) { std::memcpy(bytes.data() + offset, &value, sizeof value); }
+        void* At() { return bytes.data(); }
+    };
+
+    void CheckModelDrawX86()
+    {
+        namespace md = wxl::core::binding::x86::model_draw;
+        Block render(WXL_TYPE_SIZE("CM2SceneRender")), device(WXL_TYPE_SIZE("CGxDeviceD3d9Ex"));
+        Block section(WXL_TYPE_SIZE("M2SkinSection")), material(WXL_TYPE_SIZE("M2Material"));
+        Block vertices(WXL_TYPE_SIZE("CGxBuf")), indices(WXL_TYPE_SIZE("CGxBuf"));
+        Block model(WXL_TYPE_SIZE("CM2Model")), parent(WXL_TYPE_SIZE("CM2Model")), shared(WXL_TYPE_SIZE("CM2Shared"));
+        Block header(WXL_TYPE_SIZE("M2Data")), cache(WXL_TYPE_SIZE("CM2Cache"));
+
+        // A section of 600 indices from 1200 over 150 vertices from 40, alpha-blended.
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_vertexStart"), 40);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_vertexCount"), 150);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_indexStart"), 1200);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_indexCount"), 600);
+        material.Put<uint16_t>(WXL_FIELD("M2Material", "m_blendMode"), 2);
+        model.Put<void*>(WXL_FIELD("CM2Model", "m_attachParent"), parent.At());
+        model.Put<void*>(WXL_FIELD("CM2Model", "m_shared"), shared.At());
+        shared.Put<void*>(WXL_FIELD("CM2Shared", "m_data"), header.At());
+        header.Put<uint32_t>(WXL_FIELD("M2Data", "m_bones.m_count"), 1);
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curModel"), model.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curSkinSection"), section.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curMaterial"), material.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_cache"), cache.At());
+
+        // A D3D9Ex device with a context, its vertex stream 32 bytes a vertex at byte 3200 and
+        // its index buffer at byte 512, a full 1280x720 viewport over depth 0-1.
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), md::kApiD3d9Ex);
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_context"), 1);
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_primVertexFormatBuf"), vertices.At());
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_primIndexBuf"), indices.At());
+        vertices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_itemSize"), 32);
+        vertices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_index"), 3200);
+        indices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_index"), 512);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_curWindowRect.maxX"), 1280.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_curWindowRect.maxY"), 720.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_x.m_h"), 1.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_y.m_h"), 1.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_z.m_h"), 1.0f);
+
+        const uint32_t conversion[] = {1, 2, 3, 4, 5, 6, 0}; // as Wow.exe's tables: D3DPT_TRIANGLELIST at 3
+        md::Globals    globals{device.At(), 1, conversion, conversion};
+        wxl_model_batch_args out{};
+        Check(md::Rebuild(render.At(), globals, &out), "a batch drawn on a D3D9 device is rebuilt");
+        Check(out.model == model.At() && out.root_model == parent.At() && out.primitive_type == 4 &&
+                  out.blend_mode == 2,
+              "with its model, the top of what it hangs on, a triangle list and its blend");
+        Check(out.min_index == 40 && out.vertex_count == 150 && out.start_index == 1200 + 256 &&
+                  out.primitive_count == 200 && out.base_vertex == 100,
+              "with shaders, the section's vertices, its indices after the index buffer's own, and "
+              "the vertex stream's offset as the base vertex");
+        Check(out.viewport_x == 0 && out.viewport_y == 0 && out.viewport_width == 1280 && out.viewport_height == 720 &&
+                  out.viewport_min_z == 0.0f && out.viewport_max_z == 1.0f,
+              "and the viewport the device set");
+
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_caps.m_streamOffset"), 1);
+        globals.shaders = 0;
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.base_vertex == 0 && out.min_index == 0 && out.vertex_count == 150,
+              "without shaders, a model skinned on the CPU draws from vertex 0; a device that offsets "
+              "streams has no base vertex");
+        cache.Put<uint32_t>(WXL_FIELD("CM2Cache", "m_flags"), md::kSharedVertices);
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.min_index == 40 && out.vertex_count == 150,
+              "a one-bone model sharing its vertices draws from the section's own");
+
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_y.m_l"), 0.25f);
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_textureTarget[1].m_apiSpecific"), device.At());
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.viewport_y == 180 && out.viewport_height == 540,
+              "drawing into a texture, the viewport's Y counts from the other edge");
+
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_intF5C"), 1);
+        Check(!md::Rebuild(render.At(), globals, &out), "a lost device drew nothing");
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_intF5C"), 0);
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), 0);
+        Check(!md::Rebuild(render.At(), globals, &out), "nor is an OpenGL device's draw rebuilt");
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), md::kApiD3d9);
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curSkinSection"), nullptr);
+        Check(!md::Rebuild(render.At(), globals, &out) && !md::Rebuild(nullptr, globals, &out),
+              "nor a renderer with no section, nor none");
+    }
+#endif
 }
+
+// Core.cpp's flag per event, which the harness keeps as the runtime does: a hot seam's body reads
+// it before anything else.
+extern "C" WXL_CORE_API volatile uint8_t wxl_core_listening[WXL_EV_COUNT] = {};
 
 int main(int argc, char** argv)
 {
@@ -9409,6 +9511,11 @@ int main(int argc, char** argv)
     config.services.push_back(wxl::host::PublishedService{
         WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &wxl::core::services::ScriptApi()});
     g_host              = std::make_unique<wxl::host::ModHost>(std::move(config));
+    g_host->SetListenHandler(
+        [](void*, wxl_event event, bool listening) {
+            if (static_cast<uint32_t>(event) < static_cast<uint32_t>(WXL_EV_COUNT)) wxl_core_listening[event] = listening ? 1 : 0;
+        },
+        nullptr);
 
     printf("seam harness: %zu seam(s), %zu raisable event(s), %zu binding row(s) left unbound by the fake\n",
            wxl::core::seams::Table().size(), wxl::core::seams::RaisedEvents().size(),
@@ -9483,6 +9590,7 @@ int main(int argc, char** argv)
     CheckThiscallShim();
     CheckCallX86();
     CheckModelCallsX86();
+    CheckModelDrawX86();
     CheckOneSidedShim();
     CheckThiscallGate();
     CheckGetUpdateObjectDetour();

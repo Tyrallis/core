@@ -139,6 +139,7 @@ type CGxDevice Engine/Source/Gx/CGxDevice/CGxDevice.h CGxDevice
   m_textures.m_terminator.m_next          engine/GxDevice:kTexListHead
   m_textureTarget                         engine/GxDevice:kRenderTargets
   m_textureTarget[0].m_apiSpecific        engine/Gx:kRtOverrideField                   # hand: "RT override active" flag; fork: colour target's API surface
+  m_textureTarget[1].m_apiSpecific        -
   m_scrShotClick                          engine/GxDevice:kScreenshotPending
   m_scrShotWidth                          engine/GxDevice:kScreenshotWidth
   m_scrShotHeight                         engine/GxDevice:kScreenshotHeight
@@ -345,6 +346,7 @@ type CShaderEffect Engine/Source/ShaderEffect/ShaderEffect.h CShaderEffect
 # The M2 render context: what the hand headers call the "draw context" of a batch draw.
 type CM2SceneRender Engine/Source/Model2/CM2SceneRender.h CM2SceneRender
   sizeof                                  -
+  m_cache                                 -
   m_curElement                            engine/Gx:kDrawBatchCtxElementField,game/M2:kOffRenderCtxElement
   m_curModel                              engine/Gx:kDrawBatchCtxModelField,game/M2:kOffDrawCtxInstance,game/M2:kOffRenderCtxInstance
   m_curSkinSection                        engine/Gx:kDrawBatchCtxSectionField
@@ -604,6 +606,10 @@ type M2Material Engine/Source/Model2/M2Data.h M2Material
 
 type M2SkinSection Engine/Source/Model2/M2Data.h M2SkinSection
   sizeof                                  game/M2:kGeoCtxGroupStride
+  m_vertexStart                           -
+  m_vertexCount                           -
+  m_indexStart                            -
+  m_indexCount                            -
 
 type M2Particle Engine/Source/Model2/M2Data.h M2Particle
   sizeof                                  -

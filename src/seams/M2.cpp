@@ -17,7 +17,8 @@ namespace wxl::seam::M2::DrawBatch
 {
     void WXL_CALL After(void* self)
     {
-        // Thousands of batches a frame: nothing at all is done while no mod listens.
+        // Thousands of batches a frame: one flag is read while no mod listens.
+        if (!wxl::seam::Listening(WXL_EV_ModelBatchDrawn)) return;
         wxl::host::ModHost* host = wxl::core::Host();
         if (!self || !host || !host->Listening(WXL_EV_ModelBatchDrawn)) return;
 
