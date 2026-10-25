@@ -17,8 +17,11 @@
 #include "wxl/host/mod_host.hpp"
 
 #include <windows.h>
+#include <intrin.h>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace
 {
@@ -33,6 +36,9 @@ namespace
     /// The first line of a report is flushed at once, in case the rest never comes.
     bool g_flushNext = true;
 
+    /// The tag the report's lines go under: the crash's, or the client's fatal error's.
+    const char* g_sayTag = kTag;
+
     void Say(const char* fmt, ...)
     {
         char    body[1536];
@@ -42,7 +48,7 @@ namespace
         va_end(args);
         if (n < 0) return;
         const size_t len = static_cast<size_t>(n) < sizeof body ? static_cast<size_t>(n) : sizeof body - 1;
-        wxl::log::WriteUrgent(kTag, std::string_view(body, len), g_flushNext);
+        wxl::log::WriteUrgent(g_sayTag, std::string_view(body, len), g_flushNext);
         g_flushNext = false;
     }
 
@@ -241,6 +247,70 @@ namespace
         const LPTOP_LEVEL_EXCEPTION_FILTER next = g_next.load();
         return next && next != &Filter ? next(info) : EXCEPTION_CONTINUE_SEARCH;
     }
+
+    /**
+     * @brief The context of this function's caller, for a report written where nothing faulted.
+     *
+     * x86's RtlCaptureContext reads its caller's frame through EBP, which an optimised caller
+     * may use as a plain register. Here the return address and the stack come from the return
+     * slot, and EBP is only a hint the stack walk checks against the thread's stack before
+     * following it, falling back to a scan of the stack.
+     */
+    __declspec(noinline) void Capture(CONTEXT& context)
+    {
+#if defined(_M_X64)
+        RtlCaptureContext(&context);
+#elif defined(_M_IX86)
+        void** const slot = static_cast<void**>(_AddressOfReturnAddress());
+        uintptr_t    frame = 0;
+        __asm mov frame, ebp
+        context.Eip = static_cast<DWORD>(reinterpret_cast<uintptr_t>(*slot));
+        context.Esp = static_cast<DWORD>(reinterpret_cast<uintptr_t>(slot + 1));
+        context.Ebp = static_cast<DWORD>(frame);
+#endif
+    }
+
+    /// Copies a string the client handed over, which may be anything; "" when it cannot be read.
+    void CopyClientText(const char* text, char* out, size_t capacity)
+    {
+        out[0] = '\0';
+        if (!text) return;
+        __try
+        {
+            size_t i = 0;
+            for (; i + 1 < capacity && text[i]; ++i) out[i] = text[i];
+            out[i] = '\0';
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            out[0] = '\0';
+        }
+    }
+
+    /// The client's error as the session's end line names it: its number and first line, short.
+    void EndReason(uint32_t code, const char* message, char* out, size_t capacity)
+    {
+        char first[120];
+        size_t n = 0;
+        for (; n + 1 < sizeof first && message[n] && message[n] != '\n' && message[n] != '\r'; ++n) first[n] = message[n];
+        first[n] = '\0';
+        std::snprintf(out, capacity, "fatal error (#%u 0x%08X%s%s)", code & 0xFFFF, code, first[0] ? ": " : "", first);
+    }
+
+    /// For "Invalid function pointer: <hex>", where that pointer lies.
+    void PointerHint(const char* message)
+    {
+        static const char kPrefix[] = "Invalid function pointer: ";
+        if (std::strncmp(message, kPrefix, sizeof kPrefix - 1) != 0) return;
+        const uintptr_t pointer =
+            static_cast<uintptr_t>(std::strtoull(message + sizeof kPrefix - 1, nullptr, 16));
+        char where[192];
+        wxl::host::DescribeAddress(pointer, where, sizeof where);
+        Say("the client was handed a function at %s and calls only its own .text or code the runtime "
+            "registered (its image, the binaries the mod host loaded): whatever handed it over did not "
+            "go through wxl::core::code",
+            where);
+    }
 }
 
 namespace wxl::core::crash
@@ -253,5 +323,49 @@ namespace wxl::core::crash
         char where[192];
         wxl::host::DescribeAddress(reinterpret_cast<uintptr_t>(previous), where, sizeof where);
         WLOG_INFO(kTag, "the crash report runs first, then the filter at %s", where);
+    }
+
+    void ClientError(uint32_t code, const char* file, int32_t line, const char* message, bool recoverable)
+    {
+        char text[1024];
+        char where[400];
+        CopyClientText(message, text, sizeof text);
+        CopyClientText(file, where, sizeof where);
+        char from[440] = "";
+        if (where[0] && line > 0)
+            std::snprintf(from, sizeof from, ", at %s:%d", where, static_cast<int>(line));
+        else if (where[0])
+            std::snprintf(from, sizeof from, " (%s)", where);
+
+        if (recoverable)
+        {
+            WLOG_WARN(kClientTag, "the client shows error #%u (0x%08X)%s and goes on: %s", code & 0xFFFF, code, from,
+                      text);
+            return;
+        }
+        // One report: the crash filter's (Storm's filter runs after it and displays the same
+        // fault), or a first fatal error's.
+        if (InterlockedExchange(&g_reporting, 1) != 0) return;
+
+        g_sayTag    = kFatalTag;
+        g_flushNext = true;
+        char up[32];
+        wxl::core::session::FormatDuration(wxl::core::session::UptimeMs(), up, sizeof up);
+        const ModHost* host = wxl::core::Host();
+        Say("fatal error #%u (0x%08X) shown by the client%s, thread %lu%s, %s after launch, stage %s: %s",
+            code & 0xFFFF, code, from, GetCurrentThreadId(), host && host->OnMainThread() ? " (the main thread)" : "",
+            up, wxl::core::stages::ReachedName(), text);
+        PointerHint(text);
+
+        CONTEXT context{};
+        Capture(context);
+        Stack(context);
+        Mods();
+        Say("the client writes Errors\\ and ends the process next");
+
+        char reason[200];
+        EndReason(code, text, reason, sizeof reason);
+        wxl::core::session::End(reason);
+        g_sayTag = kTag;
     }
 }

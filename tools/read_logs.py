@@ -7,10 +7,11 @@
 
 For each launch, oldest first: the header (when, which runtime, built from which commits, the
 executable, Windows and Wine, the machine), the mods found, loaded and refused, the stages the
-client reached, how it ended (a clean exit, a crash with its report, or no end line at all), the
-warnings and errors grouped by what they say, the marks set with the wxl.probe mod's /mark and
-what happened between them, and the events the probe saw and never saw. Then the newest files of
-the client's own Errors/ folder.
+client reached, how it ended (a clean exit, a crash with its report, a fatal error the client
+displayed, or no end line at all), the warnings and errors grouped by what they say, the marks set
+with the wxl.probe mod's /mark and what happened between them, and the events the probe saw and
+never saw. A launch with no clean end gets the first lines of the Errors/ file the client wrote
+during it. Then the newest files of the client's own Errors/ folder.
 
 The runtime writes Logs/WarcraftXL.log for the running launch and renames the previous one
 WarcraftXL-<its launch time>.log, so the files sort by age by name.
@@ -81,7 +82,7 @@ def group_problems(entries):
     """Warnings and errors, grouped by tag and wording with the numbers taken out."""
     groups = {}
     for entry in entries:
-        if entry.level not in ("WARN", "ERROR") or entry.tag == "crash":
+        if entry.level not in ("WARN", "ERROR") or entry.tag == "crash" or (entry.tag == "fatal" and entry.level == "ERROR"):
             continue
         key = (entry.level, entry.tag, NUMBERS.sub("#", entry.text.split("\n")[0]))
         group = groups.setdefault(key, [0, entry])
@@ -89,7 +90,7 @@ def group_problems(entries):
     return sorted(groups.items(), key=lambda item: (item[0][0] != "ERROR", item[1][1].index))
 
 
-def summarise(path, entries, args, out):
+def summarise(path, entries, args, out, errors=()):
     say = lambda text="": out.append(text)
     launch = first(entries, "session", "launch ")
     say("=" * 100)
@@ -130,6 +131,11 @@ def summarise(path, entries, args, out):
             say(f"  {shorten(entry.text, 240)}")
         if end and "crash" not in end.text:
             say(f"  (after the session's end: {end.text})")
+    fatal = [e for e in entries if e.tag == "fatal" and e.level == "ERROR"]
+    if fatal:
+        say(f"FATAL ERROR at {fatal[0].time} (the client's own error display)")
+        for entry in fatal:
+            say(f"  {shorten(entry.text, 240)}")
     if end:
         say(f"End     {end.time} {end.text}")
     else:
@@ -137,6 +143,14 @@ def summarise(path, entries, args, out):
         say("End     NO END LINE: the process ended without a word (killed, frozen and closed, or a crash "
             "nothing could report)" + (f"; the last line is at {last.time}: [{last.tag}] {shorten(last.text, 120)}"
                                         if last else ""))
+    if not end or not end.text.startswith("session end: clean exit"):
+        launched = launch_time(launch)
+        for error in errors:
+            if launched and error[0] >= launched and (len(error) < 3 or error[2] is None or error[0] < error[2]):
+                say(f"Errors/ {error[1].name}, written during this launch:")
+                for line in error_lines(error[1]):
+                    say(f"  {shorten(line, 200)}")
+                break
 
     # --- warnings and errors ------------------------------------------------------------------
     problems = group_problems(entries)
@@ -198,6 +212,52 @@ def summarise(path, entries, args, out):
                 say(f"    {entry.time} {shorten(entry.text, 160)}")
 
 
+ERRORS_NAME = re.compile(r"^(\d{4}-\d\d-\d\d \d\d\.\d\d\.\d\d) Error\.txt$")
+LAUNCH_TIME = re.compile(r"^launch (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+
+
+def launch_time(launch):
+    match = LAUNCH_TIME.match(launch.text) if launch else None
+    return datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S") if match else None
+
+
+def error_files(target):
+    """The client's Errors/*.txt reports, oldest first, with the time their name gives."""
+    errors = Path(target) / "Errors"
+    found = []
+    if errors.is_dir():
+        for p in errors.iterdir():
+            match = ERRORS_NAME.match(p.name)
+            if match:
+                found.append((datetime.strptime(match[1], "%Y-%m-%d %H.%M.%S"), p))
+    return sorted(found)
+
+
+def error_lines(path):
+    """What an Errors/ report says: its error line, the message, and the Current Addon lines."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        return [f"(unreadable: {error})"]
+    lines, in_message = [], False
+    for raw in text:
+        line = raw.strip()
+        if line.startswith("ERROR #"):
+            lines.append(line)
+            continue
+        if line.startswith("Program:"):
+            in_message = True
+            continue
+        if line.startswith("WoWBuild:"):
+            in_message = False
+            continue
+        if in_message and line:
+            lines.append(line)
+        elif line.startswith("Current Addon") and not line.endswith("(null)"):
+            lines.append(line)
+    return lines
+
+
 def errors_folder(target, out):
     errors = Path(target) / "Errors"
     if not errors.is_dir():
@@ -225,8 +285,15 @@ def main():
     out = []
     chosen = files[-args.launches:] if args.launches > 0 else files
     out.append(f"{len(files)} launch log(s) under {args.target}; the last {len(chosen)}, oldest first")
-    for path in chosen:
-        summarise(path, parse(path), args, out)
+    target = Path(args.target)
+    client = target if target.is_dir() and (target / "Logs").is_dir() else (
+        target.parent if target.is_dir() else target.parent.parent)
+    reports = error_files(client)
+    parsed = [(path, parse(path)) for path in chosen]
+    starts = [launch_time(first(entries, "session", "launch ")) for _, entries in parsed]
+    for index, (path, entries) in enumerate(parsed):
+        following = starts[index + 1] if index + 1 < len(starts) else None
+        summarise(path, entries, args, out, [(when, p, following) for when, p in reports])
         out.append("")
     if Path(args.target).is_dir():
         errors_folder(args.target, out)

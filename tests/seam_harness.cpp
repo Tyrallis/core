@@ -7,6 +7,8 @@
 #include "objects/Objects.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Code.hpp"
+#include "runtime/Crash.hpp"
 #include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
@@ -36,6 +38,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -43,6 +46,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <windows.h>
+#undef far
+#undef near
 
 // --- What Core.cpp and the attachments supply in the DLL -------------------------------------
 
@@ -1902,6 +1909,57 @@ namespace
         *static_cast<wxl_result*>(user) = Script().register_function("WxlHarnessGreet", &Greet, &g_greetCalls);
     }
 
+    __declspec(noinline) int32_t WXL_CALL CodeProbe(void*) { return 0; }
+
+    /// The code the client accepts: the runtime's image and the binaries the host maps, by their
+    /// executable sections; nothing else, the heap, the stack and generated code included.
+    void CheckCode()
+    {
+        namespace code = wxl::core::code;
+        namespace os   = wxl::seam::Os::ValidateFunctionPointer;
+        code::Reset();
+        const void* own = reinterpret_cast<const void*>(&CodeProbe);
+        Check(!code::Accepts(own), "with nothing registered, no pointer is accepted");
+        Check(code::AddOwnImage() && code::Accepts(own) &&
+                  code::Accepts(reinterpret_cast<const void*>(&wxl::core::code::Accepts)),
+              "the runtime's own image is accepted once registered");
+        Check(code::AddOwnImage() && code::Accepts(own), "registering it twice keeps one set of ranges");
+
+        std::unique_ptr<char[]> heap(new char[64]);
+        int                     local     = 0;
+        void* const             generated = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        Check(!code::Accepts(heap.get()) && !code::Accepts(&local) && !code::Accepts(generated) &&
+                  !code::Accepts(nullptr),
+              "the heap, the stack, generated code and null are not");
+        HMODULE exe = GetModuleHandleW(nullptr);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+            reinterpret_cast<const uint8_t*>(exe) + reinterpret_cast<const IMAGE_DOS_HEADER*>(exe)->e_lfanew);
+        Check(!code::Accepts(exe) && !code::Accepts(reinterpret_cast<const uint8_t*>(exe) + nt->OptionalHeader.SizeOfImage - 1),
+              "nor the image's headers and data: only its executable sections");
+
+        const void* pointer = own;
+        Check(os::Gate(&pointer) && pointer == own, "Os.ValidateFunctionPointer takes the call for the runtime's code");
+        pointer = heap.get();
+        Check(!os::Gate(&pointer) && pointer == heap.get(), "and leaves any other pointer to the client's check");
+
+        // A binary the host maps, through the loader the runtime gives it: a system DLL stands in.
+        wchar_t system[MAX_PATH];
+        const UINT n = GetSystemDirectoryW(system, MAX_PATH);
+        const std::filesystem::path dll = std::filesystem::path(std::wstring(system, n)) / L"version.dll";
+        std::string     error;
+        wxl::host::LibraryLoader& loader  = code::HostLoader();
+        void* const               library = loader.Open(dll, error);
+        const void* const         export_ = library ? loader.Symbol(library, "GetFileVersionInfoSizeW") : nullptr;
+        Check(library && export_ && code::Accepts(export_), "a function of a binary the host loader opened is accepted");
+        pointer = export_;
+        Check(export_ && os::Gate(&pointer), "and the gate takes the call for it");
+        if (library) loader.Close(library);
+        Check(export_ && !code::Accepts(export_) && code::Accepts(own),
+              "closing the binary takes its code back and leaves the runtime's");
+        Check(!code::Handable(heap.get(), "harness"), "a pointer outside is refused before it is handed over");
+        if (generated) VirtualFree(generated, 0, MEM_RELEASE);
+    }
+
     /// FrameScript: a context Initialize makes is announced at its first CreateEvents, with the
     /// context CGGameUI's state implied when it was made; Destroy's Before raises ScriptVmClosing
     /// naming the same one, and a placeholder the client destroys before any interface raises
@@ -1956,6 +2014,16 @@ namespace
         Check(!Only(WXL_EV_ScriptVmReady), "a second table in the same context announces nothing");
         Check(registered == WXL_OK && g_vm.closures.count("WxlHarnessGreet") == 1,
               "a function registered from the ScriptVmReady handler is a global of that context");
+        {
+            const void* pushed = reinterpret_cast<const void*>(g_vm.closures["WxlHarnessGreet"].fn);
+            Check(pushed && wxl::seam::Os::ValidateFunctionPointer::Gate(&pushed),
+                  "the function the global is pushed as is code the client's pointer check accepts");
+            wxl::core::code::Reset();
+            Check(api.register_function("WxlHarnessUnhanded", &Greet, nullptr) == WXL_E_FAILED &&
+                      g_vm.closures.count("WxlHarnessUnhanded") == 0,
+                  "with the runtime's image unregistered, nothing is pushed: the client would end at the call");
+            wxl::core::code::AddOwnImage();
+        }
         Check(api.register_function("WxlHarnessGreet", &Greet, nullptr) == WXL_E_INVALID,
               "registering a name again is refused");
         g_vm.clientGlobals.insert("GetTime");
@@ -5644,6 +5712,50 @@ namespace
         wxl::core::services::footprint::Reset();
     }
 
+    // --- OsValidateFunctionPointer, as luaD_precall calls it -------------------------------------
+
+    uint32_t  g_validatorFatal = 0;
+    uintptr_t g_ediAfter       = 0;
+
+    /// The client's check with its fatal path stubbed: counts the pointers that reach it.
+    __declspec(noinline) void __cdecl FakeValidate(const void*) { ++g_validatorFatal; }
+
+    /// Calls a detour as luaD_precall calls OsValidateFunctionPointer at 0x00856513: the C
+    /// function in EDI, pushed, the call, the push cleaned later; EDI must survive the call.
+    __declspec(noinline) void CallLikePrecall(void* detour, const void* function)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  edi, function
+            push edi
+            call detour
+            mov  dword ptr [g_ediAfter], edi
+            add  esp, 4
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using ValidateLink = wxl::core::seams::GateOf<wxl::seam::Os::ValidateFunctionPointer::Convention,
+                                                  wxl::seam::Os::ValidateFunctionPointer::Signature>::
+        Link<&wxl::seam::Os::ValidateFunctionPointer::Gate>;
+
+    void CheckValidatorDetour()
+    {
+        ValidateLink::original = Opaque(&FakeValidate);
+        void* const detour     = Opaque(reinterpret_cast<void*>(&ValidateLink::Detour));
+        const void* own        = reinterpret_cast<const void*>(&CodeProbe);
+        std::unique_ptr<char[]> heap(new char[16]);
+
+        g_validatorFatal = 0;
+        CallLikePrecall(detour, own);
+        Check(g_espBefore == g_espAfter && g_ediAfter == reinterpret_cast<uintptr_t>(own) && g_validatorFatal == 0,
+              "the OsValidateFunctionPointer detour takes a runtime function: the client's check is not reached");
+        CallLikePrecall(detour, heap.get());
+        Check(g_espBefore == g_espAfter && g_ediAfter == reinterpret_cast<uintptr_t>(heap.get()) && g_validatorFatal == 1,
+              "and hands any other pointer to the client's check, its fatal path, with the stack and EDI as they were");
+        ValidateLink::original = nullptr;
+    }
+
     // --- SFile::OpenEx's two rows, chained as Install links them, and CMapObj::Load ---------------
 
     std::string g_openedName;
@@ -5836,6 +5948,49 @@ void ProfileLive(bool any)
 
 void WXL_CALL BenchHandler(void*, const void*) {}
 
+/// Storm's error display told to the log: a recoverable error in one line, a fatal one as a
+/// report with the session's end, once. Before Client.Destroy, which would end the session first.
+void CheckClientError()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::filesystem::path path =
+        std::filesystem::path(temp) / ("wxl-harness-fatal-" + std::to_string(GetCurrentProcessId()) + ".log");
+    wxl::log::Open(path.c_str());
+    char message[64];
+    snprintf(message, sizeof message, "Invalid function pointer: %p", reinterpret_cast<void*>(&CodeProbe));
+    wxl::core::crash::ClientError(0x8510007F, "leaked handle", -3, "1 handle not released", true);
+    wxl::core::crash::ClientError(0x85100086, nullptr, 0, message, false);
+    wxl::core::crash::ClientError(0x85100084, "0xC0000005 (ACCESS_VIOLATION)", -5, "second", false);
+    wxl::log::Close();
+
+    std::ifstream in(path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    printf("     the log it wrote:\n");
+    for (size_t at = 0; at < text.size();)
+    {
+        const size_t eol = text.find('\n', at);
+        printf("     | %s\n", text.substr(at, eol == std::string::npos ? std::string::npos : eol - at).c_str());
+        at = eol == std::string::npos ? text.size() : eol + 1;
+    }
+    Check(text.find("[client] the client shows error #127 (0x8510007F) (leaked handle) and goes on: 1 handle not released") !=
+              std::string::npos,
+          "a recoverable error is one warning");
+    Check(text.find("[fatal] fatal error #134 (0x85100086) shown by the client") != std::string::npos &&
+              text.find(message) != std::string::npos,
+          "a fatal one is reported with its number, code and message");
+    Check(text.find("the client was handed a function at wxl-core-seam-harness.exe+") != std::string::npos,
+          "an invalid function pointer is named by module and offset");
+    Check(text.find("[fatal] #0 ") != std::string::npos && text.find("the client writes Errors\\ and ends") != std::string::npos,
+          "with a stack, then what the client does next");
+    Check(text.find("session end: fatal error (#134 0x85100086: Invalid function pointer: ") != std::string::npos,
+          "the session ends on it");
+    Check(text.find("second") == std::string::npos, "a second fatal error writes nothing: one report");
+}
+
 void Bench()
 {
     using Clock = std::chrono::steady_clock;
@@ -5854,6 +6009,19 @@ void Bench()
     };
 
     printf("\nbench (%s):\n", sizeof(void*) == 8 ? "x64" : "x86");
+
+    {
+        const void* client = reinterpret_cast<const void*>(uintptr_t{0x00856370});
+        const void* own    = reinterpret_cast<const void*>(&CodeProbe);
+        time("function pointer gate, the client's own", 2000000, [&] {
+            const void* p = client;
+            wxl::seam::Os::ValidateFunctionPointer::Gate(&p);
+        });
+        time("function pointer gate, the runtime's", 2000000, [&] {
+            const void* p = own;
+            wxl::seam::Os::ValidateFunctionPointer::Gate(&p);
+        });
+    }
 
     wxl::core::services::data::Clear();
     time("file-open gate, a path that is not a database", 200000, [&] {
@@ -5996,9 +6164,11 @@ int main(int argc, char** argv)
     CheckDoodads();
     CheckFileOpened();
     CheckObjectUpdate();
+    CheckCode();
     CheckFrameScript();
     CheckNetClient();
     CheckNetConnection();
+    CheckClientError();
     CheckClientDestroy();
     CheckInput();
     CheckStorage();
@@ -6036,6 +6206,7 @@ int main(int argc, char** argv)
     CheckChatDetours();
     CheckStormDetours();
     CheckAssetDetours();
+    CheckValidatorDetour();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

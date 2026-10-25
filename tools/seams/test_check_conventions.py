@@ -766,6 +766,13 @@ GROUND_TRUTH = {
     "Storm.SMemAlloc":                 ("0x0076E540", "stdcall", [], 4),
     "Storm.SMemFree":                  ("0x0076E5A0", "stdcall", [], 4),
     "Storm.SMemReAlloc":               ("0x0076E5E0", "stdcall", [], 5),
+    # SErrDisplayError reads [ebp+0xC] at 0x00771D13 and every return is `ret 0x1C` (0x00772653);
+    # SErrDisplayAppFatalCustomV pushes seven at 0x00772A51-63 and cleans none.
+    "Storm.SErrDisplayError":          ("0x00771D10", "stdcall", [], 7),
+    # OsValidateFunctionPointer reads its pointer at [ebp+8] (0x0086B5C9) and ends in a bare
+    # `ret` (0x0086B5F4); luaD_precall pushes EDI at 0x00856513 and folds the cleanup into a
+    # later one, as every caller does, so no call site witnesses it.
+    "Os.ValidateFunctionPointer":      ("0x0086B5A0", "cdecl", [], 1),
     # SFile::OpenArchive ends in `ret 0x10` (0x004219E2, 0x00421A02), SFile::CloseArchive in
     # `ret 4` (0x00421742). ClientDBInitialize reads nothing on the stack and ends in a bare
     # `ret` at 0x00634E58.

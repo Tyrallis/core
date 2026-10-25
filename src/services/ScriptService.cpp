@@ -7,6 +7,7 @@
 
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
+#include "runtime/Code.hpp"
 #include "runtime/Core.hpp"
 
 #include "wxl/events.h"
@@ -37,6 +38,7 @@ namespace
 {
     constexpr char kTag[] = "script";
 
+    namespace code    = wxl::core::code;
     namespace binding = wxl::core::binding;
 
     /// A function a mod registered on the live context. Its slot (index + 1) is the closure's
@@ -248,6 +250,8 @@ namespace
                       name);
             return WXL_E_INVALID;
         }
+
+        if (!code::Handable(reinterpret_cast<const void*>(&NativeThunk), "register_function")) return WXL_E_FAILED;
 
         const uint32_t owner = CurrentMod();
         g_functions.push_back(Registration{name, fn, user, owner, true});

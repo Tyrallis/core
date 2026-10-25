@@ -11,6 +11,7 @@
 #include "objects/Objects.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Code.hpp"
 #include "runtime/Session.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
@@ -159,6 +160,9 @@ namespace wxl::core
             cfg.log_minimum     = ToHostLevel(wxl::log::MinLevel());
             cfg.events          = attachment::Events();
             cfg.services        = attachment::Services();
+            // Every binary the host maps is code the client may be handed, as is the runtime's own.
+            cfg.loader          = &code::HostLoader();
+            code::AddOwnImage();
 
             WLOG_INFO(kTag, "runtime %s (%s) version %u, abi %u.%u.%u, target %s, mods in %ls",
                       kRuntimeId, kRuntimeName, static_cast<unsigned>(WXL_CORE_VERSION),

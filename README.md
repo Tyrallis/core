@@ -355,6 +355,8 @@ source. Everything else observes.
 | `Storm.SMemAlloc` | `SMemAlloc(size_t bytes, const char* filename, int32_t line, uint32_t flags)`, Storm's allocator, `new` included | nothing: after, the block is counted under its file while a mod has started `wxl.footprint`'s accounting |
 | `Storm.SMemFree` | `SMemFree(void* ptr, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts |
 | `Storm.SMemReAlloc` | `SMemReAlloc(void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts; after, what the call left comes back, under the file that moved it |
+| `Storm.SErrDisplayError` | `SErrDisplayError(uint32_t errorcode, const char* filename, int32_t linenumber, const char* description, int32_t recoverable, uint32_t exitcode, uint32_t unknown)`, Storm's error display: every fatal error, assertion and the exception filter's dialog | nothing: before, the error goes to `WarcraftXL.log`, flushed; a fatal one with its stack, the running mod, the last events and the session's end line |
+| `Os.ValidateFunctionPointer` (gated) | `OsValidateFunctionPointer(const void* ptr)`, the check of every C function the client's Lua calls, Lua hook, console command handler and CVar callback | nothing: the gate takes the call for a pointer in the runtime's image or a binary the mod host loaded; any other goes on to the client's check, fatal outside its `.text` |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:

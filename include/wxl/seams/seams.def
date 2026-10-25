@@ -107,6 +107,7 @@
 #include "wxl/seams/map.def"
 #include "wxl/seams/storm.def"
 #include "wxl/seams/clientdb.def"
+#include "wxl/seams/os.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

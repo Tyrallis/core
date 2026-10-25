@@ -85,6 +85,26 @@ of each table lists its shapes and columns.
 3. A call row (`WXL_BINDING`) is written by hand twice: in `core/src/binding/BindingX86.cpp` and in
    `client/WarcraftXL/Binding.cpp`. Either side missing fails to link.
 
+### A native function handed to the client
+
+The client checks every function it calls through a pointer it was handed (a C function its Lua
+calls, a Lua hook, a console command's handler, a CVar's callback) with
+`OsValidateFunctionPointer`, which ends the process unless the pointer is in its own `.text`. The
+`Os.ValidateFunctionPointer` gate lets through the code `src/runtime/Code.cpp` registered: the
+runtime's own image and every binary the mod host maps (the host opens them through
+`code::HostLoader()`, which registers a binary's executable sections when it is mapped and drops
+them before it is unmapped).
+
+1. A binding that pushes a native function into the client (`lua_pushcclosure`, a console
+   command, a CVar callback) pushes a function of `WarcraftXL.dll`, as `wxl.script` pushes its
+   `NativeThunk`, never a mod's pointer, a trampoline or generated code.
+2. The service asks `code::Handable(fn, what)` before the push and refuses the call when it
+   answers false: a pointer outside the registered code would end the client at its first call.
+3. Code made at run time (a JIT, a thunk) is not accepted: the registry holds the sections of
+   mapped modules only, and the contract has no member for a mod to add a range.
+4. A harness check that the pointer the binding pushes passes the gate (`CheckFrameScript` does it
+   for `register_function`).
+
 ### A new object getter for mods
 
 1. The fact, as above.
@@ -252,11 +272,20 @@ disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32
   the last 16 events raised to a handler (`ModHost::Recent`, a lock-free ring of 32 written only
   when the event dispatches). A fault inside a mod's handler or entry point never gets there: the
   guard catches it and the host logs one line with the mod, the handler and the fault.
+- **The client's own errors** (`crash::ClientError`, tag `fatal`), from the `Storm.SErrDisplayError`
+  seam, before the client's dialog and `Errors\` file. A fatal error (`SErrDisplayAppFatal`, a failed
+  assertion, an allocation that cannot be served) is no exception, so the filter never sees it:
+  the report says the error's number, code, message and source, names the module and offset of an
+  "Invalid function pointer", then the stack, the running mod and the last events as a crash's
+  does, and ends the session with `fatal error (#<n> 0x<code>: <message>)`. A recoverable error is
+  one warning, tag `client`. After a crash report it writes nothing: Storm's filter displays the
+  same fault.
 
-`tools/read_logs.py <client folder>` reads the last launches back: header, mods, stages, the end
-or the crash, warnings and errors grouped by wording, the marks of the `wxl.probe` example
-(`sdk/examples/probe/`, `/mark <text>`) and what happened between them, the events seen and never
-seen, and the newest files of the client's `Errors\`.
+`tools/read_logs.py <client folder>` reads the last launches back: header, mods, stages, the end,
+the crash or the fatal error, warnings and errors grouped by wording, the marks of the `wxl.probe`
+example (`sdk/examples/probe/`, `/mark <text>`) and what happened between them, the events seen and
+never seen, and the newest files of the client's `Errors\`; for a launch with no clean end, the
+first lines of the `Errors\` file written during it (the message and the `Current Addon` lines).
 
 ## Rules that hold everywhere
 

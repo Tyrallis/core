@@ -152,8 +152,10 @@ add_custom_target(wxl-core-build-ids
     COMMENT "Reading the commits WarcraftXL.dll is built from"
     VERBATIM)
 
-# The launch's log: its settings file, its header and its end, and the crash report.
+# The launch's log (its settings file, its header and its end, the crash report, the client's fatal
+# errors) and the code the client accepts.
 set(WXL_CORE_SESSION_SOURCES
+    src/runtime/Code.cpp
     src/runtime/Session.cpp
     src/runtime/Settings.cpp
     src/runtime/Crash.cpp
