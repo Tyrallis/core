@@ -19,3 +19,11 @@
 // `ret` (0x007D7700). The one call, 0x007D7EB4, is in PostloadCallback.
 WXL_SEAM_BEFORE(MapObj, Load, "CMapObj::Load", void, thiscall, (void* self))
 WXL_SEAM_RAISES(MapObj, Load, MapObjectLoad)
+
+// A map object's group, its file read: CMapObj::ReadGroup (0x007D85E0) reads "<root>_NNN.wmo"
+// whole, at once while preloading, else by an asynchronous read whose callback
+// (CMapObjGroup::AsyncPostloadCallback) calls this; it then walks the group's chunks. Before
+// raises MapObjectGroupLoad with the root's name, the group's number and the bytes, only while
+// someone listens. thiscall, the group in ECX, nothing on the stack (bare `ret`).
+WXL_SEAM_BEFORE(MapObj, CreateGroup, "CMapObjGroup::Create", void, thiscall, (void* self))
+WXL_SEAM_RAISES(MapObj, CreateGroup, MapObjectGroupLoad)

@@ -17,3 +17,12 @@
 // sound. Taking the call answers 17, the client's own answer when sound is off.
 WXL_SEAM_GATE(Sound, PlaySoundKit, "SI2::PlaySoundKit@0x004C6A40", int32_t, cdecl, (int32_t sound_kit_id, const void* position, void* object, void* properties, uint32_t advanced_id, uint32_t* sound_id, int32_t check_distance, int32_t keep_playing))
 WXL_SEAM_RAISES(Sound, PlaySoundKit, SoundPlay)
+
+// Makes the sound data a sound plays from a file: from the engine's cache when it holds the
+// file, else by opening it, read whole or streamed. Its callers are the script's PlaySoundFile
+// and the sound kits. Before raises SoundFileLoad with the file, whether it streams and the
+// channel's priority, only while someone listens. A static of SE2 with sixteen arguments, three
+// of them floats: the callers push sixteen dwords and `add esp, 0x40` (0x0087F808): cdecl. The
+// bools are pushed as whole dwords of which the low byte counts.
+WXL_SEAM_BEFORE(Sound, CreateWaveData, "SE2::CreateWaveData", int32_t, cdecl, (void* system, const char* file_name, uint32_t mode, void* sound, void* load_sound_group, void* sound_group, uint32_t random_start, int32_t priority, int32_t reverb, uint32_t streaming, uint32_t decode_buffer_size, int32_t software, float cone_inside, float cone_outside, float cone_outside_volume, const void* cone_orientation))
+WXL_SEAM_RAISES(Sound, CreateWaveData, SoundFileLoad)

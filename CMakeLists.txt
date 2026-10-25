@@ -170,6 +170,7 @@ add_library(wxl-core SHARED
     src/common/Log.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp
+    src/services/Assets.cpp
     src/services/StorageService.cpp
     src/services/FootprintService.cpp
     src/services/ActionService.cpp
@@ -205,6 +206,7 @@ add_executable(wxl-core-seam-harness
     src/binding/BindingTable.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp
+    src/services/Assets.cpp
     src/services/StorageService.cpp
     src/services/FootprintService.cpp
     src/services/ActionService.cpp

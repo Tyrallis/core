@@ -13,6 +13,7 @@
 #include "runtime/Session.hpp"
 #include "runtime/Stages.hpp"
 #include "services/DataService.hpp"
+#include "services/Assets.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/host/mod_host.hpp"
@@ -35,6 +36,7 @@ namespace wxl::seam::Client::Destroy
         wxl::core::attachment::ReleaseAll();
         wxl::core::points::ReleaseAll();
         wxl::core::services::storage::CloseEverything();
+        wxl::core::services::assets::ReleaseAll();
         wxl::core::services::data::Clear();
         for (wxl::host::ModHost::ModToken token = 1; token <= host->Loaded().size(); ++token)
         {

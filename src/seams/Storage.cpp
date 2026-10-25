@@ -9,6 +9,7 @@
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
+#include "services/Assets.hpp"
 #include "services/DataService.hpp"
 #include "services/StorageService.hpp"
 
@@ -30,20 +31,25 @@ namespace
      */
     thread_local char g_redirect[512];
 
-    /// The name a folder of the search path answers an open with, held as long as g_redirect.
+    /// The name a folder of the search path answers a lookup with, held as long as g_redirect.
     thread_local char g_resolved[512];
 
-    /// What the client opens in the end: a folder of the search path that holds the name and
-    /// wins it answers with its file, whoever named it. An open from one given archive is that
-    /// archive's.
-    void Resolve(void** archive, const char** name)
+    namespace assets  = wxl::core::services::assets;
+    namespace storage = wxl::core::services::storage;
+
+    /// Whether the client itself has a name, with no source of the runtime answering.
+    bool ClientHas(const char* name)
     {
-        if (archive && *archive) return;
-        if (wxl::core::services::storage::Resolve(*name, g_resolved, sizeof g_resolved))
-        {
-            WLOG_DEBUG(wxl::core::kTag, "file %s found in a search path folder: %s", *name, g_resolved);
-            *name = g_resolved;
-        }
+        assets::ModeScope only(assets::Mode::ClientOnly);
+        return wxl::core::binding::file_exists(name) != WXL_FALSE;
+    }
+
+    /// A name the client resolves as its own data: not a path, not climbing out.
+    bool IsClientName(const char* name)
+    {
+        if (!name || !*name) return false;
+        if (name[0] == '\\' || name[0] == '/' || name[1] == ':') return false;
+        return std::strstr(name, "..") == nullptr && std::strchr(name, '|') == nullptr;
     }
 }
 
@@ -62,6 +68,10 @@ namespace wxl::seam::Storage::OpenFile
 
         if (!name || !*name) return false;
 
+        // The runtime reading a file to transform it, or asking the client what it has: its
+        // own opens, which nothing is told of and nothing redirects again.
+        if (wxl::core::services::assets::Current() != wxl::core::services::assets::Mode::Normal) return false;
+
         // The runtime listing the archives for wxl.storage's find: its own open, of an archive's
         // listfile, which nothing else is told of.
         if (wxl::core::services::storage::Listing()) return false;
@@ -73,7 +83,6 @@ namespace wxl::seam::Storage::OpenFile
         if (wxl::core::services::data::ServedPath(*name, length, g_redirect, sizeof g_redirect))
         {
             *name = g_redirect;
-            Resolve(archive, name);
             return false;
         }
 
@@ -93,12 +102,8 @@ namespace wxl::seam::Storage::OpenFile
             host->Raise(WXL_EV_FileOpen, &args);
         }
 
-        // Nobody answered: the client opens what it asked for, from a folder when one wins it.
-        if (!g_redirect[0])
-        {
-            Resolve(archive, name);
-            return false;
-        }
+        // Nobody answered: the client opens what it asked for, found where FindFile says.
+        if (!g_redirect[0]) return false;
 
         // A handler that writes past the end of the buffer would leave it unterminated; the
         // last byte is forced rather than trusting what came back.
@@ -107,7 +112,58 @@ namespace wxl::seam::Storage::OpenFile
 
         // The one thing only a gate can do: what the client opens is not what it asked for.
         *name = g_redirect;
-        Resolve(archive, name);
+        return false;
+    }
+}
+
+namespace wxl::seam::Storage::FindFile
+{
+    bool WXL_CALL Gate(int32_t* result, const char** name, char** path, uint32_t* size, uint32_t* flags,
+                       uint32_t** type, void*** archive)
+    {
+        (void)flags;
+        if (!name || !IsClientName(*name)) return false;
+        const assets::Mode mode = assets::Current();
+        if (mode == assets::Mode::ClientOnly) return false;
+        if (!storage::AnyFolder() && !assets::Active()) return false;
+
+        // The sources by priority: the best folder, then a provider or served bytes above it.
+        int32_t    folderPriority = 0;
+        const bool folder =
+            storage::BestFolder(*name, g_resolved, sizeof g_resolved, &folderPriority);
+        assets::Candidate source{};
+        const bool        sourced = assets::BestSource(*name, folder ? folderPriority : INT32_MIN, &source);
+        const int32_t     best    = sourced ? source.priority : folderPriority;
+        const bool        any     = folder || sourced;
+
+        // A source of 0 or below only fills a name the client does not have.
+        const bool wins = any && (best > 0 || !ClientHas(*name));
+
+        // A kind some mod transforms is read through the file layer, whichever source has it.
+        if (mode == assets::Mode::Normal && assets::Transformed(*name) && (wins || ClientHas(*name)))
+        {
+            if (path && *path && size && assets::LayerPath(0, *name, *path, *size))
+            {
+                if (type && *type) **type = 0;
+                if (archive && *archive) **archive = nullptr;
+                *result = 1;
+                return true;
+            }
+        }
+        if (!wins) return false;
+
+        if (sourced)
+        {
+            if (!path || !*path || !size || !assets::LayerPath(source.id, *name, *path, *size)) return false;
+            WLOG_DEBUG(wxl::core::kTag, "file %s served by a mod's source", *name);
+            if (type && *type) **type = 0; // SFILE_PLAIN: opened with Blizzard::File::Open(path)
+            if (archive && *archive) **archive = nullptr;
+            *result = 1;
+            return true;
+        }
+
+        WLOG_DEBUG(wxl::core::kTag, "file %s found in a search path folder: %s", *name, g_resolved);
+        *name = g_resolved;
         return false;
     }
 }
@@ -120,6 +176,7 @@ namespace wxl::seam::Storage::OpenEx
         wxl::host::ModHost* host = wxl::core::Host();
         if (!host || !host->Listening(WXL_EV_FileOpened) || !name) return;
         if (wxl::core::services::storage::Listing()) return;
+        if (wxl::core::services::assets::Current() != wxl::core::services::assets::Mode::Normal) return;
 
         const bool found = result != 0 && file && *file;
         const uint64_t size = found ? wxl::core::binding::file_size(*file) : 0;

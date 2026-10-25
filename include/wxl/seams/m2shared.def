@@ -24,3 +24,11 @@
 WXL_SEAM_BEFORE(M2Shared, LoadSucceededCallback, "CM2Shared::LoadSucceededCallback", void, cdecl, (void* param))
 WXL_SEAM_WITNESS(M2Shared, LoadSucceededCallback, 0x004B9B9E)    // AsyncFileReadPollHandler: call ecx; add esp, 4
 WXL_SEAM_RAISES(M2Shared, LoadSucceededCallback, ModelLoad)
+
+// A model's skin profile, its .skin file read: CM2Shared::LoadSkinProfile (0x0083CB40) reads it
+// whole into m_skinData by an asynchronous read, whose callback calls this with the file's size;
+// it then parses the profile in place (M2Init). Before raises SkinProfileLoad with the model's
+// path and the skin's bytes, only while someone listens. thiscall, the model in ECX, the size on
+// the stack (`ret 4`).
+WXL_SEAM_BEFORE(M2Shared, FinishLoadingSkinProfile, "CM2Shared::FinishLoadingSkinProfile", int32_t, thiscall, (void* self, uint32_t size))
+WXL_SEAM_RAISES(M2Shared, FinishLoadingSkinProfile, SkinProfileLoad)

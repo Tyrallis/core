@@ -31,3 +31,23 @@ WXL_BINDING(map_obj_bytes, const void*, (const void* map_obj, uint32_t* size), (
 
 // Where a placed doodad is, in world coordinates: CMapDoodadDef::m_position.
 WXL_BINDING(doodad_position, wxl_bool, (const void* def, wxl_vec3* out), (def, out), WXL_FALSE)
+
+// A terrain tile CMapArea::AsyncCallback is handed: its place on the map's grid (m_index), the
+// open file it was read from (m_file, an SFileImpl the client still holds) and the file's bytes
+// (m_fileBuffer, m_fileSize). Null bytes when it holds none.
+WXL_BINDING(map_area_bytes, const void*, (const void* area, int32_t* x, int32_t* y, void** file, uint32_t* size), (area, x, y, file, size), 0)
+
+// The name an open file was opened by, copied: SFile::GetActualFileName. False when there is
+// no file.
+WXL_BINDING(file_name, wxl_bool, (void* file, char* buffer, uint32_t capacity), (file, buffer, capacity), WXL_FALSE)
+
+// A map object's group: its file's bytes (m_filePtr, m_fileSize), the map object it belongs to
+// (m_parent, a CMapObj) and its number, its slot in the parent's m_mapObjGroupArray. Null when
+// it holds no bytes.
+WXL_BINDING(map_obj_group_bytes, const void*, (const void* group, void** parent, uint32_t* index, uint32_t* size), (group, parent, index, size), 0)
+
+// A model's skin profile as read: CM2Shared::m_skinData. Null when it holds none.
+WXL_BINDING(model_skin_bytes, const void*, (const void* shared), (shared), 0)
+
+// A texture's file name: CTexture::m_filename.
+WXL_BINDING(texture_name, const char*, (const void* texture), (texture), 0)

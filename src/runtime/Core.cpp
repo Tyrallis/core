@@ -17,6 +17,7 @@
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
+#include "services/Assets.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/core/init.h"
@@ -102,6 +103,8 @@ namespace
         wxl::core::services::storage::CloseFilesOf(token);
         wxl::core::services::storage::RemoveSearchPathsOf(token);
         wxl::core::services::storage::RemoveRedirectsOf(token);
+        // Its providers, served names and transforms: no call into its code starts again.
+        wxl::core::services::assets::ReleaseOf(token);
         wxl::core::services::data::ForgetMod(token);
         // What it reported of its memory, and the threshold it watched, go too.
         wxl::core::services::footprint::ForgetMod(token);

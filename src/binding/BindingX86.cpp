@@ -574,6 +574,18 @@ namespace wxl::core::binding
         return reinterpret_cast<const char*>(WXL_STATIC("SFile::m_basePath"));
     }
 
+    void** filestack_top()
+    {
+        if (!IsClient()) return nullptr;
+        return reinterpret_cast<void**>(WXL_STATIC("System_File::Stacked::s_manager"));
+    }
+
+    const void* filestack_initial()
+    {
+        if (!IsClient()) return nullptr;
+        return reinterpret_cast<const void*>(WXL_STATIC("System_File::Stacked::s_initstack"));
+    }
+
     uint32_t archive_list(wxl_core_name_fn fn, void* user)
     {
         if (!IsClient() || !fn) return 0;
@@ -1106,6 +1118,57 @@ namespace wxl::core::binding
         std::memcpy(base + WXL_FIELD("CM2Shared", "m_fileSize"), &size, sizeof size);
         if (read) release(read);
         return WXL_TRUE;
+    }
+
+    const void* map_area_bytes(const void* area, int32_t* x, int32_t* y, void** file, uint32_t* size)
+    {
+        if (!IsClient() || !area) return nullptr;
+        if (x) *x = Read<int32_t>(area, WXL_FIELD("CMapArea", "m_index.x"));
+        if (y) *y = Read<int32_t>(area, WXL_FIELD("CMapArea", "m_index.y"));
+        if (file) *file = Read<void*>(area, WXL_FIELD("CMapArea", "m_file"));
+        if (size) *size = Read<uint32_t>(area, WXL_FIELD("CMapArea", "m_fileSize"));
+        return Read<const void*>(area, WXL_FIELD("CMapArea", "m_fileBuffer"));
+    }
+
+    wxl_bool file_name(void* file, char* buffer, uint32_t capacity)
+    {
+        if (!IsClient() || !file || !buffer || !capacity) return WXL_FALSE;
+        using GetName = int32_t(__stdcall*)(void* file, char* buffer, uint32_t size);
+        const GetName call = reinterpret_cast<GetName>(WXL_SITE("SFile::GetActualFileName", 0));
+        buffer[0]          = 0;
+        return call(file, buffer, capacity) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    const void* map_obj_group_bytes(const void* group, void** parent, uint32_t* index, uint32_t* size)
+    {
+        if (!IsClient() || !group) return nullptr;
+        void* root = Read<void*>(group, WXL_FIELD("CMapObjGroup", "m_parent"));
+        if (parent) *parent = root;
+        if (size) *size = Read<uint32_t>(group, WXL_FIELD("CMapObjGroup", "m_fileSize"));
+        if (index)
+        {
+            *index = 0;
+            const uint32_t count = root ? Read<uint32_t>(root, WXL_FIELD("CMapObj", "m_mapObjGroupCount")) : 0;
+            for (uint32_t i = 0; i < count && i < 512; ++i)
+                if (Read<const void*>(root, WXL_FIELD("CMapObj", "m_mapObjGroupArray") + i * 4) == group)
+                {
+                    *index = i;
+                    break;
+                }
+        }
+        return Read<const void*>(group, WXL_FIELD("CMapObjGroup", "m_filePtr"));
+    }
+
+    const void* model_skin_bytes(const void* shared)
+    {
+        if (!IsClient() || !shared) return nullptr;
+        return Read<const void*>(shared, WXL_FIELD("CM2Shared", "m_skinData"));
+    }
+
+    const char* texture_name(const void* texture)
+    {
+        if (!IsClient() || !texture) return nullptr;
+        return static_cast<const char*>(texture) + WXL_FIELD("CTexture", "m_filename");
     }
 
     const char* map_obj_path(const void* map_obj)

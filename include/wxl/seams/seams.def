@@ -115,6 +115,7 @@
 #include "wxl/seams/trade.def"
 #include "wxl/seams/reputation.def"
 #include "wxl/seams/achievement.def"
+#include "wxl/seams/blpfile.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

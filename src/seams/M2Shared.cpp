@@ -52,3 +52,23 @@ namespace wxl::seam::M2Shared::LoadSucceededCallback
                       path, static_cast<unsigned>(replacement_size));
     }
 }
+
+namespace wxl::seam::M2Shared::FinishLoadingSkinProfile
+{
+    void WXL_CALL Before(void* self, uint32_t size)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !self || !host->Listening(WXL_EV_SkinProfileLoad)) return;
+
+        const void* data = wxl::core::binding::model_skin_bytes(self);
+        if (!data) return;
+        const char* model = wxl::core::binding::model_path(self);
+        if (!model) model = "";
+
+        wxl_skin_profile_args args{};
+        args.model = wxl_str{model, static_cast<uint32_t>(strnlen(model, 260))};
+        args.data  = data;
+        args.size  = size;
+        host->Raise(WXL_EV_SkinProfileLoad, &args);
+    }
+}
