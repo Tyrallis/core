@@ -23,6 +23,9 @@ namespace wxl::core::stages
     /// The furthest stage announced so far.
     wxl_stage Reached();
 
+    /// The furthest stage's name, "early" ... "shutdown", or "none" before the first.
+    const char* ReachedName();
+
     /// Forgets what has been announced, for a runtime that starts over. Only Core.cpp calls it.
     void Restart();
 }

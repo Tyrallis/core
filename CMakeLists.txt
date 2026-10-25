@@ -137,11 +137,33 @@ list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/AttachX86\.cpp$")
 list(FILTER WXL_SEAM_BODIES EXCLUDE REGEX "/RegparmX86\.cpp$")
 file(GLOB WXL_OBJECT_READS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/objects/*.cpp")
 
+# The commits the build comes from, read at every build into a header only Session.cpp includes:
+# core's, the SDK's, and the client's when core is built inside a client's tree.
+set(WXL_BUILD_IDS_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(WXL_BUILD_IDS_CLIENT "")
+if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(WXL_BUILD_IDS_CLIENT "${CMAKE_SOURCE_DIR}")
+endif()
+add_custom_target(wxl-core-build-ids
+    COMMAND "${CMAKE_COMMAND}" "-DOUT=${WXL_BUILD_IDS_DIR}/wxl_build_ids.h"
+            "-DCORE=${CMAKE_CURRENT_SOURCE_DIR}" "-DSDK=${WXL_SDK_DIR}" "-DCLIENT=${WXL_BUILD_IDS_CLIENT}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_ids.cmake"
+    BYPRODUCTS "${WXL_BUILD_IDS_DIR}/wxl_build_ids.h"
+    COMMENT "Reading the commits WarcraftXL.dll is built from"
+    VERBATIM)
+
+# The launch's log: its settings file, its header and its end, and the crash report.
+set(WXL_CORE_SESSION_SOURCES
+    src/runtime/Session.cpp
+    src/runtime/Settings.cpp
+    src/runtime/Crash.cpp
+    src/runtime/Stamp.cpp)
+
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
+    ${WXL_CORE_SESSION_SOURCES}
     src/runtime/Stages.cpp
     src/runtime/Frame.cpp
-    src/runtime/Stamp.cpp
     src/common/Log.cpp
     src/services/ScriptService.cpp
     src/services/DataService.cpp
@@ -157,7 +179,8 @@ set_target_properties(wxl-core PROPERTIES OUTPUT_NAME "WarcraftXL" PREFIX "")
 # follow, and neither matters to what ships.
 set_property(TARGET wxl-core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 wxl_core_release_symbols(wxl-core)
-target_include_directories(wxl-core PRIVATE src include)
+target_include_directories(wxl-core PRIVATE src include "${WXL_BUILD_IDS_DIR}")
+add_dependencies(wxl-core wxl-core-build-ids)
 target_link_libraries(wxl-core PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core PRIVATE
     ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
@@ -170,6 +193,7 @@ target_compile_definitions(wxl-core PRIVATE
 # carry an architecture's entry point. Built for both, run by hand or by ctest.
 add_executable(wxl-core-seam-harness
     tests/seam_harness.cpp
+    ${WXL_CORE_SESSION_SOURCES}
     src/common/Log.cpp
     src/runtime/Stages.cpp
     src/runtime/Frame.cpp
@@ -182,9 +206,21 @@ add_executable(wxl-core-seam-harness
     ${WXL_OBJECT_READS})
 # The same build as the DLL, so --bench measures what ships rather than something near it.
 set_property(TARGET wxl-core-seam-harness PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-target_include_directories(wxl-core-seam-harness PRIVATE src include)
+target_include_directories(wxl-core-seam-harness PRIVATE src include "${WXL_BUILD_IDS_DIR}")
+add_dependencies(wxl-core-seam-harness wxl-core-build-ids)
 target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host wxl::runtime)
-target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)
+target_compile_definitions(wxl-core-seam-harness PRIVATE
+    ${WXL_CORE_DEFS} WXL_CORE_VERSION=${WXL_CORE_VERSION} WXL_CORE_BUILD)
+
+# --- The log ---------------------------------------------------------------------------------------
+# The session files (a launch's log renamed for the next, the oldest pruned), the levels by tag,
+# the settings file, against a scratch folder.
+add_executable(wxl-core-log-tests
+    tests/log_tests.cpp
+    src/common/Log.cpp
+    src/runtime/Settings.cpp)
+target_include_directories(wxl-core-log-tests PRIVATE src include)
+target_compile_definitions(wxl-core-log-tests PRIVATE ${WXL_CORE_DEFS})
 
 # --- Tracy (BSD-3-Clause, deps/tracy, its own license file) -----------------------------------------
 # The client half of the profiler, compiled once into the DLL: mods reach it through wxl.profile,
@@ -214,6 +250,7 @@ endif()
 
 enable_testing()
 add_test(NAME seams COMMAND wxl-core-seam-harness)
+add_test(NAME log COMMAND wxl-core-log-tests "${CMAKE_CURRENT_BINARY_DIR}/log-scratch")
 
 install(TARGETS wxl-core RUNTIME DESTINATION "bin/${WXL_CORE_ARCH_DIR}" COMPONENT core)
 install(FILES "$<TARGET_PDB_FILE:wxl-core>" DESTINATION "bin/${WXL_CORE_ARCH_DIR}"
@@ -279,7 +316,7 @@ else()
     set(WXL_CORE_WARNED_TARGETS wxl-core)
 endif()
 
-list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness)
+list(APPEND WXL_CORE_WARNED_TARGETS wxl-core-seam-harness wxl-core-log-tests)
 foreach(target IN LISTS WXL_CORE_WARNED_TARGETS)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
 endforeach()

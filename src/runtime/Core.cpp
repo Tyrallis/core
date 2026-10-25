@@ -11,6 +11,7 @@
 #include "objects/Objects.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Session.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
@@ -27,7 +28,6 @@
 
 namespace
 {
-    constexpr wchar_t kLogRelative[]  = L"Logs\\WarcraftXL.log";
     constexpr wchar_t kModsRelative[] = L"Mods";
 
     /**
@@ -124,14 +124,7 @@ extern "C" WXL_CORE_API volatile uint8_t wxl_core_listening[WXL_EV_COUNT] = {};
 
 namespace wxl::core
 {
-    bool OpenLog()
-    {
-        wchar_t path[1024];
-        const size_t dir = ExeDirectory(path, sizeof path / sizeof path[0]);
-        if (dir == 0) return false;
-        if (wcscat_s(path, kLogRelative) != 0) return false;
-        return wxl::log::Open(path);
-    }
+    bool OpenLog() { return session::Begin(); }
 
     wxl::host::ModHost* Host() { return g_host; }
 
@@ -186,19 +179,7 @@ namespace wxl::core
             stages::Restart();
             stages::Reach(WXL_STAGE_EARLY);
 
-            for (const wxl::host::LoadedMod& mod : g_host->Loaded())
-            {
-                if (mod.disabled)
-                    WLOG_WARN(kTag, "mod %s %s (%s) is disabled: it faulted %s", mod.id.c_str(),
-                              mod.manifest.version.text.c_str(), mod.name.c_str(), mod.fault.c_str());
-                else
-                    WLOG_INFO(kTag, "mod %s %s (%s) is up", mod.id.c_str(),
-                              mod.manifest.version.text.c_str(), mod.name.c_str());
-            }
-            for (const wxl::host::RefusedMod& mod : g_host->Refused())
-                WLOG_INFO(kTag, "mod %s was not loaded: %s",
-                          mod.id.empty() ? mod.directory_name.c_str() : mod.id.c_str(),
-                          mod.reason.c_str());
+            session::ReportMods(*g_host);
             WLOG_INFO(kTag, "core ready: %zu mod(s) loaded", g_host->Loaded().size());
             g_up = true;
         }

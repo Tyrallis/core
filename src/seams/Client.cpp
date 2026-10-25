@@ -9,6 +9,7 @@
 #include "objects/Objects.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Session.hpp"
 #include "runtime/Stages.hpp"
 #include "services/DataService.hpp"
 #include "services/StorageService.hpp"
@@ -41,5 +42,6 @@ namespace wxl::seam::Client::Destroy
 
         host->UnloadAll();
         WLOG_INFO(wxl::core::kTag, "mods unloaded; the client is on its own from here");
+        wxl::core::session::End("clean exit, the client closed");
     }
 }
