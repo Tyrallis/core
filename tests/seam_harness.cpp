@@ -21,6 +21,7 @@
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
 #include "wxl/core/profile.h"
+#include "wxl/core/storm.hpp"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -542,13 +543,11 @@ namespace
 
     // The client's folder and its archives' listfiles, as find and the search path see them.
     std::string              g_basePath;
-    int                      g_rescans = 0;
     std::vector<std::string> g_listed = {"Interface\\FrameXML\\FrameXML.toc",
                                          "Interface\\FrameXML\\Bindings.xml",
                                          "INTERFACE\\Icons\\A.blp", "Interface\\Glues\\Glues.toc"};
 
     const char* WXL_CALL FakeBasePath() { return g_basePath.c_str(); }
-    void WXL_CALL FakeRescan() { ++g_rescans; }
 
     uint32_t WXL_CALL FakeArchiveList(wxl_core_name_fn fn, void* user)
     {
@@ -826,7 +825,6 @@ namespace
         init.file_close             = &FakeFileClose;
         init.archive_mount          = &FakeArchiveMount;
         init.storage_base_path      = &FakeBasePath;
-        init.storage_rescan         = &FakeRescan;
         init.archive_list           = &FakeArchiveList;
         init.gx_device_exists       = &FakeGxDeviceExists;
         init.gx_has_context         = &FakeGxHasContext;
@@ -1904,10 +1902,11 @@ namespace
         *static_cast<wxl_result*>(user) = Script().register_function("WxlHarnessGreet", &Greet, &g_greetCalls);
     }
 
-    /// FrameScript: Initialize's After raises ScriptVmReady naming the context CGGameUI's state
-    /// implies, Destroy's Before raises ScriptVmClosing naming the same one; the service takes
-    /// registrations only between the two, drives calls through the engine, and starts over on
-    /// the next context.
+    /// FrameScript: a context Initialize makes is announced at its first CreateEvents, with the
+    /// context CGGameUI's state implied when it was made; Destroy's Before raises ScriptVmClosing
+    /// naming the same one, and a placeholder the client destroys before any interface raises
+    /// nothing. The service takes registrations only between the two, drives calls through the
+    /// engine, and starts over on the next context.
     void CheckFrameScript()
     {
         const wxl_script_api& api = Script();
@@ -1921,6 +1920,17 @@ namespace
                   api.fire_event("WXL_HARNESS_EARLY", nullptr, 0) == WXL_E_FAILED &&
                   api.run(Str("x = 1"), "early") == WXL_E_FAILED,
               "so are register_event, fire_event and run");
+        Check(api.live() == WXL_FALSE, "and live() says no context is live");
+
+        // The placeholder InitializeClient makes: destroyed before any interface is loaded.
+        g_vm.live = true;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        Check(g_received.empty() && api.live() == WXL_FALSE &&
+                  api.register_function("WxlHarnessEarly", &Greet, nullptr) == WXL_E_FAILED,
+              "a context is not announced when it is made, and takes nothing before");
+        wxl::seam::FrameScript::Destroy::Before();
+        Check(g_received.empty(), "a context destroyed before its event table is installed raises nothing at all");
 
         wxl_result registered = WXL_E_FAILED;
         const wxl_subscription onReady =
@@ -1931,14 +1941,19 @@ namespace
         g_uiInitialized = 0;
         g_uiLoggingIn   = 0;
         g_received.clear();
+        const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         const Received* ready = Only(WXL_EV_ScriptVmReady);
-        Check(ready != nullptr, "FrameScript.Initialize raises ScriptVmReady once");
+        Check(ready != nullptr, "FrameScript.CreateEvents raises ScriptVmReady once, for the context made before it");
         if (ready)
             Check(ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE &&
                       ready->As<wxl_script_vm_args>().native_state == &g_vm,
                   "it says glue while CGGameUI is neither logging in nor initialised, and carries the client's state");
-        Check(api.context() == WXL_SCRIPT_CONTEXT_GLUE, "context() says the same");
+        Check(api.context() == WXL_SCRIPT_CONTEXT_GLUE && api.live() == WXL_TRUE, "context() says the same, live() yes");
+        g_received.clear();
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
+        Check(!Only(WXL_EV_ScriptVmReady), "a second table in the same context announces nothing");
         Check(registered == WXL_OK && g_vm.closures.count("WxlHarnessGreet") == 1,
               "a function registered from the ScriptVmReady handler is a global of that context");
         Check(api.register_function("WxlHarnessGreet", &Greet, nullptr) == WXL_E_INVALID,
@@ -1976,18 +1991,15 @@ namespace
                   g_vm.ran.back() == "harness: print(1)",
               "run hands the chunk and its name to the engine");
 
-        // Events: one declared before the client installs its table, one after.
-        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1 &&
-                  g_vm.eventTables.back() == std::vector<std::string>{"WXL_HARNESS_EVENT"},
-              "an event declared before the client's table is installed on its own");
-        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1,
-              "declaring it again changes nothing");
-        const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
-        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
-        Check(g_vm.eventTables.size() == 2 &&
+        // Events: the client's table is installed when the context is announced; a declared
+        // event is installed behind it.
+        const size_t tables = g_vm.eventTables.size();
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == tables + 1 &&
                   g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT"},
-              "once the client installs its table, FrameScript.CreateEvents installs it again with the declared event behind it");
-        Check(api.register_event("WXL_HARNESS_LATE") == WXL_OK && g_vm.eventTables.size() == 3 &&
+              "an event declared is installed behind the client's table");
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == tables + 1,
+              "declaring it again changes nothing");
+        Check(api.register_event("WXL_HARNESS_LATE") == WXL_OK && g_vm.eventTables.size() == tables + 2 &&
                   g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT", "WXL_HARNESS_LATE"},
               "an event declared afterwards is appended, keeping every index");
         const wxl_value payload[2] = {wxl_value{WXL_VALUE_NUMBER, {7.0}}, wxl_value{WXL_VALUE_STRING, {0.0}}};
@@ -2019,8 +2031,8 @@ namespace
               "FrameScript.Destroy raises ScriptVmClosing once, naming the context Ready did");
         g_vm.live = false;
         Check(api.register_function("WxlHarnessLate", &Greet, nullptr) == WXL_E_FAILED &&
-                  api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_FAILED,
-              "after ScriptVmClosing nothing is accepted until the next context");
+                  api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_FAILED && api.live() == WXL_FALSE,
+              "after ScriptVmClosing nothing is accepted until the next context, and live() says so");
         {
             // A closure the dead context left behind, called anyway: an error, not the mod.
             g_greetCalls      = 0;
@@ -2041,6 +2053,7 @@ namespace
         registered    = WXL_E_FAILED;
         g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 1);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
               "the context created while CGGameUI is logging in is the game's");
@@ -2058,16 +2071,22 @@ namespace
         g_uiInitialized = 1;
         g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
               "a context recreated while the game interface is initialised is the game's");
 
-        // Back to the glue: ShutdownGame cleared both flags before the flush.
+        // Back to the glue: ShutdownGame cleared both flags before its flush, which makes a
+        // placeholder; the glue's own flush makes the context it loads into.
         wxl::seam::FrameScript::Destroy::Before();
         g_vm.closures.clear();
         g_uiInitialized = 0;
-        g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        g_received.clear();
+        wxl::seam::FrameScript::Destroy::Before();
+        Check(g_received.empty(), "the placeholder between the game and the glue raises nothing");
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
               "a context recreated once the game interface is down is the glue's");
@@ -2541,7 +2560,6 @@ namespace
         WriteFileAt(root / "elsewhere" / "Interface" / "Far.txt", "far");
         g_basePath = client.string() + "\\";
         g_files.push_back(FakeFile{"Interface\\FrameXML\\FrameXML.toc", "the client's", 0, false});
-        g_rescans = 0;
 
         const std::string assets = (client / "Mods" / "mymod" / "assets").string();
         const std::string low    = (client / "Mods" / "low").string();
@@ -2557,7 +2575,8 @@ namespace
                   api.exists(Str("interface/only.txt")) == WXL_TRUE && api.exists(Str("Interface\\None.txt")) == WXL_FALSE,
               "exists sees a folder's files, by their client names");
 
-        // The gate turns a name a folder wins into its path in the client's folder, flagged.
+        // The gate turns a name a folder wins into its path in the client's folder, behind two
+        // backslashes: the client opens it from the disk without its table of loose files.
         const auto open = [](const char* asked, uint32_t& flags) {
             void*       archive = nullptr;
             const char* name    = asked;
@@ -2568,25 +2587,33 @@ namespace
             return std::string(name);
         };
         uint32_t flags = 0;
-        Check(open("Interface\\Icons\\Mine.blp", flags) == "Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp" &&
-                  flags == 1 && g_rescans == 1,
-              "a folder's file is opened by its path in the client's folder, as a loose file, after a rescan");
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp" &&
+                  flags == 0,
+              "a folder's file is opened by its path in the client's folder, the open's flags left alone");
         Check(open("Interface\\FrameXML\\FrameXML.toc", flags) ==
-                      "Mods\\mymod\\assets\\Interface\\FrameXML\\FrameXML.toc" && g_rescans == 1,
-              "a folder above 0 wins a name over the client's own, and the scan is not made twice");
-        Check(open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+                      "\\\\Mods\\mymod\\assets\\Interface\\FrameXML\\FrameXML.toc",
+              "a folder above 0 wins a name over the client's own");
+        Check(open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
               "a folder at 0 fills a name the client does not have");
         api.add_search_path(Str(assets.c_str()), -1);
-        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) == "Interface\\FrameXML\\FrameXML.toc" && flags == 0 &&
-                  g_rescans == 1,
+        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) == "Interface\\FrameXML\\FrameXML.toc",
               "but never one it has; a folder added again takes its new priority");
         Check(open("Interface\\Far.txt", flags) == "Interface\\Far.txt" && flags == 0,
               "a folder outside the client's folder cannot serve the client, and is passed over");
         Check(open("World\\Elsewhere.wdt", flags) == "World\\Elsewhere.wdt" && flags == 0 &&
                   open("C:\\x\\Interface\\Only.txt", flags) == "C:\\x\\Interface\\Only.txt",
               "a name no folder holds, or that is not a client name, is the client's");
-        open("Interface\\Icons\\Mine.blp", flags);
-        Check(g_rescans == 2, "a folder joining asks for one more scan, made at the next open from a folder");
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "New.blp", "new");
+        Check(open("Interface\\Icons\\New.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\New.blp",
+              "a file put in a folder since it joined is found at the next open");
+        fs::remove(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "New.blp", ignored);
+        const fs::path working = fs::current_path();
+        fs::current_path(client);
+        g_basePath.clear();
+        Check(open("Interface\\Icons\\Mine.blp", flags) == assets + "\\Interface\\Icons\\Mine.blp",
+              "with no base path, in the client's folder, the name is the file's absolute path, opened as it is");
+        g_basePath = client.string() + "\\";
+        fs::current_path(working);
 
         // find: the listfiles of the archives, then the folders, each name once.
         std::vector<wxl_str> names(16);
@@ -2623,20 +2650,69 @@ namespace
                   api.remove_search_path(Str("")) == WXL_E_INVALID,
               "removing it again finds nothing; no name is invalid");
         Check(asMod([&] { return api.add_search_path(Str(low.c_str()), 0); }) == WXL_OK &&
-                  open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+                  open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
               "a mod adds the folder again");
         Check(api.remove_search_path(Str(low.c_str())) == WXL_E_NOT_FOUND &&
-                  open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+                  open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
               "and no other mod's code removes it for that mod");
         Check(asMod([&] { return api.remove_search_path(Str((low + "\\").c_str())); }) == WXL_OK,
               "its own code does, by another spelling of the same folder");
         asMod([&] { return api.add_search_path(Str(low.c_str()), 0); });
-        const int rescans = g_rescans;
         storage::RemoveSearchPathsOf(kMod);
-        Check(open("Interface\\Only.txt", flags) == "Interface\\Only.txt" && g_rescans == rescans,
-              "a mod that goes takes its folders with it, with no scan of the client's files");
-        Check(open("Interface\\Icons\\Mine.blp", flags) == "Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp",
+        Check(open("Interface\\Only.txt", flags) == "Interface\\Only.txt",
+              "a mod that goes takes its folders with it");
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp",
               "and leaves the other folders");
+
+        // Redirects: a name opens another, for the mod that made it; the latest answers.
+        const std::string mine = "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp";
+        Check(open("Interface\\Icons\\Q.blp", flags) == "Interface\\Icons\\Q.blp",
+              "no name is redirected before a mod asks");
+        Check(api.redirect(Str("Interface\\Icons\\Q.blp"), Str("Interface/Icons/Mine.blp")) == WXL_OK &&
+                  open("interface/icons/q.BLP", flags) == mine,
+              "a redirected name, in any case and with either slash, opens the other, found through the search path");
+        Check(asMod([&] { return api.redirect(Str("INTERFACE\\ICONS\\Q.BLP"), Str("World\\Other.blp")); }) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == "World\\Other.blp",
+              "another mod's later redirect of the name wins");
+        Check(api.unredirect(Str("Interface\\Icons\\Nothing.blp")) == WXL_E_NOT_FOUND &&
+                  api.redirect(Str(""), Str("x")) == WXL_E_INVALID &&
+                  api.redirect(Str("x"), Str(std::string(512, 'a').c_str())) == WXL_E_INVALID,
+              "a name nobody redirected is not found; an empty name or one past the buffer is invalid");
+        Check(asMod([&] { return api.unredirect(Str("interface\\icons\\q.blp")); }) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == mine,
+              "taking it back uncovers the earlier redirect");
+        Check(asMod([&] { return api.unredirect(Str("Interface\\Icons\\Q.blp")); }) == WXL_E_NOT_FOUND,
+              "and a mod takes back only its own");
+        asMod([&] { return api.redirect(Str("Interface\\Icons\\Q.blp"), Str("World\\Other.blp")); });
+        storage::RemoveRedirectsOf(kMod);
+        Check(open("Interface\\Icons\\Q.blp", flags) == mine, "a mod that goes takes its redirects with it");
+        {
+            std::string seen;
+            const auto  watch = [](void* user, const void* args) {
+                const wxl_file_open_args& o = *static_cast<const wxl_file_open_args*>(args);
+                *static_cast<std::string*>(user) = std::string(o.path.data, o.path.size) + " > " + o.redirect;
+                if (g_answerWith) std::memcpy(o.redirect, g_answerWith, std::strlen(g_answerWith) + 1);
+            };
+            const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_FileOpen, watch, &seen, 0);
+            g_answerWith               = nullptr;
+            Check(open("Interface\\Icons\\Q.blp", flags) == mine &&
+                      seen == "Interface\\Icons\\Q.blp > Interface\\Icons\\Mine.blp",
+                  "a FileOpen handler sees the name asked for, and the redirect's answer in `redirect`");
+            g_answerWith = "World\\Handler.blp";
+            Check(open("Interface\\Icons\\Q.blp", flags) == "World\\Handler.blp",
+                  "and a handler that answers has the last word");
+            g_answerWith = nullptr;
+            g_host->Events().Unsubscribe(sub);
+        }
+        std::string elsewhere;
+        std::thread([&] {
+            uint32_t loader = 0;
+            elsewhere       = open("Interface\\Icons\\Q.blp", loader);
+        }).join();
+        Check(elsewhere == mine, "a redirect answers an open on another thread, where no handler can");
+        Check(api.unredirect(Str("Interface\\Icons\\Q.blp")) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == "Interface\\Icons\\Q.blp",
+              "taken back, the name opens as itself");
 
         storage::ForgetSearchPaths();
         Check(open("Interface\\Icons\\Mine.blp", flags) == "Interface\\Icons\\Mine.blp",
@@ -2650,6 +2726,30 @@ namespace
 
     void CheckStorageService()
     {
+        // How the binding reads Storm's answers.
+        Check(wxl::core::storm::SeekLanded(0, 0) && wxl::core::storm::SeekLanded(12, 12) &&
+                  !wxl::core::storm::SeekLanded(0, 12) && !wxl::core::storm::SeekLanded(0, 0x100000000ull),
+              "a seek to 0 answers 0 and has landed; a cursor elsewhere, or an offset past 32 bits, has not");
+        Check(std::strcmp(wxl::core::storm::ArchiveName("Data\\patch.MPQ", "x"), "Data\\patch.MPQ") == 0 &&
+                  std::strcmp(wxl::core::storm::ArchiveName("", "Data\\Patch-4.MPQ\\"), "Data\\Patch-4.MPQ\\") == 0,
+              "an archive is known by its name, a folder opened as one by its folder");
+#if defined(_M_IX86)
+        {
+            uint8_t inline_string[0x1C] = {};
+            std::memcpy(inline_string + 4, "Data\\", 6);
+            inline_string[0x14] = 5;
+            inline_string[0x18] = 15;
+            const char* longText = "Data\\Patch-4.MPQ\\";
+            uint8_t     heap_string[0x1C] = {};
+            const uint32_t pointer = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(longText));
+            std::memcpy(heap_string + 4, &pointer, 4);
+            heap_string[0x18] = 31;
+            Check(std::strcmp(wxl::core::storm::Msvc9String(inline_string), "Data\\") == 0 &&
+                      wxl::core::storm::Msvc9String(heap_string) == longText,
+                  "the stock client's std::string holds short text in place and points to longer text");
+        }
+#endif
+
         g_files.clear();
         g_files.push_back(FakeFile{"World\\Maps\\Azeroth\\Azeroth.wdt", "MVER....hello", 0, false});
         g_opens  = 0;
@@ -4593,6 +4693,27 @@ namespace
         const wxl_footprint_category*             storm      = CategoryNamed(categories, "storm");
         Check(storm && storm->bytes == 1104 && storm->count == 2 && storm->peak == 1112,
               "the storm category is every source together, with its own peak");
+
+        // The client's arrays name their element type, decorated: a row spells it as C++ does.
+        {
+            static const char kPointers[] = ".PBVTaxiPathRec@@";
+            static const char kBytes[]    = ".E";
+            static const char kClass[]    = ".?AVCSimpleTexture@@";
+            static const char kNested[]   = ".PAPAUInner@Outer@@";
+            static const char kTemplate[] = ".?AV?$TSList@VX@@@@";
+            void* const       typed[]     = {reinterpret_cast<void*>(0x10011000), reinterpret_cast<void*>(0x10012000),
+                                             reinterpret_cast<void*>(0x10013000), reinterpret_cast<void*>(0x10014000),
+                                             reinterpret_cast<void*>(0x10015000)};
+            const char* const names[]     = {kPointers, kBytes, kClass, kNested, kTemplate};
+            for (int i = 0; i < 5; ++i) Storm::SMemAlloc::After(typed[i], 8, names[i], -2, 0);
+            api.snapshot();
+            const std::vector<wxl_footprint_source> rows = Listed(api.sources);
+            Check(SourceNamed(rows, "const TaxiPathRec*") && SourceNamed(rows, "unsigned char") &&
+                      SourceNamed(rows, "CSimpleTexture") && SourceNamed(rows, "Outer::Inner**"),
+                  "a type's decorated name reads as C++ spells it: pointers, const, scopes, basic types");
+            Check(SourceNamed(rows, kTemplate) != nullptr, "one it cannot read is kept as the client wrote it");
+            for (void* block : typed) Storm::SMemFree::Before(block, "free", 0, 0);
+        }
 
         // SMemReAlloc: moved, failed, freed, and the calls that leave the block alone.
         void* const d = reinterpret_cast<void*>(0x10004000);

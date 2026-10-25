@@ -230,6 +230,8 @@ namespace
 
     uint32_t WXL_CALL Context(void) { return g_context; }
 
+    wxl_bool WXL_CALL LiveNow(void) { return g_live ? WXL_TRUE : WXL_FALSE; }
+
     wxl_result WXL_CALL RegisterFunction(const char* name, wxl_script_fn fn, void* user)
     {
         if (!name || !*name || !fn) return WXL_E_INVALID;
@@ -394,6 +396,7 @@ namespace
         &PushBool,
         &PushNil,
         &Fail,
+        &LiveNow,
     };
 }
 

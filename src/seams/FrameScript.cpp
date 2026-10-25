@@ -24,7 +24,10 @@
 namespace
 {
     /// The context the mods were last told is live, so that ScriptVmClosing names the one
-    /// ScriptVmReady did whatever CGGameUI's flags say by then.
+    /// ScriptVmReady did whatever CGGameUI's flags say by then. A context is made at Initialize
+    /// and announced at its first CreateEvents; one the client destroys before that (the
+    /// placeholders of InitializeClient and ShutdownGame) is never announced.
+    bool     g_made    = false;
     bool     g_live    = false;
     uint32_t g_context = WXL_SCRIPT_CONTEXT_GLUE;
 
@@ -101,22 +104,10 @@ namespace wxl::seam::FrameScript::Initialize
 {
     void WXL_CALL After(int32_t, int32_t)
     {
-        void* state = wxl::core::binding::script_state();
-        g_context   = ContextNow();
-        g_live      = true;
-        wxl::core::services::script::OnContextReady(g_context, state);
-        WLOG_DEBUG(wxl::core::kTag, "script context up: %s", ContextName(g_context));
-
-        // There is a script VM and an API can be registered on it, which is the stage exactly.
-        // The client builds more than one in a session; only the first is news.
-        wxl::core::stages::Reach(WXL_STAGE_SCRIPT);
-
-        wxl::host::ModHost* host = wxl::core::Host();
-        if (!host) return;
-        wxl_script_vm_args args{};
-        args.context      = g_context;
-        args.native_state = state;
-        host->Raise(WXL_EV_ScriptVmReady, &args);
+        // Which interface the context is for is CGGameUI's state now; whether it gets one is
+        // known at its CreateEvents.
+        g_context = ContextNow();
+        g_made    = true;
     }
 }
 
@@ -124,7 +115,12 @@ namespace wxl::seam::FrameScript::Destroy
 {
     void WXL_CALL Before()
     {
-        if (!g_live) return;
+        g_made = false;
+        if (!g_live)
+        {
+            WLOG_DEBUG(wxl::core::kTag, "script context closing before any interface was loaded into it");
+            return;
+        }
         WLOG_DEBUG(wxl::core::kTag, "script context closing: %s", ContextName(g_context));
 
         if (wxl::host::ModHost* host = wxl::core::Host())
@@ -146,7 +142,31 @@ namespace wxl::seam::FrameScript::CreateEvents
         // The service installs the table again with its own events behind the client's; that
         // call reaches this seam too, and is not a new list.
         if (wxl::core::services::script::Reissuing()) return;
+
+        // The first table of a context: an interface is coming up in it, which is when the mods
+        // are told. The client has registered its own functions, and loads its frames next.
+        const bool announce = g_made && !g_live;
+        void*      state    = announce ? wxl::core::binding::script_state() : nullptr;
+        if (announce)
+        {
+            g_live = true;
+            wxl::core::services::script::OnContextReady(g_context, state);
+        }
         wxl::core::services::script::OnClientEventsInstalled(names, count);
+        if (!announce) return;
+        WLOG_DEBUG(wxl::core::kTag, "script context up: %s", ContextName(g_context));
+
+        // There is a script VM with an interface coming and an API can be registered on it,
+        // which is the stage exactly. The client builds more than one in a session; only the
+        // first is news.
+        wxl::core::stages::Reach(WXL_STAGE_SCRIPT);
+
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host) return;
+        wxl_script_vm_args args{};
+        args.context      = g_context;
+        args.native_state = state;
+        host->Raise(WXL_EV_ScriptVmReady, &args);
     }
 }
 

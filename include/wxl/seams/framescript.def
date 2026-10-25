@@ -6,10 +6,13 @@
 //
 // Every row is a free function: cdecl. The client runs one lua_State at a time, FrameScript's
 // s_context, and rebuilds it at each change of interface: once at process start (InitializeClient),
-// once when the glue comes up or comes back (CGlueMgr::Initialize, through FrameScript_Flush), once
-// when the game interface loads (CGGameUI::InitializeFrameXML), and once on the way out of the
-// world (CGGameUI::ShutdownGame, through FrameScript_Flush). Which interface the new context serves
-// is read from CGGameUI's own state at the time it is created.
+// once when the glue comes up or comes back (CGlueMgr::Resume, through FrameScript_Flush), once
+// when the game interface loads (CGGameUI::Initialize, ReloadUI included), and once on the way out
+// of the world (CGGameUI::ShutdownGame, through FrameScript_Flush). The first and the last are
+// placeholders: the client flushes them before it loads an interface into them, so only a context
+// whose event table is installed (CreateEvents: the glue's and the game's, nothing else calls it)
+// is announced. Which interface the new context serves is read from CGGameUI's own state at the
+// time it is created.
 
 #ifndef WXL_SEAM_AFTER
 #error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including framescript.def"
@@ -21,15 +24,14 @@
 // Creates the script context: a new lua_State with the base libraries, the error handler, the
 // client's extra globals and compat.lua, in s_context. Returns 1. Three callers (InitializeClient,
 // CGGameUI::InitializeFrameXML, FrameScript_Flush), the argument on the stack: cdecl. After
-// raises ScriptVmReady with the context (game when CGGameUI::m_loggingIn or
-// CGGameUI::m_initialized is set, glue otherwise) and the new state.
+// notes which context it is (game when CGGameUI::m_loggingIn or CGGameUI::m_initialized is set,
+// glue otherwise) and raises nothing: CreateEvents announces it.
 WXL_SEAM_AFTER(FrameScript, Initialize, "FrameScript_Initialize", int32_t, cdecl, (int32_t profile))
-WXL_SEAM_RAISES(FrameScript, Initialize, ScriptVmReady)
 
 // Destroys the script context: lua_close on s_context, the memory pool freed, the event hash and
 // the event table cleared. Three callers (ShutdownClient, CGGameUI::InitializeFrameXML,
 // FrameScript_Flush), no argument: cdecl. Before raises ScriptVmClosing, naming the context
-// Initialize announced, while the state is still alive.
+// CreateEvents announced, while the state is still alive; a placeholder raises nothing.
 WXL_SEAM_BEFORE(FrameScript, Destroy, "FrameScript_Destroy", void, cdecl, ())
 WXL_SEAM_RAISES(FrameScript, Destroy, ScriptVmClosing)
 
@@ -37,8 +39,11 @@ WXL_SEAM_RAISES(FrameScript, Destroy, ScriptVmClosing)
 // and each name becomes the event at its index, created in the event hash when it is not there
 // yet. Two callers (CGlueMgr::Initialize with the glue's list, CGGameUI::InitializeFrameXML with
 // the game's), both arguments on the stack: cdecl. After hands the installed list to wxl.script,
-// which installs it again with the events mods declared appended behind it; Before raises nothing.
+// which installs it again with the events mods declared appended behind it, and the first time in
+// a context raises ScriptVmReady: the client's own functions are registered by then, its frames
+// not yet loaded.
 WXL_SEAM_AFTER(FrameScript, CreateEvents, "FrameScript_CreateEvents", void, cdecl, (const char** names, uint32_t count))
+WXL_SEAM_RAISES(FrameScript, CreateEvents, ScriptVmReady)
 
 // Fires one event to the interface: pushes the event's name, then one Lua value per `%` of
 // the format string read from the va_list (b, d, f, s, u), and signals every listener. Every

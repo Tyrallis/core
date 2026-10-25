@@ -38,6 +38,7 @@ namespace wxl::seam::Client::Destroy
         {
             wxl::core::objects::Service().DropWatches(token);
             wxl::core::services::storage::RemoveSearchPathsOf(token);
+            wxl::core::services::storage::RemoveRedirectsOf(token);
         }
 
         host->UnloadAll();

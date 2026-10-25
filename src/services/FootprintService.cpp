@@ -107,7 +107,116 @@ namespace
         g_totalCount.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    /// A file's name as a row keeps it: whole when it fits, else its end, which names the file.
+    // --- the client's type names --------------------------------------------------------------
+    //
+    // The client's growable arrays name no file: they pass the decorated name of their element
+    // type, typeid(T).raw_name() (".PBVTaxiPathRec@@" for const TaxiPathRec*, ".E" for unsigned
+    // char, ".?AVCSimpleTexture@@" for a class). A row shows it as C++ spells it. Anything this
+    // does not read -- a template, a back-reference -- is kept as the client wrote it.
+
+    struct Writer
+    {
+        char*  at;
+        size_t left; ///< room before the NUL
+        bool   ok = true;
+
+        void Put(const char* text, size_t size)
+        {
+            if (size > left)
+            {
+                ok = false;
+                return;
+            }
+            std::memcpy(at, text, size);
+            at += size;
+            left -= size;
+        }
+        void Put(const char* text) { Put(text, std::strlen(text)); }
+    };
+
+    /// A name and its scopes, `Inner@Outer@@`, as `Outer::Inner`.
+    bool QualifiedName(const char*& p, Writer& out)
+    {
+        const char* parts[8];
+        size_t      sizes[8];
+        size_t      count = 0;
+        while (*p && *p != '@')
+        {
+            if (*p == '?' || (*p >= '0' && *p <= '9') || count == 8) return false;
+            const char* start = p;
+            while (*p && *p != '@') ++p;
+            if (!*p) return false;
+            parts[count]   = start;
+            sizes[count++] = static_cast<size_t>(p - start);
+            ++p;
+        }
+        if (*p != '@' || count == 0) return false;
+        ++p;
+        for (size_t i = count; i-- > 0;)
+        {
+            out.Put(parts[i], sizes[i]);
+            if (i) out.Put("::");
+        }
+        return out.ok;
+    }
+
+    bool DecoratedType(const char*& p, Writer& out, int depth)
+    {
+        if (depth > 8) return false;
+        static const char* const kBasic[] = {
+            "signed char", "char", "unsigned char", "short", "unsigned short", "int", "unsigned int",
+            "long", "unsigned long", nullptr, "float", "double", "long double"}; // C to O
+        const char c = *p++;
+        if (c >= 'C' && c <= 'O' && kBasic[c - 'C'])
+        {
+            out.Put(kBasic[c - 'C']);
+            return out.ok;
+        }
+        switch (c)
+        {
+        case 'X': out.Put("void"); return out.ok;
+        case '_':
+        {
+            const char e = *p++;
+            const char* name = e == 'J' ? "__int64" : e == 'K' ? "unsigned __int64" : e == 'N' ? "bool"
+                             : e == 'W' ? "wchar_t" : nullptr;
+            if (!name) return false;
+            out.Put(name);
+            return out.ok;
+        }
+        case 'V': case 'U': case 'T': return QualifiedName(p, out);
+        case 'W':
+            if (*p++ != '4') return false;
+            return QualifiedName(p, out);
+        case 'P': case 'Q': case 'A':
+        {
+            if (*p == 'E') ++p; // __ptr64
+            const char cv = *p++;
+            if (cv < 'A' || cv > 'D') return false;
+            if (cv == 'B' || cv == 'D') out.Put("const ");
+            if (cv == 'C' || cv == 'D') out.Put("volatile ");
+            if (!DecoratedType(p, out, depth + 1)) return false;
+            out.Put(c == 'A' ? "&" : c == 'Q' ? "* const" : "*");
+            return out.ok;
+        }
+        default: return false;
+        }
+    }
+
+    /// A raw type name as C++ spells it, into @p out; false, @p out untouched, when it is not one.
+    bool Undecorated(const char* raw, char* out, size_t capacity)
+    {
+        if (!raw || raw[0] != '.' || !raw[1] || capacity < 2) return false;
+        const char* p = raw + 1;
+        if (p[0] == '?' && p[1] == 'A') p += 2; // a type descriptor's own name: ".?AV...@@"
+        Writer writer{out, capacity - 1};
+        if (!DecoratedType(p, writer, 0) || *p || !writer.ok) return false;
+        *writer.at = 0;
+        return true;
+    }
+
+    /// A file's name as a row keeps it: whole when it fits, else its end, which names the file;
+    /// a type's decorated name as C++ spells it.
     void CopyText(char (&out)[kTextMax], const char* file)
     {
         if (!file)
@@ -115,6 +224,7 @@ namespace
             std::memcpy(out, "(no file)", sizeof "(no file)");
             return;
         }
+        if (Undecorated(file, out, kTextMax)) return;
         size_t length = 0;
         while (length < 1024 && file[length]) ++length;
         if (length < kTextMax)

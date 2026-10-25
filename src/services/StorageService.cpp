@@ -21,6 +21,8 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -64,12 +66,15 @@ namespace
 
     // --- the search path ----------------------------------------------------------------------
     //
-    // The client resolves a name in its archives, and among loose files only when asked to: the
-    // open's flag 1 makes its FindFile look the name up in a table of the files under its folder,
-    // which it builds on first use (SFile::RebuildHash starts it over). So a folder joins the
-    // search here, in the runtime: at each open, a folder that holds the name and wins it turns the
-    // name into the file's path relative to the client's folder, with that flag. A folder must be
-    // inside the client's folder; a mod's, in Mods\, is.
+    // The client resolves a name in its archives. A folder joins the search here, in the
+    // runtime: at each open, a folder that holds the name and wins it turns the name into one the
+    // client opens straight from the disk. A name that starts with two backslashes is one the
+    // client takes as a path (FindFile hands it to OldFindFile, which reads the disk at its base
+    // path followed by the name), so the file's path relative to the client's folder, behind two
+    // backslashes, is opened where it lies; the doubled separator after the base path is one to
+    // Windows. Without that, the client would look the name up in its table of the loose files
+    // under its folder, which it builds by walking the whole folder at the first lookup and again
+    // after each RebuildHash. A folder must be inside the client's folder; a mod's, in Mods\, is.
 
     struct SearchFolder
     {
@@ -82,7 +87,6 @@ namespace
     std::mutex              g_pathsLock;
     std::vector<SearchFolder> g_paths; ///< highest priority first; equal ones in the order added
     std::atomic<uint32_t>   g_pathCount{0};
-    std::atomic<bool>       g_rescan{false};
     std::atomic<uint32_t>   g_generation{0}; ///< changes when what find answers may have
     thread_local bool       t_listing = false;
 
@@ -285,8 +289,7 @@ namespace
      * @brief A folder joins the search, for the mod that asks.
      *
      * Adding a folder again changes its priority; another mod's entry for the same folder is
-     * its own. The client is told to scan its loose files again at its next open, so a file put
-     * in a folder since is found too.
+     * its own. Each open looks at the folder again, so a file put in it since is found too.
      */
     wxl_result WXL_CALL AddSearchPath(wxl_str directory, int32_t priority)
     {
@@ -310,7 +313,6 @@ namespace
             g_paths.insert(at, SearchFolder{absolute, priority, mod});
             g_pathCount.store(static_cast<uint32_t>(g_paths.size()), std::memory_order_release);
         }
-        g_rescan.store(true, std::memory_order_release);
         g_generation.fetch_add(1, std::memory_order_relaxed);
         WLOG_INFO(kTag, "folder %s searched at priority %d", absolute.c_str(), priority);
         return WXL_OK;
@@ -333,8 +335,7 @@ namespace
         }
         if (gone.empty()) return 0;
         // Nothing to tell the client: it reaches a folder's files only through the names an open
-        // is rewritten to, and no open is rewritten into a folder that left. Its table of loose
-        // files keeps their names until its next scan, unreachable by the names it asks for.
+        // is rewritten to, and no open is rewritten into a folder that left.
         g_generation.fetch_add(1, std::memory_order_relaxed);
         for (const std::string& directory : gone) WLOG_INFO(kTag, "folder %s no longer searched", directory.c_str());
         return gone.size();
@@ -481,6 +482,85 @@ namespace
         return static_cast<uint32_t>(answer.size());
     }
 
+    // --- redirects ----------------------------------------------------------------------------
+    //
+    // A name the client opens in place of another, held per mod and looked at by the open gate
+    // on whichever thread opens. Each name keeps its redirects in the order they were made; the
+    // latest answers, and taking it back uncovers the one before.
+
+    constexpr size_t kNameMax = 511; ///< what the gate's buffer holds, its NUL aside
+
+    struct Redirect
+    {
+        uint32_t    mod; ///< the host's token for the mod that made it
+        std::string to;
+    };
+
+    SRWLOCK                                                    g_redirectLock = SRWLOCK_INIT;
+    std::unordered_map<std::string, std::vector<Redirect>>     g_redirects; ///< by Key(from)
+    std::atomic<uint32_t>                                      g_redirectCount{0};
+
+    /// A name as the client compares it: any case, either slash.
+    std::string Key(std::string_view name)
+    {
+        std::string key(name);
+        for (char& c : key) c = c == '/' ? '\\' : Lower(c);
+        return key;
+    }
+
+    /// A name a redirect may hold: not empty, short enough for the gate's buffer.
+    bool Nameable(wxl_str name) { return name.data && name.size && name.size <= kNameMax; }
+
+    wxl_result WXL_CALL RedirectFile(wxl_str from, wxl_str to)
+    {
+        if (!Nameable(from) || !Nameable(to)) return WXL_E_INVALID;
+        const uint32_t    mod = Asking();
+        const std::string key = Key(std::string_view(from.data, from.size));
+        AcquireSRWLockExclusive(&g_redirectLock);
+        std::vector<Redirect>& stack = g_redirects[key];
+        stack.erase(std::remove_if(stack.begin(), stack.end(), [&](const Redirect& r) { return r.mod == mod; }),
+                    stack.end());
+        stack.push_back(Redirect{mod, Backslashed(Path(to))});
+        g_redirectCount.store(static_cast<uint32_t>(g_redirects.size()), std::memory_order_release);
+        ReleaseSRWLockExclusive(&g_redirectLock);
+        WLOG_INFO(kTag, "%.*s opens %.*s instead", static_cast<int>(from.size), from.data, static_cast<int>(to.size),
+                  to.data);
+        return WXL_OK;
+    }
+
+    /// Takes one mod's redirects back, of one name or of every name.
+    size_t DropRedirects(uint32_t mod, const std::string* key)
+    {
+        size_t dropped = 0;
+        AcquireSRWLockExclusive(&g_redirectLock);
+        for (auto it = g_redirects.begin(); it != g_redirects.end();)
+        {
+            if (key && it->first != *key)
+            {
+                ++it;
+                continue;
+            }
+            std::vector<Redirect>& stack  = it->second;
+            const size_t           before = stack.size();
+            stack.erase(std::remove_if(stack.begin(), stack.end(), [&](const Redirect& r) { return r.mod == mod; }),
+                        stack.end());
+            dropped += before - stack.size();
+            it = stack.empty() ? g_redirects.erase(it) : std::next(it);
+        }
+        g_redirectCount.store(static_cast<uint32_t>(g_redirects.size()), std::memory_order_release);
+        ReleaseSRWLockExclusive(&g_redirectLock);
+        return dropped;
+    }
+
+    wxl_result WXL_CALL Unredirect(wxl_str from)
+    {
+        if (!Nameable(from)) return WXL_E_INVALID;
+        const std::string key = Key(std::string_view(from.data, from.size));
+        if (!DropRedirects(Asking(), &key)) return WXL_E_NOT_FOUND;
+        WLOG_INFO(kTag, "%.*s opens as itself again", static_cast<int>(from.size), from.data);
+        return WXL_OK;
+    }
+
     const wxl_storage_api g_storage = {
         sizeof(wxl_storage_api),
         &Exists,
@@ -493,6 +573,8 @@ namespace
         &MountArchive,
         &Find,
         &RemoveSearchPath,
+        &RedirectFile,
+        &Unredirect,
     };
 }
 
@@ -539,12 +621,13 @@ namespace wxl::core::services
             return false;
         }
 
-        bool Resolve(const char* name, char* out, size_t capacity, uint32_t* flags)
+        bool Resolve(const char* name, char* out, size_t capacity)
         {
-            if (!out || !capacity || !flags) return false;
+            if (!out || !capacity) return false;
             if (g_pathCount.load(std::memory_order_acquire) == 0 || !IsPlainName(name)) return false;
 
             const std::string relative = Backslashed(name);
+            const char*       base     = wxl::core::binding::storage_base_path();
             std::string       file;
             {
                 std::lock_guard<std::mutex> lock(g_pathsLock);
@@ -564,18 +647,35 @@ namespace wxl::core::services
                         path.outside_warned = true;
                         continue;
                     }
-                    file = candidate.substr(folder.size());
+                    // Behind its base path, the client reads "\\<relative>"; with none, the path
+                    // itself, which is absolute.
+                    file = base && *base ? "\\\\" + candidate.substr(folder.size()) : candidate;
                     break;
                 }
             }
             if (file.empty() || file.size() + 1 > capacity) return false;
-
-            // The client scans its loose files once; a folder added since needs a new scan.
-            if (g_rescan.exchange(false, std::memory_order_acq_rel)) wxl::core::binding::storage_rescan();
             std::memcpy(out, file.c_str(), file.size() + 1);
-            *flags |= 1u;
             return true;
         }
+
+        bool Redirected(const char* name, char* out, size_t capacity)
+        {
+            if (!name || !out || !capacity || g_redirectCount.load(std::memory_order_acquire) == 0) return false;
+            const std::string key   = Key(name);
+            bool              found = false;
+            AcquireSRWLockShared(&g_redirectLock);
+            const auto it = g_redirects.find(key);
+            if (it != g_redirects.end() && !it->second.empty() && it->second.back().to.size() < capacity)
+            {
+                const std::string& to = it->second.back().to;
+                std::memcpy(out, to.c_str(), to.size() + 1);
+                found = true;
+            }
+            ReleaseSRWLockShared(&g_redirectLock);
+            return found;
+        }
+
+        void RemoveRedirectsOf(uint32_t mod) { DropRedirects(mod, nullptr); }
 
         void CloseFilesOf(uint32_t mod)
         {

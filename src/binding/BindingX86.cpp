@@ -12,6 +12,7 @@
 
 #include "wxl/events.h"
 #include "wxl/core/gpu.hpp"
+#include "wxl/core/storm.hpp"
 #include "wxl/offsets/layout.hpp"
 #include "wxl/offsets/site.hpp"
 #include "wxl/services/script.h"
@@ -536,9 +537,10 @@ namespace wxl::core::binding
         if (!IsClient() || !file) return WXL_FALSE;
         const FileSeek call = reinterpret_cast<FileSeek>(WXL_SITE("SFile::SetFilePointer", 0));
         int32_t        high = static_cast<int32_t>(offset >> 32);
-        // Method 0 is FILE_BEGIN: the offset is absolute, which is what read_at means.
-        return call(file, static_cast<int32_t>(offset & 0xFFFFFFFFu), &high, 0) ? WXL_TRUE
-                                                                                : WXL_FALSE;
+        // Method 0 is FILE_BEGIN: the offset is absolute, which is what read_at means. The answer
+        // is the cursor afterwards, 0 for a seek to the start (0x00421C75: `mov eax, edi`).
+        const int32_t at = call(file, static_cast<int32_t>(offset & 0xFFFFFFFFu), &high, 0);
+        return wxl::core::storm::SeekLanded(static_cast<uint32_t>(at), offset) ? WXL_TRUE : WXL_FALSE;
     }
 
     uint32_t file_read(void* file, void* buffer, uint32_t count)
@@ -569,12 +571,6 @@ namespace wxl::core::binding
     {
         if (!IsClient()) return nullptr;
         return reinterpret_cast<const char*>(WXL_STATIC("SFile::m_basePath"));
-    }
-
-    void storage_rescan()
-    {
-        // A static void(void): no argument, no cleanup, whatever its declared convention.
-        if (IsClient()) reinterpret_cast<void(__cdecl*)()>(WXL_SITE("SFile::RebuildHash", 0))();
     }
 
     uint32_t archive_list(wxl_core_name_fn fn, void* user)
@@ -735,7 +731,9 @@ namespace wxl::core::binding
         bool DescribeArchive(const uint8_t* rec, wxl_core_archive* out)
         {
             if (!rec || !out) return false;
-            out->path          = reinterpret_cast<const char*>(rec + 0x84);
+            // m_name, or a folder archive's m_directPath (a std::string at 0x188).
+            out->path          = wxl::core::storm::ArchiveName(reinterpret_cast<const char*>(rec + 0x84),
+                                                               wxl::core::storm::Msvc9String(rec + 0x188));
             out->priority      = Read<int32_t>(rec, 0x1C);
             out->hash_entries  = Read<uint32_t>(rec, 0x40);
             out->block_entries = Read<uint32_t>(rec, 0x44);

@@ -30,11 +30,23 @@ namespace wxl::core::services
          *
          * True when a folder holds the name and wins it: a folder of a priority above 0 over
          * the client's own data, one of 0 or below only when the client has nothing by that name.
-         * @p out then receives the name the client resolves to that file -- its path relative
-         * to the client's folder -- and @p flags the bit that makes the client look among its
-         * loose files for it. False, nothing written, otherwise.
+         * @p out then receives the name the client opens that file by: its path relative to the
+         * client's folder behind two backslashes, which the client reads from the disk at its
+         * base path without looking among its loose files (absolute when it has no base path).
+         * False, nothing written, otherwise.
          */
-        bool Resolve(const char* name, char* out, size_t capacity, uint32_t* flags);
+        bool Resolve(const char* name, char* out, size_t capacity);
+
+        /**
+         * @brief The name a mod's redirect opens in place of @p name, from any thread.
+         *
+         * True, with the latest redirect's name in @p out, when a mod redirected @p name; false
+         * and nothing written otherwise. One load when no name is redirected.
+         */
+        bool Redirected(const char* name, char* out, size_t capacity);
+
+        /// Takes a mod's redirects back: it is disabled or unloaded.
+        void RemoveRedirectsOf(uint32_t mod);
 
         /// Whether a name resolves, in the client's archives or in a folder of the search path.
         bool Exists(const char* name);

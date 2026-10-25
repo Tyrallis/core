@@ -97,6 +97,7 @@ namespace
         wxl::core::attachment::Release(token);
         wxl::core::services::storage::CloseFilesOf(token);
         wxl::core::services::storage::RemoveSearchPathsOf(token);
+        wxl::core::services::storage::RemoveRedirectsOf(token);
         wxl::core::services::data::ForgetMod(token);
         // What it reported of its memory, and the threshold it watched, go too.
         wxl::core::services::footprint::ForgetMod(token);

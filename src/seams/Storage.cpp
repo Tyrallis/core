@@ -36,10 +36,10 @@ namespace
     /// What the client opens in the end: a folder of the search path that holds the name and
     /// wins it answers with its file, whoever named it. An open from one given archive is that
     /// archive's.
-    void Resolve(void** archive, const char** name, uint32_t* flags)
+    void Resolve(void** archive, const char** name)
     {
-        if (!flags || (archive && *archive)) return;
-        if (wxl::core::services::storage::Resolve(*name, g_resolved, sizeof g_resolved, flags))
+        if (archive && *archive) return;
+        if (wxl::core::services::storage::Resolve(*name, g_resolved, sizeof g_resolved))
         {
             WLOG_DEBUG(wxl::core::kTag, "file %s found in a search path folder: %s", *name, g_resolved);
             *name = g_resolved;
@@ -54,6 +54,7 @@ namespace wxl::seam::Storage::OpenFile
     {
         (void)result;
         (void)file;
+        (void)flags;
 
         // The client is opening a file, so its archives are mounted: whatever else this
         // seam is for, the first call through it is what storage being up looks like.
@@ -72,41 +73,41 @@ namespace wxl::seam::Storage::OpenFile
         if (wxl::core::services::data::ServedPath(*name, length, g_redirect, sizeof g_redirect))
         {
             *name = g_redirect;
-            Resolve(archive, name, flags);
+            Resolve(archive, name);
             return false;
         }
+
+        // A mod's redirect, from the table: what the client opens unless a handler answers.
+        const char* const asked = *name;
+        g_redirect[0]            = 0;
+        wxl::core::services::storage::Redirected(asked, g_redirect, sizeof g_redirect);
 
         wxl::host::ModHost* host = wxl::core::Host();
-        if (!host || !host->Listening(WXL_EV_FileOpen))
+        if (host && host->Listening(WXL_EV_FileOpen))
         {
-            Resolve(archive, name, flags);
-            return false;
+            // Handlers see the name asked for, and in `redirect` what the table answers so far.
+            wxl_file_open_args args{};
+            args.path              = wxl_str{asked, static_cast<uint32_t>(length)};
+            args.redirect          = g_redirect;
+            args.redirect_capacity = static_cast<uint32_t>(sizeof g_redirect);
+            host->Raise(WXL_EV_FileOpen, &args);
         }
-
-        g_redirect[0] = 0;
-
-        wxl_file_open_args args{};
-        args.path              = wxl_str{*name, static_cast<uint32_t>(length)};
-        args.redirect          = g_redirect;
-        args.redirect_capacity = static_cast<uint32_t>(sizeof g_redirect);
-
-        host->Raise(WXL_EV_FileOpen, &args);
 
         // Nobody answered: the client opens what it asked for, from a folder when one wins it.
         if (!g_redirect[0])
         {
-            Resolve(archive, name, flags);
+            Resolve(archive, name);
             return false;
         }
 
         // A handler that writes past the end of the buffer would leave it unterminated; the
         // last byte is forced rather than trusting what came back.
         g_redirect[sizeof g_redirect - 1] = 0;
-        WLOG_DEBUG(wxl::core::kTag, "file %s redirected to %s", *name, g_redirect);
+        WLOG_DEBUG(wxl::core::kTag, "file %s redirected to %s", asked, g_redirect);
 
         // The one thing only a gate can do: what the client opens is not what it asked for.
         *name = g_redirect;
-        Resolve(archive, name, flags);
+        Resolve(archive, name);
         return false;
     }
 }
