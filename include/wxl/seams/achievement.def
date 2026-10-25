@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Achievement domain: seams on AchievementInfo.cpp.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including achievement.def"
+#endif
+
+// The handler of SMSG_ACHIEVEMENT_EARNED: the player's packed guid, the achievement, its date and
+// whether to stay silent; records it for the local player and announces it. Reached only through
+// the handler table, the message read at [ebp+0x14], a bare `ret`: cdecl. Before raises
+// AchievementEarned.
+WXL_SEAM_BEFORE(Achievement, Packet_SMSG_ACHIEVEMENT_EARNED, "Packet_SMSG_ACHIEVEMENT_EARNED", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Achievement, Packet_SMSG_ACHIEVEMENT_EARNED, AchievementEarned)

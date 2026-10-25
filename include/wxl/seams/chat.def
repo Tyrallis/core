@@ -91,3 +91,11 @@ WXL_SEAM_RAISES(Chat, Script_SendAddonMessage, ChatSend)
 // the chat. Before raises PlayerXpGain.
 WXL_SEAM_BEFORE(Chat, Packet_SMSG_LOG_XPGAIN, "Packet_SMSG_LOG_XPGAIN", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
 WXL_SEAM_RAISES(Chat, Packet_SMSG_LOG_XPGAIN, PlayerXpGain)
+
+// The handler of SMSG_TEXT_EMOTE, a static member of CGChat reached only through the handler
+// table: the sender, the emote, its variant and the target's name read in place; nothing for an
+// ignored sender, the line queued while the sender's name is not known. Reads the message at
+// [ebp+0x14] and ends in bare `ret`s: cdecl. Before raises TextEmote as the server sent it, the
+// client's ignore list not consulted; the line the chat shows is ChatMessage's.
+WXL_SEAM_BEFORE(Chat, OnTextEmote, "CGChat::OnTextEmote", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Chat, OnTextEmote, TextEmote)

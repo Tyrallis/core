@@ -12,6 +12,7 @@
 #include "runtime/Crash.hpp"
 #include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
+#include "seams/Gameplay.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
@@ -787,6 +788,101 @@ namespace
         return WXL_TRUE;
     }
 
+
+    // --- The gameplay rows: aura slots, the loot window, the factions, the dialogs' answers ---
+
+    /// An aura slot as the client keeps one (AuraData), as the aura rows read it.
+    struct FakeAura
+    {
+        uint64_t caster   = 0;
+        int32_t  spell    = 0;
+        uint8_t  flags    = 0;
+        uint8_t  level    = 0;
+        uint8_t  stacks   = 0;
+        int32_t  duration = 0;
+        int32_t  end      = 0;
+    };
+
+    const FakeAura* Aura(const void* aura) { return static_cast<const FakeAura*>(aura); }
+
+    uint64_t WXL_CALL FakeAuraCaster(const void* aura) { return Aura(aura)->caster; }
+    int32_t WXL_CALL FakeAuraSpell(const void* aura) { return Aura(aura)->spell; }
+    uint8_t WXL_CALL FakeAuraFlags(const void* aura) { return Aura(aura)->flags; }
+    uint8_t WXL_CALL FakeAuraLevel(const void* aura) { return Aura(aura)->level; }
+    uint8_t WXL_CALL FakeAuraStacks(const void* aura) { return Aura(aura)->stacks; }
+    int32_t WXL_CALL FakeAuraDuration(const void* aura) { return Aura(aura)->duration; }
+    int32_t WXL_CALL FakeAuraEnd(const void* aura) { return Aura(aura)->end; }
+
+    /// The aura slots of the one unit the checks give some, and the client's clock.
+    const void* g_auraOwner = nullptr;
+    FakeAura    g_auraSlots[4];
+    uint32_t    g_timeMs = 0;
+
+    int32_t WXL_CALL FakeAuraSlot(const void* unit, const void* aura)
+    {
+        const FakeAura* slot = Aura(aura);
+        if (unit != g_auraOwner || slot < g_auraSlots || slot >= g_auraSlots + 4) return -1;
+        return static_cast<int32_t>(slot - g_auraSlots);
+    }
+
+    uint32_t WXL_CALL FakeTimeMs(void) { return g_timeMs; }
+
+    /// The loot window: its object, kind, money and entries (item, quantity, display, suffix,
+    /// property, server slot, slot type; item 0 for an empty one).
+    uint64_t g_lootGuid  = 0;
+    uint32_t g_lootKind  = 0;
+    uint32_t g_lootMoney = 0;
+    int32_t  g_lootSlots[18][7]{};
+    uint32_t g_nextRoll  = 0;
+    int32_t  g_uiMap     = 0;
+
+    uint64_t WXL_CALL FakeLootGuid(void) { return g_lootGuid; }
+    uint32_t WXL_CALL FakeLootKind(void) { return g_lootKind; }
+    uint32_t WXL_CALL FakeLootMoney(void) { return g_lootMoney; }
+    uint32_t WXL_CALL FakeNextRoll(void) { return g_nextRoll; }
+    int32_t WXL_CALL FakeUiMap(void) { return g_uiMap; }
+
+    wxl_bool WXL_CALL FakeLootSlot(uint32_t index, int32_t* out)
+    {
+        if (index >= 18 || !out || !g_lootSlots[index][0]) return WXL_FALSE;
+        memcpy(out, g_lootSlots[index], sizeof g_lootSlots[index]);
+        return WXL_TRUE;
+    }
+
+    /// The reputation list: one faction at list id 3, the others empty.
+    int32_t g_factionId = 0, g_factionBase = 0, g_factionStanding = 0;
+
+    wxl_bool WXL_CALL FakeFaction(uint32_t list_id, int32_t* faction, int32_t* base, int32_t* standing)
+    {
+        if (list_id >= 128) return WXL_FALSE;
+        const bool mine = list_id == 3;
+        if (faction) *faction = mine ? g_factionId : 0;
+        if (base) *base = mine ? g_factionBase : 0;
+        if (standing) *standing = mine ? g_factionStanding : 0;
+        return WXL_TRUE;
+    }
+
+    uint64_t g_interact = 0, g_tradePartner = 0;
+    uint64_t WXL_CALL FakeInteract(void) { return g_interact; }
+    uint64_t WXL_CALL FakeTradePartner(void) { return g_tradePartner; }
+
+    /// The answers the seams gave in a dialog's place, in order.
+    std::vector<std::string> g_answers;
+
+    void WXL_CALL FakeGroupAnswer(wxl_bool accept) { g_answers.push_back(accept ? "group accept" : "group decline"); }
+
+    void WXL_CALL FakeResurrectAnswer(uint64_t offerer, uint32_t sickness, uint32_t, wxl_bool accept)
+    {
+        g_answers.push_back(std::string(accept ? "resurrect accept " : "resurrect decline ") +
+                            std::to_string(offerer) + (sickness ? " sick" : ""));
+    }
+
+    void WXL_CALL FakeDuelAnswer(uint64_t arbiter, uint64_t challenger, wxl_bool accept)
+    {
+        g_answers.push_back(std::string(accept ? "duel accept " : "duel decline ") + std::to_string(arbiter) + " " +
+                            std::to_string(challenger));
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -881,6 +977,27 @@ namespace
         init.map_obj_path           = &FakeMapObjPath;
         init.map_obj_bytes          = &FakeMapObjBytes;
         init.doodad_position        = &FakeDoodadPosition;
+        init.aura_caster            = &FakeAuraCaster;
+        init.aura_spell_id          = &FakeAuraSpell;
+        init.aura_flags             = &FakeAuraFlags;
+        init.aura_level             = &FakeAuraLevel;
+        init.aura_stacks            = &FakeAuraStacks;
+        init.aura_duration          = &FakeAuraDuration;
+        init.aura_end_time          = &FakeAuraEnd;
+        init.unit_aura_slot         = &FakeAuraSlot;
+        init.os_time_ms             = &FakeTimeMs;
+        init.loot_object_guid       = &FakeLootGuid;
+        init.loot_kind              = &FakeLootKind;
+        init.loot_money             = &FakeLootMoney;
+        init.loot_slot              = &FakeLootSlot;
+        init.loot_next_roll_id      = &FakeNextRoll;
+        init.ui_map_id              = &FakeUiMap;
+        init.faction_standing       = &FakeFaction;
+        init.ui_interact_target     = &FakeInteract;
+        init.trade_partner          = &FakeTradePartner;
+        init.group_invite_answer    = &FakeGroupAnswer;
+        init.resurrect_answer       = &FakeResurrectAnswer;
+        init.duel_answer            = &FakeDuelAnswer;
         return init;
     }
 }
@@ -5854,6 +5971,771 @@ namespace
 }
 
 
+// --- Gameplay: auras, loot, items, quests, groups, the people around -------------------------
+
+namespace
+{
+    std::string Said(wxl_str text) { return std::string(text.data ? text.data : "", text.size); }
+
+    /// A player-kind object with a descriptor block, tracked as the client would build it.
+    void Build(FakeObject& object, uint64_t guid, uint32_t type, uint32_t dwords)
+    {
+        object.guid   = guid;
+        object.typeId = type;
+        object.block.assign(dwords, 0u);
+        object.block[0] = static_cast<uint32_t>(guid);
+        object.block[1] = static_cast<uint32_t>(guid >> 32);
+        wxl::seam::ObjectMgr::InitObject::After(&object, nullptr, 9300u);
+    }
+
+    void CheckGameplayAuras()
+    {
+        printf("\ngameplay, auras:\n");
+        FakeObject wolf, shaman;
+        Build(wolf, 0xF130000000001111ull, WXL_OBJECT_UNIT, 0x94);
+        Build(shaman, 0x0000000000000077ull, WXL_OBJECT_PLAYER, 0x500);
+        g_held      = {&wolf, &shaman};
+        g_auraOwner = &wolf;
+        g_timeMs    = 100000;
+        g_auraSlots[2] = FakeAura{ shaman.guid, 8050, 0xA0, 70, 0, 18000, 112000 };
+
+        g_received.clear();
+        wxl::seam::Unit::OnAuraAdded::After(&wolf, 2u, 1, &g_auraSlots[2], 8050);
+        const Received* applied = Only(WXL_EV_UnitAuraApplied);
+        Check(applied != nullptr && Count(WXL_EV_UnitAuraChanged) == 1,
+              "Unit.OnAuraAdded raises UnitAuraApplied beside UnitAuraChanged");
+        if (applied)
+        {
+            const wxl_aura_args a = applied->As<wxl_aura_args>();
+            Check(a.unit == wxl::core::objects::HandleOf(&wolf) && a.unit_guid == wolf.guid && a.slot == 2 &&
+                      a.spell_id == 8050 && a.caster_guid == shaman.guid &&
+                      a.caster == wxl::core::objects::HandleOf(&shaman) && a.level == 70 && a.flags == 0xA0 &&
+                      a.harmful == WXL_TRUE && a.duration == 18000 && a.remaining == 12000,
+                  "with the slot, the spell, the caster, the level, harmful, the duration and what is left");
+        }
+
+        // A removal hands the copy kept from before the update.
+        FakeAura gone{ wolf.guid, 774, 0x18, 60, 3, 0, 0 };
+        g_received.clear();
+        wxl::seam::Unit::OnAuraRemoved::After(&wolf, 5u, 0, &gone, 774);
+        const Received* removed = Only(WXL_EV_UnitAuraRemoved);
+        Check(removed && removed->As<wxl_aura_args>().slot == 5 && removed->As<wxl_aura_args>().stacks == 3 &&
+                  removed->As<wxl_aura_args>().harmful == WXL_FALSE && removed->As<wxl_aura_args>().duration == 0 &&
+                  removed->As<wxl_aura_args>().caster_guid == wolf.guid,
+              "Unit.OnAuraRemoved raises UnitAuraRemoved with what the aura was, self-cast, no duration");
+
+        g_auraSlots[2].stacks = 4;
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraDose::Before(&wolf, &g_auraSlots[2], 8050, 3, 4, 1);
+        const Received* dose = Only(WXL_EV_UnitAuraRefreshed);
+        Check(dose && dose->As<wxl_aura_args>().slot == 2 && dose->As<wxl_aura_args>().stacks == 4 &&
+                  dose->As<wxl_aura_args>().previous_stacks == 3,
+              "Combat.UnitCombatLogAuraDose raises UnitAuraRefreshed with the slot and both counts");
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraRefreshed::Before(&wolf, &g_auraSlots[2], 8050, 1);
+        dose = Only(WXL_EV_UnitAuraRefreshed);
+        Check(dose && dose->As<wxl_aura_args>().previous_stacks == 4,
+              "Combat.UnitCombatLogAuraRefreshed raises it with the count unchanged");
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraRefreshed::Before(&wolf, &gone, 774, 0);
+        Check(g_received.empty(), "an aura that is none of the unit's slots raises nothing");
+
+        Mute(WXL_EV_UnitAuraApplied);
+        g_received.clear();
+        wxl::seam::Unit::OnAuraAdded::After(&wolf, 2u, 1, &g_auraSlots[2], 8050);
+        Check(Count(WXL_EV_UnitAuraApplied) == 0 && Count(WXL_EV_UnitAuraChanged) == 1,
+              "nobody listening to UnitAuraApplied: only UnitAuraChanged");
+        Unmute(WXL_EV_UnitAuraApplied);
+
+        // The mount display's mirror handler: the field already written, the old value by address.
+        wolf.block[0x45]       = 2410;
+        const uint32_t walking = 0;
+        g_received.clear();
+        wxl::seam::Unit::MountDisplayIDUpdateHandler::Before(wolf.guid, 0x45 * 4 - 0x18, 4, &walking, nullptr);
+        const Received* mount = Only(WXL_EV_UnitMountChanged);
+        Check(mount && mount->As<wxl_mount_args>().display_id == 2410 &&
+                  mount->As<wxl_mount_args>().previous_display_id == 0 &&
+                  mount->As<wxl_mount_args>().unit_guid == wolf.guid,
+              "Unit.MountDisplayIDUpdateHandler raises UnitMountChanged with both display ids");
+
+        g_auraOwner = nullptr;
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&shaman);
+        g_held.clear();
+    }
+
+    void CheckGameplayLoot()
+    {
+        printf("\ngameplay, loot:\n");
+        FakeObject boar;
+        Build(boar, 0xF130000000002222ull, WXL_OBJECT_UNIT, 0x94);
+        g_held = {&boar};
+
+        // OpenLoot: SetObject on the boar, which the client fills before After runs.
+        g_lootGuid = 0;
+        g_received.clear();
+        wxl::seam::Loot::SetObject::Before(&boar, 130, 1);
+        g_lootGuid  = boar.guid;
+        g_lootKind  = 1;
+        g_lootMoney = 130;
+        int32_t first[7]  = { 2589, 3, 1, 0, 0, 0, 0 };
+        int32_t second[7] = { 4306, 1, 2, 7, -12, 2, 1 };
+        memcpy(g_lootSlots[0], first, sizeof first);
+        memcpy(g_lootSlots[1], second, sizeof second);
+        wxl::seam::Loot::SetObject::After(&boar, 130, 1);
+        const Received* opened = Only(WXL_EV_LootOpened);
+        Check(opened && opened->As<wxl_loot_args>().source == wxl::core::objects::HandleOf(&boar) &&
+                  opened->As<wxl_loot_args>().money == 130 && opened->As<wxl_loot_args>().count == 2 &&
+                  opened->As<wxl_loot_args>().kind == WXL_LOOT_CORPSE && Count(WXL_EV_LootClosed) == 0,
+              "Loot.SetObject raises LootOpened with the source, the kind, the money and the count");
+        Check(Count(WXL_EV_LootSlot) == 2 && g_received.back().As<wxl_loot_slot_args>().item_id == 4306 &&
+                  g_received.back().As<wxl_loot_slot_args>().slot == 2 &&
+                  g_received.back().As<wxl_loot_slot_args>().random_property_id == -12 &&
+                  g_received.back().As<wxl_loot_slot_args>().slot_type == WXL_LOOT_SLOT_ROLL &&
+                  g_received.back().As<wxl_loot_slot_args>().index == 1,
+              "then a LootSlot per item, in the window's order");
+
+        g_received.clear();
+        wxl::seam::Loot::ClearSlot::Before(2);
+        const Received* cleared = Only(WXL_EV_LootSlotCleared);
+        Check(cleared && cleared->As<wxl_loot_slot_args>().item_id == 4306 && cleared->As<wxl_loot_slot_args>().index == 1,
+              "Loot.ClearSlot raises LootSlotCleared with the entry it empties");
+        g_received.clear();
+        wxl::seam::Loot::ClearSlot::Before(9);
+        Check(g_received.empty(), "a slot the window does not hold raises nothing");
+
+        // CloseLoot: SetObject on nothing.
+        g_received.clear();
+        wxl::seam::Loot::SetObject::Before(nullptr, 0, 0);
+        g_lootGuid = 0;
+        memset(g_lootSlots, 0, sizeof g_lootSlots);
+        wxl::seam::Loot::SetObject::After(nullptr, 0, 0);
+        const Received* closed = Only(WXL_EV_LootClosed);
+        Check(closed && closed->As<wxl_loot_args>().source_guid == boar.guid && Count(WXL_EV_LootOpened) == 0,
+              "and LootClosed for the window it closes");
+
+        Body money;
+        money.U32(57).U8(0);
+        FakeStore store = money.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x163, 0, &store);
+        Check(Only(WXL_EV_LootMoney) && Only(WXL_EV_LootMoney)->As<wxl_loot_money_args>().amount == 57 &&
+                  Only(WXL_EV_LootMoney)->As<wxl_loot_money_args>().alone == WXL_FALSE,
+              "Player.PH_LOOT_OPCODES raises LootMoney for SMSG_LOOT_MONEY_NOTIFY");
+
+        Body start;
+        start.U64(boar.guid).U32(530).U32(1).U32(4306).U32(7).U32(0xFFFFFFF4u).U32(1).U32(60000).U8(0x0F);
+        g_uiMap    = 530;
+        g_nextRoll = 12;
+        store      = start.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A1, 0, &store);
+        const Received* roll = Only(WXL_EV_LootRollStart);
+        Check(roll && roll->As<wxl_loot_roll_start_args>().roll_id == 12 &&
+                  roll->As<wxl_loot_roll_start_args>().duration == 60000 &&
+                  roll->As<wxl_loot_roll_start_args>().random_property_id == -12 &&
+                  roll->As<wxl_loot_roll_start_args>().vote_mask == 0x0F,
+              "LootRollStart for SMSG_LOOT_START_ROLL with the id the client will give the roll");
+        g_uiMap = 571;
+        store   = start.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A1, 0, &store);
+        Check(g_received.empty(), "and nothing for a roll on another map, which the client drops");
+
+        Body rolled;
+        rolled.U64(boar.guid).U32(1).U64(0x77).U32(4306).U32(7).U32(0).U8(88).U8(2).U8(0);
+        store = rolled.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A2, 0, &store);
+        Check(Only(WXL_EV_LootRoll) && Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().roll == 88 &&
+                  Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().roll_type == WXL_ROLL_GREED &&
+                  Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().player_guid == 0x77,
+              "LootRoll for SMSG_LOOT_ROLL");
+        Body won;
+        won.U64(boar.guid).U32(1).U32(4306).U32(7).U32(0).U64(0x77).U8(88).U8(2);
+        store = won.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x29F, 0, &store);
+        Check(Only(WXL_EV_LootRollWon) && Only(WXL_EV_LootRollWon)->As<wxl_loot_roll_args>().random_suffix == 7,
+              "LootRollWon for SMSG_LOOT_ROLL_WON");
+        Body passed;
+        passed.U64(boar.guid).U32(1).U32(4306).U32(0xFFFFFFF4u).U32(7);
+        store = passed.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x29E, 0, &store);
+        Check(Only(WXL_EV_LootAllPassed) && Only(WXL_EV_LootAllPassed)->As<wxl_loot_roll_args>().random_property_id == -12 &&
+                  Only(WXL_EV_LootAllPassed)->As<wxl_loot_roll_args>().random_suffix == 7,
+              "LootAllPassed for SMSG_LOOT_ALL_PASSED, its property read before its suffix");
+        Check(store.read == 0u, "the loot handler's reads leave the cursor where it was");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+        g_held.clear();
+    }
+
+    void CheckGameplayItems()
+    {
+        printf("\ngameplay, items:\n");
+        FakeObject me, bag, sword;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(bag, 0x4000000000000100ull, WXL_OBJECT_CONTAINER, 0x8A);
+        Build(sword, 0x4000000000000200ull, WXL_OBJECT_ITEM, 0x40);
+        g_held = {&me, &bag, &sword};
+
+        Body push;
+        push.U64(me.guid).U32(0).U32(0).U32(1).U8(255).U32(23).U32(2589).U32(0).U32(0).U32(3).U32(10);
+        FakeStore store = push.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x166, 0, &store);
+        const Received* pushed = Only(WXL_EV_ItemPushed);
+        Check(pushed && pushed->As<wxl_item_push_args>().item_id == 2589 && pushed->As<wxl_item_push_args>().bag == 255 &&
+                  pushed->As<wxl_item_push_args>().slot == 23 && pushed->As<wxl_item_push_args>().total == 10 &&
+                  pushed->As<wxl_item_push_args>().received == WXL_FALSE &&
+                  pushed->As<wxl_item_push_args>().announced == WXL_TRUE,
+              "Player.Packet_Group_9 raises ItemPushed for SMSG_ITEM_PUSH_RESULT");
+        Body failed;
+        failed.U8(1).U64(sword.guid).U64(0).U8(0).U32(40);
+        store = failed.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x112, 0, &store);
+        Check(Only(WXL_EV_InventoryError) && Only(WXL_EV_InventoryError)->As<wxl_inventory_error_args>().required_level == 40 &&
+                  Only(WXL_EV_InventoryError)->As<wxl_inventory_error_args>().item_guid == sword.guid,
+              "InventoryError for SMSG_INVENTORY_CHANGE_FAILURE, with the level a level refusal needs");
+        Body fine;
+        fine.U8(0);
+        store = fine.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x112, 0, &store);
+        Check(g_received.empty(), "and nothing for a result of 0, which is no failure");
+
+        // The backpack's first slot (23) gets the sword: PLAYER_FIELD_INV_SLOT_HEAD + 46.
+        const uint32_t at = 0x144 + 23 * 2;
+        me.block[at]      = static_cast<uint32_t>(sword.guid);
+        me.block[at + 1]  = static_cast<uint32_t>(sword.guid >> 32);
+        const uint64_t none = 0;
+        g_received.clear();
+        wxl::seam::Container::UpdateInvContents::Before(me.guid, (at - 0x94) * 4, 8, &none, nullptr);
+        const Received* slot = Only(WXL_EV_InventorySlotChanged);
+        Check(slot && slot->As<wxl_inventory_slot_args>().slot == 23 &&
+                  slot->As<wxl_inventory_slot_args>().item_guid == sword.guid &&
+                  slot->As<wxl_inventory_slot_args>().item == wxl::core::objects::HandleOf(&sword) &&
+                  slot->As<wxl_inventory_slot_args>().container == wxl::core::objects::HandleOf(&me) &&
+                  slot->As<wxl_inventory_slot_args>().previous_guid == 0,
+              "Container.UpdateInvContents raises InventorySlotChanged for the player's slot");
+        g_received.clear();
+        wxl::seam::Container::InvUpdateHandler::Before(me.guid, (at - 0x94) * 4, 8, &sword.guid, nullptr);
+        Check(g_received.empty(), "a slot that holds what it held raises nothing");
+
+        bag.block[0x42 + 4]     = static_cast<uint32_t>(sword.guid);
+        bag.block[0x42 + 5]     = static_cast<uint32_t>(sword.guid >> 32);
+        g_received.clear();
+        wxl::seam::Container::UpdateContainerContents::Before(bag.guid, 8 + 2 * 8, 8, &none, nullptr);
+        slot = Only(WXL_EV_InventorySlotChanged);
+        Check(slot && slot->As<wxl_inventory_slot_args>().slot == 2 &&
+                  slot->As<wxl_inventory_slot_args>().container_guid == bag.guid,
+              "Container.UpdateContainerContents raises it for the bag's slot");
+
+        sword.block[0x3C]   = 40;
+        sword.block[0x3D]   = 75;
+        const uint32_t was  = 41;
+        g_received.clear();
+        wxl::seam::Item::OnUpdateDurability::Before(sword.guid, (0x3C - 6) * 4, 4, &was, nullptr);
+        Check(Only(WXL_EV_ItemDurabilityChanged) &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().current == 40 &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().previous == 41 &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().maximum == 75,
+              "Item.OnUpdateDurability raises ItemDurabilityChanged with the maximum");
+        sword.block[0x0E]  = 5;
+        const uint32_t two = 2;
+        g_received.clear();
+        wxl::seam::Item::OnUpdateStackCount::Before(sword.guid, (0x0E - 6) * 4, 4, &two, nullptr);
+        Check(Only(WXL_EV_ItemStackChanged) && Only(WXL_EV_ItemStackChanged)->As<wxl_item_stack_args>().current == 5 &&
+                  Only(WXL_EV_ItemStackChanged)->As<wxl_item_stack_args>().previous == 2,
+              "Item.OnUpdateStackCount raises ItemStackChanged");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&bag);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&sword);
+        g_held.clear();
+    }
+
+    void CheckGameplayQuests()
+    {
+        printf("\ngameplay, quests:\n");
+        FakeObject me, giver;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(giver, 0xF130000000003333ull, WXL_OBJECT_UNIT, 0x94);
+        g_held = {&me, &giver};
+
+        // Slot 1 of the log: PLAYER_QUEST_LOG_2_1, the player block's dword 15.
+        const uint32_t entry = 0x94 + 0x0A + 5;
+        uint32_t       before[5]{};
+        me.block[entry] = 783;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, before, nullptr);
+        Check(Only(WXL_EV_QuestAccepted) && Only(WXL_EV_QuestAccepted)->As<wxl_quest_args>().quest_id == 783 &&
+                  Only(WXL_EV_QuestAccepted)->As<wxl_quest_args>().log_slot == 1,
+              "Player.OnUpdateQuest raises QuestAccepted for a quest new in the log");
+
+        uint32_t accepted[5] = { 783, 0, 0, 0, 0 };
+        me.block[entry + 2] = 0x00030000u; // the second objective at 3
+        me.block[entry + 1] = 1;           // complete
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, accepted, nullptr);
+        const Received* progress = Only(WXL_EV_QuestObjectiveChanged);
+        Check(progress && progress->As<wxl_quest_objective_args>().objective == 1 &&
+                  progress->As<wxl_quest_objective_args>().current == 3 &&
+                  progress->As<wxl_quest_objective_args>().previous == 0 && Only(WXL_EV_QuestCompleted) &&
+                  Count(WXL_EV_QuestAccepted) == 0,
+              "QuestObjectiveChanged for the count that moved, and QuestCompleted as its state completes");
+
+        uint32_t done[5] = { 783, 1, 0x00030000u, 0, 0 };
+        for (uint32_t i = 0; i < 5; ++i) me.block[entry + i] = 0;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, done, nullptr);
+        Check(Only(WXL_EV_QuestRemoved) && Only(WXL_EV_QuestRemoved)->As<wxl_quest_args>().quest_id == 783 &&
+                  g_received.size() == 1,
+              "QuestRemoved when the entry empties");
+
+        Body complete;
+        complete.U32(783).U32(1250).U32(0xFFFFFF9Cu).U32(0).U32(0).U32(0);
+        FakeStore store = complete.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x191, 0, &store);
+        Check(Only(WXL_EV_QuestTurnedIn) && Only(WXL_EV_QuestTurnedIn)->As<wxl_quest_reward_args>().xp == 1250 &&
+                  Only(WXL_EV_QuestTurnedIn)->As<wxl_quest_reward_args>().money == -100,
+              "Player.Packet_Group_12 raises QuestTurnedIn with the rewards");
+
+        Body details;
+        details.U64(giver.guid).U64(0x99).U32(783).Str("The Defias Brotherhood").Str("Go west.").Str("Kill them.");
+        store = details.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x188, 0, &store);
+        const Received* detail = Only(WXL_EV_QuestGiverDetail);
+        Check(detail && Said(detail->As<wxl_quest_giver_args>().title) == "The Defias Brotherhood" &&
+                  Said(detail->As<wxl_quest_giver_args>().text) == "Go west." &&
+                  detail->As<wxl_quest_giver_args>().shared_by == 0x99 &&
+                  detail->As<wxl_quest_giver_args>().giver == wxl::core::objects::HandleOf(&giver),
+              "QuestGiverDetail with the giver, the title, the text and who shared it");
+        Body list;
+        list.U64(giver.guid).Str("Greetings.").U32(0).U32(1).U8(2);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x185, 0, &store);
+        Check(Only(WXL_EV_QuestGiverGreeting) && Only(WXL_EV_QuestGiverGreeting)->As<wxl_quest_giver_args>().count == 2 &&
+                  Said(Only(WXL_EV_QuestGiverGreeting)->As<wxl_quest_giver_args>().text) == "Greetings.",
+              "QuestGiverGreeting with the greeting and how many quests it lists");
+        Body request;
+        request.U64(giver.guid).U32(783).Str("Title").Str("Bring them.");
+        store = request.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x18B, 0, &store);
+        Check(Only(WXL_EV_QuestGiverProgress) != nullptr, "QuestGiverProgress for SMSG_QUESTGIVER_REQUEST_ITEMS");
+        store = request.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x18D, 0, &store);
+        Check(Only(WXL_EV_QuestGiverReward) != nullptr, "QuestGiverReward for SMSG_QUESTGIVER_OFFER_REWARD");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&giver);
+        g_held.clear();
+    }
+
+    /// Answers every GroupInvite, DuelRequested and ResurrectRequest with what it holds.
+    struct RequestAnswer
+    {
+        bool accept  = false;
+        bool decline = false;
+    };
+
+    RequestAnswer g_requestAnswer;
+
+    void WXL_CALL OnRequest(void* user, const void* args)
+    {
+        const auto kind = reinterpret_cast<uintptr_t>(user);
+        wxl_bool* accept  = nullptr;
+        wxl_bool* decline = nullptr;
+        if (kind == 0) accept = static_cast<const wxl_group_invite_args*>(args)->accept, decline = static_cast<const wxl_group_invite_args*>(args)->decline;
+        if (kind == 1) accept = static_cast<const wxl_duel_request_args*>(args)->accept, decline = static_cast<const wxl_duel_request_args*>(args)->decline;
+        if (kind == 2) accept = static_cast<const wxl_resurrect_request_args*>(args)->accept, decline = static_cast<const wxl_resurrect_request_args*>(args)->decline;
+        if (g_requestAnswer.accept && accept) *accept = WXL_TRUE;
+        if (g_requestAnswer.decline && decline) *decline = WXL_TRUE;
+    }
+
+    void CheckGameplayGroup()
+    {
+        printf("\ngameplay, group:\n");
+        const wxl_subscription invite = g_host->Events().Subscribe(WXL_EV_GroupInvite, &OnRequest, reinterpret_cast<void*>(0), 0);
+
+        Body body;
+        body.U8(1).Str("Jaina").U32(0).U8(0).U32(0);
+        FakeStore store = body.Store();
+        int32_t   result = 0;
+        void*     param = nullptr;
+        uint32_t  id = 0x6F, time = 0;
+        void*     msg = &store;
+        g_answers.clear();
+        g_requestAnswer = RequestAnswer{};
+        g_received.clear();
+        bool taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && Only(WXL_EV_GroupInvite) && Said(Only(WXL_EV_GroupInvite)->As<wxl_group_invite_args>().inviter) == "Jaina" &&
+                  g_answers.empty(),
+              "Player.Packet_SMSG_GROUP_INVITE raises GroupInvite and leaves an unanswered one to the dialog");
+        g_requestAnswer.accept = true;
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && result == 1 && g_answers.size() == 1 && g_answers[0] == "group accept",
+              "an accepted one joins as the dialog's Accept does, and the dialog never shows");
+        g_requestAnswer.decline = true;
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && g_answers.size() == 2 && g_answers[1] == "group decline", "decline wins over accept");
+        Body grouped;
+        grouped.U8(0).Str("Jaina").U32(0).U8(0).U32(0);
+        store = grouped.Store();
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && g_answers.size() == 2, "an invitation the player cannot take is only told");
+        g_host->Events().Unsubscribe(invite);
+
+        // A party of two, the leader the other member, group loot.
+        Body list;
+        list.U8(0).U8(0).U8(0).U8(0).U64(0x1F00000000000001ull).U32(1).U32(1)
+            .Str("Thrall").U64(0x51).U8(1).U8(0).U8(1).U8(2)
+            .U64(0x51).U8(3).U64(0).U8(2).U8(0).U8(0).U8(0);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_LIST::Before(nullptr, 0x7D, 0, &store);
+        const Received* group = Only(WXL_EV_GroupUpdated);
+        Check(group && group->As<wxl_group_args>().count == 1 && group->As<wxl_group_args>().leader_guid == 0x51 &&
+                  group->As<wxl_group_args>().loot_method == WXL_LOOT_GROUP &&
+                  group->As<wxl_group_args>().loot_threshold == 2 && group->As<wxl_group_args>().raid == WXL_FALSE,
+              "Player.Packet_SMSG_GROUP_LIST raises GroupUpdated");
+        Check(Only(WXL_EV_GroupMember) && Said(Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().name) == "Thrall" &&
+                  Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().roles == 2 &&
+                  Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().online == WXL_TRUE,
+              "a GroupMember per member");
+        Check(Only(WXL_EV_GroupLootMethodChanged) != nullptr, "and GroupLootMethodChanged for the first rules it sees");
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_LIST::Before(nullptr, 0x7D, 0, &store);
+        Check(g_received.empty(), "the same sequence again within a minute is dropped, as the client drops it");
+
+        store = Body{}.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_DESTROYED::Before(nullptr, 0x37F, 0, &store);
+        Check(Only(WXL_EV_GroupLeft) && Only(WXL_EV_GroupLeft)->As<wxl_group_left_args>().reason == WXL_GROUP_DISBANDED,
+              "Player.Packet_SMSG_GROUP_DESTROYED raises GroupLeft, disbanded");
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_UNINVITE::Before(nullptr, 0x77, 0, &store);
+        Check(Only(WXL_EV_GroupLeft) && Only(WXL_EV_GroupLeft)->As<wxl_group_left_args>().reason == WXL_GROUP_REMOVED,
+              "Player.Packet_SMSG_GROUP_UNINVITE raises GroupLeft, removed");
+
+        Body check;
+        check.U64(0x51);
+        store = check.Store();
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK::Before(nullptr, 0x322, 0, &store);
+        Check(Only(WXL_EV_ReadyCheck) && Only(WXL_EV_ReadyCheck)->As<wxl_ready_check_args>().duration == 30000 &&
+                  Only(WXL_EV_ReadyCheck)->As<wxl_ready_check_args>().initiator_guid == 0x51,
+              "Raid.Packet_MSG_RAID_READY_CHECK raises ReadyCheck");
+        Body confirm;
+        confirm.U64(0x52).U8(1);
+        store = confirm.Store();
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK_CONFIRM::Before(nullptr, 0x3AE, 0, &store);
+        Check(Only(WXL_EV_ReadyCheckResponse) && Only(WXL_EV_ReadyCheckResponse)->As<wxl_ready_check_response_args>().ready == WXL_TRUE,
+              "Raid.Packet_MSG_RAID_READY_CHECK_CONFIRM raises ReadyCheckResponse");
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK_FINISHED::Before(nullptr, 0x3C6, 0, nullptr);
+        Check(Only(WXL_EV_ReadyCheckFinished) &&
+                  Only(WXL_EV_ReadyCheckFinished)->As<wxl_ready_check_end_args>().initiator_guid == 0x51,
+              "Raid.Packet_MSG_RAID_READY_CHECK_FINISHED raises ReadyCheckFinished with the check's initiator");
+    }
+
+    void CheckGameplaySocial()
+    {
+        printf("\ngameplay, social:\n");
+        FakeObject me, rival, priest;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(rival, 0x0000000000000043ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(priest, 0x0000000000000044ull, WXL_OBJECT_PLAYER, 0x500);
+        g_held        = {&me, &rival, &priest};
+        g_localPlayer = &me;
+
+        const wxl_subscription duel = g_host->Events().Subscribe(WXL_EV_DuelRequested, &OnRequest, reinterpret_cast<void*>(1), 0);
+        const wxl_subscription res  = g_host->Events().Subscribe(WXL_EV_ResurrectRequest, &OnRequest, reinterpret_cast<void*>(2), 0);
+        Body challenge;
+        challenge.U64(0xF110000000000009ull).U64(rival.guid);
+        FakeStore store = challenge.Store();
+        int32_t   result = 0;
+        void*     param = nullptr;
+        uint32_t  id = 0x167, time = 0;
+        void*     msg = &store;
+        g_answers.clear();
+        g_requestAnswer = RequestAnswer{};
+        g_received.clear();
+        bool taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && Only(WXL_EV_DuelRequested) &&
+                  Only(WXL_EV_DuelRequested)->As<wxl_duel_request_args>().challenger == wxl::core::objects::HandleOf(&rival),
+              "Duel.Packet_SMSG_DUEL_REQUESTED raises DuelRequested and leaves an unanswered one to the dialog");
+        g_requestAnswer.decline = true;
+        taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && result == 1 && g_answers.size() == 1 &&
+                  g_answers[0] == "duel decline " + std::to_string(0xF110000000000009ull) + " " + std::to_string(rival.guid),
+              "a declined one is cancelled with its arbiter, and the dialog never shows");
+        Body own;
+        own.U64(0xF110000000000009ull).U64(me.guid);
+        store = own.Store();
+        g_received.clear();
+        taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && g_received.empty(), "the player's own challenge, which the client accepts itself, is no request");
+
+        Body offer;
+        offer.U64(priest.guid).Sized("Anduin").U8(1).U8(0);
+        store = offer.Store();
+        g_requestAnswer = RequestAnswer{};
+        g_requestAnswer.accept = true;
+        g_received.clear();
+        taken = wxl::seam::Player::Packet_SMSG_RESURRECT_REQUEST::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && Only(WXL_EV_ResurrectRequest) &&
+                  Said(Only(WXL_EV_ResurrectRequest)->As<wxl_resurrect_request_args>().name) == "Anduin" &&
+                  g_answers.size() == 2 && g_answers[1] == "resurrect accept " + std::to_string(priest.guid) + " sick",
+              "Player.Packet_SMSG_RESURRECT_REQUEST raises ResurrectRequest and accepts the offer it kept");
+        g_host->Events().Unsubscribe(duel);
+        g_host->Events().Unsubscribe(res);
+
+        Body countdown;
+        countdown.U32(3000);
+        store = countdown.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_COUNTDOWN::Before(nullptr, 0x2B7, 0, &store);
+        Check(Only(WXL_EV_DuelCountdown) && Only(WXL_EV_DuelCountdown)->As<wxl_duel_countdown_args>().duration == 3000,
+              "Duel.Packet_SMSG_DUEL_COUNTDOWN raises DuelCountdown");
+        Body winner;
+        winner.U8(1).Str("Garrosh").Str("Varian");
+        store = winner.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_WINNER::Before(nullptr, 0x16B, 0, &store);
+        Check(Only(WXL_EV_DuelWon) && Said(Only(WXL_EV_DuelWon)->As<wxl_duel_won_args>().loser) == "Varian" &&
+                  Only(WXL_EV_DuelWon)->As<wxl_duel_won_args>().fled == WXL_TRUE,
+              "Duel.Packet_SMSG_DUEL_WINNER raises DuelWon");
+        Body over;
+        over.U8(0);
+        store = over.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_COMPLETE::Before(nullptr, 0x16A, 0, &store);
+        Check(Only(WXL_EV_DuelFinished) && Only(WXL_EV_DuelFinished)->As<wxl_duel_finished_args>().completed == WXL_FALSE,
+              "Duel.Packet_SMSG_DUEL_COMPLETE raises DuelFinished");
+
+        Body trade;
+        trade.U32(1).U64(rival.guid);
+        store = trade.Store();
+        g_received.clear();
+        wxl::seam::Trade::Packet_SMSG_TRADE_STATUS::Before(nullptr, 0x120, 0, &store);
+        Check(Only(WXL_EV_TradeStatus) && Only(WXL_EV_TradeStatus)->As<wxl_trade_args>().status == WXL_TRADE_PROPOSED &&
+                  Only(WXL_EV_TradeStatus)->As<wxl_trade_args>().partner_guid == rival.guid,
+              "Trade.Packet_SMSG_TRADE_STATUS raises TradeStatus, a proposal with its proposer");
+
+        Body emote;
+        emote.U32(10).U64(rival.guid);
+        store = emote.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_EMOTE::Before(nullptr, 0x103, 0, &store);
+        Check(Only(WXL_EV_Emote) && Only(WXL_EV_Emote)->As<wxl_emote_args>().emote_id == 10 &&
+                  Only(WXL_EV_Emote)->As<wxl_emote_args>().unit == wxl::core::objects::HandleOf(&rival),
+              "Player.Packet_SMSG_EMOTE raises Emote");
+        Body text;
+        text.U64(rival.guid).U32(101).U32(0).Sized("Thrall");
+        store = text.Store();
+        g_received.clear();
+        wxl::seam::Chat::OnTextEmote::Before(nullptr, 0x105, 0, &store);
+        Check(Only(WXL_EV_TextEmote) && Only(WXL_EV_TextEmote)->As<wxl_text_emote_args>().text_emote == 101 &&
+                  Said(Only(WXL_EV_TextEmote)->As<wxl_text_emote_args>().target_name) == "Thrall",
+              "Chat.OnTextEmote raises TextEmote");
+
+        // Windows, by the names of the game's event table.
+        const char* names[] = { "PLAYER_LOGIN", "MERCHANT_SHOW", "MERCHANT_CLOSED", "QUEST_DETAIL", "QUEST_FINISHED" };
+        wxl::core::seams::gameplay::Install(names, 5);
+        g_interact = rival.guid;
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(1, nullptr, nullptr);
+        wxl::seam::FrameScript::vSignalEvent::Before(1, nullptr, nullptr);
+        const Received* window = Only(WXL_EV_WindowOpened);
+        Check(window && window->As<wxl_window_args>().kind == WXL_WINDOW_MERCHANT &&
+                  window->As<wxl_window_args>().npc == wxl::core::objects::HandleOf(&rival),
+              "FrameScript.vSignalEvent raises WindowOpened once for MERCHANT_SHOW, on the interface's npc");
+        g_interact = 0;
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(2, nullptr, nullptr);
+        wxl::seam::FrameScript::vSignalEvent::Before(4, nullptr, nullptr);
+        window = Only(WXL_EV_WindowClosed);
+        Check(window && window->As<wxl_window_args>().npc_guid == rival.guid && Count(WXL_EV_WindowOpened) == 0,
+              "WindowClosed for MERCHANT_CLOSED on whom it opened, and nothing for a window never opened");
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(0, nullptr, nullptr);
+        Check(Count(WXL_EV_WindowOpened) == 0 && Count(WXL_EV_WindowClosed) == 0, "any other event opens no window");
+        wxl::core::seams::gameplay::Install(nullptr, 0);
+
+        // Death, release, resurrection, from the client's re-tellings of the player's state.
+        wxl::core::seams::gameplay::Forget();
+        me.health = 100;
+        g_received.clear();
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(g_received.empty(), "GameUI.UpdateActivePlayer: the first state seen raises nothing");
+        me.health = 0;
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(Only(WXL_EV_PlayerDied) && Only(WXL_EV_PlayerDied)->As<wxl_unit_args>().unit == wxl::core::objects::HandleOf(&me),
+              "PlayerDied when the health falls to nothing");
+        me.health         = 1;
+        me.block[0x96]    = 0x10;
+        g_received.clear();
+        wxl::seam::Player::UpdateGhostStatus::After(&me);
+        Check(Only(WXL_EV_PlayerReleased) != nullptr, "Player.UpdateGhostStatus raises PlayerReleased for a new ghost");
+        me.block[0x96] = 0;
+        g_received.clear();
+        wxl::seam::Player::UpdateGhostStatus::After(&me);
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(Only(WXL_EV_PlayerResurrected) != nullptr, "and PlayerResurrected once alive again, once");
+
+        // Reputation: list id 3 is faction 72 at base 0, standing 1000, raised to 1250.
+        g_factionId = 72, g_factionBase = 0, g_factionStanding = 1000;
+        Body rep;
+        rep.F32(0.0f).U8(0).U32(2).U32(3).U32(1250).U32(4).U32(0);
+        store = rep.Store();
+        g_received.clear();
+        wxl::seam::Reputation::Packet_SMSG_SET_FACTION_STANDING::Before(nullptr, 0x124, 0, &store);
+        Check(Only(WXL_EV_ReputationChanged) && Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().faction_id == 72 &&
+                  Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().previous == 1000 &&
+                  Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().current == 1250,
+              "Reputation.Packet_SMSG_SET_FACTION_STANDING raises ReputationChanged for the faction that moved only");
+
+        Body earned;
+        earned.Packed(rival.guid).U32(6).U32(0x0A3B1C2Du).U32(0);
+        store = earned.Store();
+        g_received.clear();
+        wxl::seam::Achievement::Packet_SMSG_ACHIEVEMENT_EARNED::Before(nullptr, 0x468, 0, &store);
+        Check(Only(WXL_EV_AchievementEarned) && Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().achievement_id == 6 &&
+                  Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().player_guid == rival.guid &&
+                  Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().date == 0x0A3B1C2Du,
+              "Achievement.Packet_SMSG_ACHIEVEMENT_EARNED raises AchievementEarned, the guid unpacked");
+
+        g_localPlayer = nullptr;
+        wxl::core::seams::gameplay::Forget();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&rival);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&priest);
+        g_held.clear();
+    }
+
+#if defined(_M_IX86)
+    // The gameplay rows' detours, called as the client calls the functions: the handler table's
+    // four dwords, the mirror dispatcher's six, a gate that takes the call, a member with
+    // nothing on the stack.
+
+    int32_t g_gameplayOriginal = 0;
+    __declspec(noinline) int32_t __cdecl FakeHandler(void*, uint32_t, uint32_t, void*) { return ++g_gameplayOriginal; }
+    __declspec(noinline) int32_t __cdecl FakeMirrorHandler(uint64_t, uint32_t, uint32_t, const void*, void*)
+    {
+        return ++g_gameplayOriginal;
+    }
+    __declspec(noinline) void __fastcall FakeGhostUpdate(void*, void*) { ++g_gameplayOriginal; }
+
+    /// Calls a handler as NetClient::ProcessMessage does at 0x0063202C: four pushed, 0x10 cleaned.
+    __declspec(noinline) void CallLikeDispatch(void* handler, uint32_t id, void* msg)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push msg
+            push 0
+            push id
+            push 0
+            mov  ecx, handler
+            call ecx
+            add  esp, 10h
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a member that takes nothing on the stack: `this` in ECX.
+    __declspec(noinline) void CallMember(void* detour, void* self)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  ecx, self
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    void CheckGameplayDetours()
+    {
+        using wxl::core::seams::DetourOf;
+        using wxl::core::seams::GateOf;
+        namespace P = wxl::seam::Player;
+        using Emote  = DetourOf<P::Packet_SMSG_EMOTE::Convention, P::Packet_SMSG_EMOTE::Signature>::Link<&P::Packet_SMSG_EMOTE::Before, nullptr>;
+        using Invite = GateOf<P::Packet_SMSG_GROUP_INVITE::Convention, P::Packet_SMSG_GROUP_INVITE::Signature>::Link<&P::Packet_SMSG_GROUP_INVITE::Gate>;
+        using Stack  = DetourOf<wxl::seam::Item::OnUpdateStackCount::Convention, wxl::seam::Item::OnUpdateStackCount::Signature>::Link<&wxl::seam::Item::OnUpdateStackCount::Before, nullptr>;
+        using GhostSeam = DetourOf<P::UpdateGhostStatus::Convention, P::UpdateGhostStatus::Signature>;
+        using Ghost  = GhostSeam::Link<nullptr, &P::UpdateGhostStatus::After>;
+
+        FakeObject rival, sword;
+        Build(rival, 0x0000000000000043ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(sword, 0x4000000000000200ull, WXL_OBJECT_ITEM, 0x40);
+        g_held = {&rival, &sword};
+
+        Emote::original = Opaque(&FakeHandler);
+        Body emote;
+        emote.U32(10).U64(rival.guid);
+        FakeStore store = emote.Store();
+        g_gameplayOriginal = 0;
+        g_received.clear();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Emote::Detour)), 0x103, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1 && Only(WXL_EV_Emote),
+              "x86: a handler's detour takes the handler table's four dwords, runs the handler and raises Emote");
+        Emote::original = nullptr;
+
+        const wxl_subscription invite = g_host->Events().Subscribe(WXL_EV_GroupInvite, &OnRequest, reinterpret_cast<void*>(0), 0);
+        Invite::original = Opaque(&FakeHandler);
+        Body body;
+        body.U8(1).Str("Jaina").U32(0).U8(0).U32(0);
+        store = body.Store();
+        g_requestAnswer = RequestAnswer{};
+        g_requestAnswer.decline = true;
+        g_gameplayOriginal = 0;
+        g_answers.clear();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Invite::Detour)), 0x6F, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 0 && g_answers.size() == 1,
+              "x86: the invitation gate takes a declined invitation, the handler not run, the stack as it was");
+        g_requestAnswer = RequestAnswer{};
+        store = body.Store();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Invite::Detour)), 0x6F, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1, "x86: and hands an unanswered one to the handler");
+        Invite::original = nullptr;
+        g_host->Events().Unsubscribe(invite);
+
+        Stack::original = Opaque(&FakeMirrorHandler);
+        sword.block[0x0E]  = 5;
+        const uint32_t two = 2;
+        g_gameplayOriginal = 0;
+        g_received.clear();
+        CallLikeMirror(Opaque(reinterpret_cast<void*>(&Stack::Detour)), static_cast<uint32_t>(sword.guid),
+                       static_cast<uint32_t>(sword.guid >> 32), (0x0E - 6) * 4, 4, &two, nullptr);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1 && Only(WXL_EV_ItemStackChanged),
+              "x86: a mirror handler's detour takes the six dwords, the guid's two halves in place");
+        Stack::original = nullptr;
+
+        FakeObject ghost;
+        Ghost::original = Opaque(reinterpret_cast<GhostSeam::Fn>(&FakeGhostUpdate));
+        g_gameplayOriginal = 0;
+        CallMember(Opaque(reinterpret_cast<void*>(&Ghost::Detour)), &ghost);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1,
+              "x86: CGPlayer_C::UpdateGhostStatus's detour takes `this` in ECX and nothing on the stack");
+        Ghost::original = nullptr;
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&rival);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&sword);
+        g_held.clear();
+    }
+#endif
+}
+
 // --- The profiler, before it starts -----------------------------------------------------------
 // What can be checked without a viewer: locations are kept and shared, nothing opens a zone
 // before the profiler is up, and the service and the host's zones answer nothing then. The
@@ -6780,6 +7662,12 @@ int main(int argc, char** argv)
     CheckEnergize();
     CheckFootprint();
     CheckArchivesAndDatabases();
+    CheckGameplayAuras();
+    CheckGameplayLoot();
+    CheckGameplayItems();
+    CheckGameplayQuests();
+    CheckGameplayGroup();
+    CheckGameplaySocial();
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     CheckProfile();
 #endif
@@ -6794,6 +7682,7 @@ int main(int argc, char** argv)
     CheckStormDetours();
     CheckAssetDetours();
     CheckValidatorDetour();
+    CheckGameplayDetours();
 #endif
     CheckPointTable();
     CheckPointDispatch();

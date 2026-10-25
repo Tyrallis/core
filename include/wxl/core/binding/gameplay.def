@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The gameplay domain of the client binding: what the aura, loot, reputation, window and request
+// seams read of the state the client commits, and the answers they give in a dialog's place.
+//
+// `aura` is the AuraData* a seam was handed: one of a unit's aura slots, or the copy of it the
+// client made before an update. `unit` is the CGUnit_C* that owns the slots.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including gameplay.def"
+#endif
+
+// --- auras ------------------------------------------------------------------------------------
+
+// What an aura slot holds, as AuraData::Unpack wrote it: the caster (the unit itself when the
+// server sent the self-cast flag), the spell, the flags byte (0x08 self-cast, 0x20 has a
+// duration, 0x80 harmful), the caster's level, the stack count, the full duration in
+// milliseconds and the end time in the client's OsGetAsyncTimeMs clock, 0 for none.
+WXL_BINDING_FIELD(aura_caster, uint64_t, AuraData, m_creator, 0)
+WXL_BINDING_FIELD(aura_spell_id, int32_t, AuraData, m_spellId, 0)
+WXL_BINDING_FIELD(aura_flags, uint8_t, AuraData, m_flags, 0)
+WXL_BINDING_FIELD(aura_level, uint8_t, AuraData, m_level, 0)
+WXL_BINDING_FIELD(aura_stacks, uint8_t, AuraData, m_stackCount, 0)
+WXL_BINDING_FIELD(aura_duration, int32_t, AuraData, m_duration, 0)
+WXL_BINDING_FIELD(aura_end_time, int32_t, AuraData, m_endTime, 0)
+
+// Which of the unit's aura slots `aura` is: its index in CGUnit_C::m_auras, whether the slots
+// are the sixteen kept inline or the array they grew into (m_count 0xFFFFFFFF). -1 when `aura`
+// is not one of them, as for the copy OnAuraUpdate keeps of the slots before an update.
+WXL_BINDING(unit_aura_slot, int32_t, (const void* unit, const void* aura), (unit, aura), -1)
+
+// The client's millisecond clock, OsGetAsyncTimeMs: what an aura's end time is counted in.
+WXL_BINDING(os_time_ms, uint32_t, (void), (), 0)
+
+// --- loot ---------------------------------------------------------------------------------------
+
+// The loot window: CGLootInfo::m_lootObj (0 when it is closed), m_lootAcquire, m_coins.
+WXL_BINDING(loot_object_guid, uint64_t, (void), (), 0)
+WXL_BINDING(loot_kind, uint32_t, (void), (), 0)
+WXL_BINDING(loot_money, uint32_t, (void), (), 0)
+
+// One entry of CGLootInfo::m_slots, the window's items packed from the front: into out[0..6]
+// its item id, quantity, display id, random suffix, random property id, the server's loot slot
+// and the slot type. False for an index past the 18 entries or an entry with no item.
+WXL_BINDING(loot_slot, wxl_bool, (uint32_t index, int32_t* out), (index, out), WXL_FALSE)
+
+// The id LootRollStart gives the next roll it keeps: s_nextLootRollId, which the interface's
+// RollOnLoot names a roll by.
+WXL_BINDING(loot_next_roll_id, uint32_t, (void), (), 0)
+
+// The map CGGameUI says the player is on, CGGameUI::m_iCurrentMapID: LootRollStart keeps a roll
+// only for that map.
+WXL_BINDING(ui_map_id, int32_t, (void), (), -1)
+
+// --- reputation ---------------------------------------------------------------------------------
+
+// Entry `list_id` of CGReputationInfo::m_factionStandings, the 128 factions the server numbers
+// in its reputation messages: the Faction.dbc id, the base the race and class start at, and the
+// standing earned on top of it. False past the table.
+WXL_BINDING(faction_standing, wxl_bool, (uint32_t list_id, int32_t* faction_id, int32_t* base, int32_t* standing),
+            (list_id, faction_id, base, standing), WXL_FALSE)
+
+// --- who the player deals with ------------------------------------------------------------------
+
+// The unit or object the interface's "npc" token names: CGGameUI::m_interactTarget, whom a
+// vendor, trainer, banker, quest or gossip window is open on.
+WXL_BINDING(ui_interact_target, uint64_t, (void), (), 0)
+
+// The player on the other side of a trade: CGTradeInfo::m_tradingPlayer.
+WXL_BINDING(trade_partner, uint64_t, (void), (), 0)
+
+// --- answers given in a dialog's place ----------------------------------------------------------
+
+// Joins the group the player is invited to, as the dialog's Accept does (CGPlayer_C::AcceptGroup
+// with no role), or turns the invitation down as its Decline does (CGPlayer_C::DeclineGroup).
+WXL_BINDING(group_invite_answer, void, (wxl_bool accept), (accept), (void)0)
+
+// Answers an offer to resurrect: puts the offer where SMSG_RESURRECT_REQUEST's handler keeps it
+// (CGPlayer_C::s_resurrectOfferer, s_resurrectOfferSickness, s_resurrectOfferUseTimer), then
+// accepts or declines it as the dialog does (CGPlayer_C::AcceptResurrectRequest).
+WXL_BINDING(resurrect_answer, void, (uint64_t offerer, uint32_t sickness, uint32_t use_timer, wxl_bool accept),
+            (offerer, sickness, use_timer, accept), (void)0)
+
+// Answers a duel challenge as SMSG_DUEL_REQUESTED's handler and the dialog do between them: the
+// arbiter kept (s_duelArbiter), then CGDuelInfo::AcceptDuel with the challenger as m_dueler, or
+// CGDuelInfo::CancelDuel and the arbiter dropped, which is what the handler does for a challenge
+// from an ignored player.
+WXL_BINDING(duel_answer, void, (uint64_t arbiter, uint64_t challenger, wxl_bool accept), (arbiter, challenger, accept), (void)0)

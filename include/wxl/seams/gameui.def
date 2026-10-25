@@ -67,3 +67,13 @@ WXL_SEAM_RAISES(GameUI, HandleTerrainClick, WorldClick)
 // object's position.
 WXL_SEAM_BEFORE(GameUI, HandleSpriteClick, "CGGameUI::HandleSpriteClick", int32_t, cdecl, (const void* evt))
 WXL_SEAM_RAISES(GameUI, HandleSpriteClick, WorldClick)
+
+// Tells the interface whether the local player is alive (PLAYER_ALIVE) or dead (PLAYER_DEAD) by its
+// health, at entering the world, at a death, at a resurrection and at a release. Reads nothing on
+// the stack and ends in bare `ret`s: cdecl. After works out the player's state from its health and
+// its ghost flag and raises PlayerDied, PlayerReleased or PlayerResurrected when it moved; the
+// first state it sees after entering the world raises nothing.
+WXL_SEAM_AFTER(GameUI, UpdateActivePlayer, "CGGameUI::UpdateActivePlayer", void, cdecl, ())
+WXL_SEAM_RAISES(GameUI, UpdateActivePlayer, PlayerDied)
+WXL_SEAM_RAISES(GameUI, UpdateActivePlayer, PlayerReleased)
+WXL_SEAM_RAISES(GameUI, UpdateActivePlayer, PlayerResurrected)

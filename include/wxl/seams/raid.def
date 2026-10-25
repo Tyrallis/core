@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Raid domain: seams on RaidInfo.cpp, the ready checks.
+//
+// Every row is a handler reached only through the handler table, with the four arguments every
+// handler takes on the stack: cdecl. The bodies read the message from its cursor without moving it.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including raid.def"
+#endif
+
+// MSG_RAID_READY_CHECK: who started a ready check; the client waits 30 seconds for the answers.
+// Reads the message at [ebp+0x14], a bare `ret`. Before raises ReadyCheck.
+WXL_SEAM_BEFORE(Raid, Packet_MSG_RAID_READY_CHECK, "Packet_MSG_RAID_READY_CHECK", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Raid, Packet_MSG_RAID_READY_CHECK, ReadyCheck)
+
+// MSG_RAID_READY_CHECK_CONFIRM: a member's answer. Reads the message at [ebp+0x14], bare `ret`s.
+// Before raises ReadyCheckResponse.
+WXL_SEAM_BEFORE(Raid, Packet_MSG_RAID_READY_CHECK_CONFIRM, "Packet_MSG_RAID_READY_CHECK_CONFIRM", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Raid, Packet_MSG_RAID_READY_CHECK_CONFIRM, ReadyCheckResponse)
+
+// MSG_RAID_READY_CHECK_FINISHED: the check is over. Reads nothing; the handler table's caller
+// pushes four and cleans 0x10 (0x0063202C); a bare `ret`. Before raises ReadyCheckFinished with
+// the initiator the start named.
+WXL_SEAM_BEFORE(Raid, Packet_MSG_RAID_READY_CHECK_FINISHED, "Packet_MSG_RAID_READY_CHECK_FINISHED", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Raid, Packet_MSG_RAID_READY_CHECK_FINISHED, ReadyCheckFinished)
+WXL_SEAM_WITNESS(Raid, Packet_MSG_RAID_READY_CHECK_FINISHED, 0x0063202C)

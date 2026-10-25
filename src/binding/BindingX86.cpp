@@ -964,3 +964,151 @@ namespace wxl::core::binding
         return WXL_TRUE;
     }
 }
+
+// --- Gameplay: auras, loot, reputation, the dialogs' answers (gameplay.def) --------------------
+
+namespace
+{
+    // The client functions the answers call, as the binary declares them.
+    using AcceptGroupFn     = void(__stdcall*)(uint32_t roles);
+    using DeclineGroupFn    = void(__stdcall*)();
+    using AcceptResurrectFn = void(__stdcall*)(int32_t accept);
+    using DuelReplyFn       = void(__cdecl*)();
+    using AsyncTimeFn       = uint32_t(__cdecl*)();
+
+    template <class T>
+    T& At(std::uintptr_t address)
+    {
+        return *reinterpret_cast<T*>(address);
+    }
+}
+
+namespace wxl::core::binding
+{
+    int32_t unit_aura_slot(const void* unit, const void* aura)
+    {
+        if (!IsClient() || !unit || !aura) return -1;
+        // TSCGrowableArray<AuraData, 16>: sixteen slots inline, or, once m_count reads
+        // 0xFFFFFFFF, a TSGrowableArray in the same bytes whose m_data holds them all (the test
+        // OnAuraUpdate makes at 0x0072FAEC).
+        const char*    slots = static_cast<const char*>(unit) + WXL_FIELD("CGUnit_C", "m_auras");
+        const uint32_t count = Read<uint32_t>(unit, WXL_FIELD("CGUnit_C", "m_auras.m_count"));
+        uint32_t       total = 16;
+        if (count == 0xFFFFFFFFu)
+        {
+            slots = Read<const char*>(unit, WXL_FIELD("CGUnit_C", "m_auras.m_dynamic.m_data"));
+            total = Read<uint32_t>(unit, WXL_FIELD("CGUnit_C", "m_auras.m_dynamic.m_data") - 4);
+        }
+        else
+            total = count < 16 ? count : 16;
+        if (!slots) return -1;
+        const std::ptrdiff_t at     = static_cast<const char*>(aura) - slots;
+        const std::ptrdiff_t stride = static_cast<std::ptrdiff_t>(WXL_TYPE_SIZE("AuraData"));
+        if (at < 0 || at % stride != 0 || at / stride >= static_cast<std::ptrdiff_t>(total)) return -1;
+        return static_cast<int32_t>(at / stride);
+    }
+
+    uint32_t os_time_ms(void)
+    {
+        if (!IsClient()) return 0;
+        return reinterpret_cast<AsyncTimeFn>(WXL_SITE("OsGetAsyncTimeMs", 0))();
+    }
+
+    uint64_t loot_object_guid(void)
+    {
+        return IsClient() ? At<const uint64_t>(WXL_STATIC("CGLootInfo::m_lootObj")) : 0;
+    }
+
+    uint32_t loot_kind(void)
+    {
+        return IsClient() ? At<const uint32_t>(WXL_STATIC("CGLootInfo::m_lootAcquire")) : 0;
+    }
+
+    uint32_t loot_money(void)
+    {
+        return IsClient() ? At<const uint32_t>(WXL_STATIC("CGLootInfo::m_coins")) : 0;
+    }
+
+    wxl_bool loot_slot(uint32_t index, int32_t* out)
+    {
+        if (!IsClient() || !out || index >= 18) return WXL_FALSE;
+        const char* slot = reinterpret_cast<const char*>(WXL_STATIC("CGLootInfo::m_slots")) +
+                           index * WXL_TYPE_SIZE("LootSlot");
+        const int32_t item = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_itemID"));
+        if (!item) return WXL_FALSE;
+        out[0] = item;
+        out[1] = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_count"));
+        out[2] = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_displayId"));
+        out[3] = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_randomSuffix"));
+        out[4] = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_randomPropertyId"));
+        out[5] = Read<uint8_t>(slot, WXL_FIELD("LootSlot", "m_slot"));
+        out[6] = Read<int32_t>(slot, WXL_FIELD("LootSlot", "m_slotType"));
+        return WXL_TRUE;
+    }
+
+    uint32_t loot_next_roll_id(void)
+    {
+        return IsClient() ? At<const uint32_t>(WXL_STATIC("s_nextLootRollId")) : 0;
+    }
+
+    int32_t ui_map_id(void)
+    {
+        return IsClient() ? At<const int32_t>(WXL_STATIC("CGGameUI::m_iCurrentMapID")) : -1;
+    }
+
+    wxl_bool faction_standing(uint32_t list_id, int32_t* faction_id, int32_t* base, int32_t* standing)
+    {
+        if (!IsClient() || list_id >= 128) return WXL_FALSE;
+        const char* entry = reinterpret_cast<const char*>(WXL_STATIC("CGReputationInfo::m_factionStandings")) +
+                            list_id * WXL_TYPE_SIZE("FactionStanding");
+        if (faction_id) *faction_id = Read<int32_t>(entry, WXL_FIELD("FactionStanding", "m_factionId"));
+        if (base) *base = Read<int32_t>(entry, WXL_FIELD("FactionStanding", "m_base"));
+        if (standing) *standing = Read<int32_t>(entry, WXL_FIELD("FactionStanding", "m_standing"));
+        return WXL_TRUE;
+    }
+
+    uint64_t ui_interact_target(void)
+    {
+        return IsClient() ? At<const uint64_t>(WXL_STATIC("CGGameUI::m_interactTarget")) : 0;
+    }
+
+    uint64_t trade_partner(void)
+    {
+        return IsClient() ? At<const uint64_t>(WXL_STATIC("CGTradeInfo::m_tradingPlayer")) : 0;
+    }
+
+    void group_invite_answer(wxl_bool accept)
+    {
+        if (!IsClient()) return;
+        // CGPlayer_C::AcceptGroup ends in `ret 4` (0x006D44BE), DeclineGroup in a bare `ret`
+        // (0x006D4532): both __stdcall in the client's own source.
+        if (accept) reinterpret_cast<AcceptGroupFn>(WXL_SITE("CGPlayer_C::AcceptGroup", 0))(0);
+        else reinterpret_cast<DeclineGroupFn>(WXL_SITE("CGPlayer_C::DeclineGroup", 0))();
+    }
+
+    void resurrect_answer(uint64_t offerer, uint32_t sickness, uint32_t use_timer, wxl_bool accept)
+    {
+        if (!IsClient()) return;
+        At<uint64_t>(WXL_STATIC("CGPlayer_C::s_resurrectOfferer"))       = offerer;
+        At<uint32_t>(WXL_STATIC("CGPlayer_C::s_resurrectOfferSickness")) = sickness;
+        At<uint32_t>(WXL_STATIC("CGPlayer_C::s_resurrectOfferUseTimer")) = use_timer;
+        // `ret 4` at 0x006D1DD4: __stdcall, the answer as its one argument.
+        reinterpret_cast<AcceptResurrectFn>(WXL_SITE("CGPlayer_C::AcceptResurrectRequest", 0))(accept ? 1 : 0);
+    }
+
+    void duel_answer(uint64_t arbiter, uint64_t challenger, wxl_bool accept)
+    {
+        if (!IsClient()) return;
+        // AcceptDuel and CancelDuel read the arbiter at 0x00C22B58 (0x005CFC05, 0x005CFC85) and
+        // end in a bare `ret`: static members taking nothing.
+        At<uint64_t>(WXL_STATIC("s_duelArbiter")) = arbiter;
+        if (accept)
+        {
+            reinterpret_cast<DuelReplyFn>(WXL_SITE("CGDuelInfo::AcceptDuel", 0))();
+            At<uint64_t>(WXL_STATIC("CGDuelInfo::m_dueler")) = challenger;
+            return;
+        }
+        reinterpret_cast<DuelReplyFn>(WXL_SITE("CGDuelInfo::CancelDuel", 0))();
+        At<uint64_t>(WXL_STATIC("s_duelArbiter")) = 0;
+    }
+}

@@ -10,6 +10,7 @@
 #include "runtime/Core.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Chat.hpp"
+#include "seams/Gameplay.hpp"
 #include "services/ScriptService.hpp"
 
 #include "wxl/events.h"
@@ -131,6 +132,7 @@ namespace wxl::seam::FrameScript::Destroy
             host->Raise(WXL_EV_ScriptVmClosing, &args);
         }
         wxl::core::services::script::OnContextClosing();
+        wxl::core::seams::gameplay::Forget();
         g_live = false;
     }
 }
@@ -153,6 +155,7 @@ namespace wxl::seam::FrameScript::CreateEvents
             wxl::core::services::script::OnContextReady(g_context, state);
         }
         wxl::core::services::script::OnClientEventsInstalled(names, count);
+        wxl::core::seams::gameplay::Install(names, count);
         if (!announce) return;
         WLOG_DEBUG(wxl::core::kTag, "script context up: %s", ContextName(g_context));
 
@@ -174,6 +177,16 @@ namespace wxl::seam::FrameScript::vSignalEvent
 {
     void WXL_CALL Before(uint32_t index, const char* format, void* args)
     {
+        // The windows an NPC opens are told to the interface by name; their events say which.
+        bool            opened = false;
+        wxl_window_args window{};
+        if (wxl::core::seams::gameplay::Signal(index, opened, window))
+            if (wxl::host::ModHost* host = wxl::core::Host())
+            {
+                if (opened) host->Raise(WXL_EV_WindowOpened, &window);
+                else host->Raise(WXL_EV_WindowClosed, &window);
+            }
+
         // CHAT_MSG_ADDON is where the client delivers an addon message of the server.
         wxl_chat_addon_args addon{};
         if (wxl::core::seams::chat::AddonDelivered(index, format, args, addon))

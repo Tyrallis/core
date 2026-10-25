@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Loot domain: seams on CGLootInfo (LootFrame.cpp), the loot window as the interface holds
+// it: its object, its money and its items packed from the front.
+//
+// Every row is a static member: cdecl.
+
+#ifndef WXL_SEAM
+#error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including loot.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including loot.def"
+#endif
+
+// Puts the loot window on an object, or on nothing: the window open before is closed first
+// (LOOT_CLOSED), then the new one's money and items are copied out of the local player's loot,
+// its item records asked for, and LOOT_OPENED fired once all are known (or the items looted at
+// once with autoloot on). Called with the object by CGGameUI::OpenLoot and with nothing by
+// CloseLoot; reads its three arguments at [ebp+8] on and ends in bare `ret`s: cdecl. Before notes
+// the window open, After raises LootClosed for it when it is gone, then LootOpened and a LootSlot
+// per item for the new one.
+WXL_SEAM(Loot, SetObject, "CGLootInfo::SetObject", void, cdecl, (void* object, int32_t coins, uint32_t loot_acquire))
+WXL_SEAM_RAISES(Loot, SetObject, LootOpened)
+WXL_SEAM_RAISES(Loot, SetObject, LootSlot)
+WXL_SEAM_RAISES(Loot, SetObject, LootClosed)
+
+// Empties the window's entry for a server loot slot (SMSG_LOOT_REMOVED) and closes the window
+// once nothing is left. Reads the slot as a byte at [ebp+8] (0x00589923) and ends in bare `ret`s:
+// cdecl. Before raises LootSlotCleared with the entry it is about to empty.
+WXL_SEAM_BEFORE(Loot, ClearSlot, "CGLootInfo::ClearSlot", void, cdecl, (uint8_t slot))
+WXL_SEAM_RAISES(Loot, ClearSlot, LootSlotCleared)

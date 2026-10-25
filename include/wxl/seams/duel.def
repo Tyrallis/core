@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Duel domain: seams on DuelInfo.cpp, duels.
+//
+// Every row is a handler reached only through the handler table, with the four arguments every
+// handler takes on the stack, reading the message at [ebp+0x14] and ending in bare `ret`s: cdecl.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including duel.def"
+#endif
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including duel.def"
+#endif
+
+// SMSG_DUEL_REQUESTED: keeps the arbiter, answers a challenge the player sent itself or one from an
+// ignored player, and shows the dialog for any other. Gate raises DuelRequested for a challenge
+// the client would show; when a handler accepted or declined, it answers as the handler and the
+// dialog do between them (binding duel_answer) and takes the call.
+WXL_SEAM_GATE(Duel, Packet_SMSG_DUEL_REQUESTED, "Packet_SMSG_DUEL_REQUESTED", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Duel, Packet_SMSG_DUEL_REQUESTED, DuelRequested)
+
+// SMSG_DUEL_COUNTDOWN, SMSG_DUEL_WINNER, SMSG_DUEL_COMPLETE. Before raises DuelCountdown,
+// DuelWon and DuelFinished.
+WXL_SEAM_BEFORE(Duel, Packet_SMSG_DUEL_COUNTDOWN, "Packet_SMSG_DUEL_COUNTDOWN", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Duel, Packet_SMSG_DUEL_COUNTDOWN, DuelCountdown)
+WXL_SEAM_BEFORE(Duel, Packet_SMSG_DUEL_WINNER, "Packet_SMSG_DUEL_WINNER", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Duel, Packet_SMSG_DUEL_WINNER, DuelWon)
+WXL_SEAM_BEFORE(Duel, Packet_SMSG_DUEL_COMPLETE, "Packet_SMSG_DUEL_COMPLETE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Duel, Packet_SMSG_DUEL_COMPLETE, DuelFinished)

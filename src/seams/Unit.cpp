@@ -9,11 +9,13 @@
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
+#include "seams/Gameplay.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 
 #include <cstdint>
+#include <cstring>
 
 namespace
 {
@@ -93,17 +95,28 @@ namespace wxl::seam::Unit::OnDeath
 
 namespace wxl::seam::Unit::OnAuraAdded
 {
-    void WXL_CALL After(void* self, uint32_t, uint8_t, void*, int32_t spell_id)
+    void WXL_CALL After(void* self, uint32_t index, uint8_t, void* aura, int32_t spell_id)
     {
         AuraChanged(self, spell_id, WXL_FALSE);
+        wxl::host::ModHost* host = wxl::core::seams::gameplay::Listener({ WXL_EV_UnitAuraApplied });
+        if (!host) return;
+        wxl_aura_args args{};
+        if (!wxl::core::seams::gameplay::Aura(self, aura, index, args)) return;
+        host->Raise(WXL_EV_UnitAuraApplied, &args);
     }
 }
 
 namespace wxl::seam::Unit::OnAuraRemoved
 {
-    void WXL_CALL After(void* self, uint32_t, uint8_t, void*, int32_t spell_id)
+    void WXL_CALL After(void* self, uint32_t index, uint8_t, void* aura, int32_t spell_id)
     {
         AuraChanged(self, spell_id, WXL_TRUE);
+        wxl::host::ModHost* host = wxl::core::seams::gameplay::Listener({ WXL_EV_UnitAuraRemoved });
+        if (!host) return;
+        // `aura` is the copy of the slot from before the update: what the aura was.
+        wxl_aura_args args{};
+        if (!wxl::core::seams::gameplay::Aura(self, aura, index, args)) return;
+        host->Raise(WXL_EV_UnitAuraRemoved, &args);
     }
 }
 
@@ -126,5 +139,23 @@ namespace wxl::seam::Unit::SendMovementUpdate
         wxl::core::binding::object_facing(self, &args.facing);
         if (start) host->Raise(WXL_EV_PlayerMoveStart, &args);
         else host->Raise(WXL_EV_PlayerMoveStop, &args);
+    }
+}
+
+namespace wxl::seam::Unit::MountDisplayIDUpdateHandler
+{
+    void WXL_CALL Before(uint64_t guid, uint32_t, uint32_t, const void* old_value, void*)
+    {
+        constexpr uint32_t kMountDisplayId = 0x45; ///< UNIT_FIELD_MOUNTDISPLAYID
+        wxl::host::ModHost* host = wxl::core::seams::gameplay::Listener({ WXL_EV_UnitMountChanged });
+        if (!host || !old_value) return;
+        void* unit = wxl::core::seams::gameplay::ObjectOf(guid);
+        wxl_mount_args args{};
+        if (!unit || !wxl::core::seams::gameplay::Field(unit, kMountDisplayId, args.display_id)) return;
+        std::memcpy(&args.previous_display_id, old_value, sizeof args.previous_display_id);
+        if (args.previous_display_id == args.display_id) return;
+        args.unit      = wxl::core::objects::HandleOf(unit);
+        args.unit_guid = guid;
+        host->Raise(WXL_EV_UnitMountChanged, &args);
     }
 }

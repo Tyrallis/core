@@ -108,6 +108,13 @@
 #include "wxl/seams/storm.def"
 #include "wxl/seams/clientdb.def"
 #include "wxl/seams/os.def"
+#include "wxl/seams/loot.def"
+#include "wxl/seams/container.def"
+#include "wxl/seams/raid.def"
+#include "wxl/seams/duel.def"
+#include "wxl/seams/trade.def"
+#include "wxl/seams/reputation.def"
+#include "wxl/seams/achievement.def"
 
 #ifdef WXL_SEAM_RAISES_DEFAULTED
     #undef WXL_SEAM_RAISES

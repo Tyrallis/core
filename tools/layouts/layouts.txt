@@ -739,6 +739,9 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   m_movementData.m_facing                 -                                            # wxl.object: the raw facing when the unit is read by field
   m_castingSpellId                        -                                            # binding unit_casting_spell_id: the cast in progress
   m_channelSpellId                        -                                            # binding unit_channel_spell_id: the channel in progress
+  m_auras                                 -                                            # binding unit_aura_slot: the aura slots, inline or grown
+  m_auras.m_count                         -                                            # binding unit_aura_slot: 0xFFFFFFFF once the slots grew out of line
+  m_auras.m_dynamic.m_data                -                                            # binding unit_aura_slot: the grown slots
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData
@@ -1275,3 +1278,33 @@ type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
 type PENDINGCHAT WoW/Source/Ui/ChatFrame.h PENDINGCHAT
   sizeof                                  -                                            # QueueChatText allocates 0xD8 (0x00502D0E)
   m_text                                  -                                            # binding pending_chat_text (0x00502DA9 stores the copy)
+
+# =============================================================================================
+# The gameplay events' reads (binding/gameplay.def)
+# =============================================================================================
+
+type AuraData WoW/Source/Object/ObjectClient/AuraData.h AuraData
+  sizeof                                  -                                            # an aura slot: 0x18, the stride OnAuraUpdate walks (0x0072FAC4)
+  m_creator                               -                                            # binding aura_caster
+  m_spellId                               -                                            # binding aura_spell_id
+  m_flags                                 -                                            # binding aura_flags
+  m_level                                 -                                            # binding aura_level
+  m_stackCount                            -                                            # binding aura_stacks
+  m_duration                              -                                            # binding aura_duration
+  m_endTime                               -                                            # binding aura_end_time
+
+type LootSlot WoW/Source/Ui/LootFrame.h LootSlot
+  sizeof                                  -                                            # CGLootInfo::m_slots' stride: 0x20 (ClearSlot, 0x0058993D)
+  m_itemID                                -                                            # binding loot_slot
+  m_displayId                             -                                            # binding loot_slot
+  m_count                                 -                                            # binding loot_slot
+  m_randomSuffix                          -                                            # binding loot_slot
+  m_randomPropertyId                      -                                            # binding loot_slot
+  m_slot                                  -                                            # binding loot_slot
+  m_slotType                              -                                            # binding loot_slot
+
+type FactionStanding WoW/Source/Ui/ReputationInfo.h FactionStanding
+  sizeof                                  -                                            # CGReputationInfo::m_factionStandings' stride
+  m_factionId                             -                                            # binding faction_standing
+  m_base                                  -                                            # binding faction_standing
+  m_standing                              -                                            # binding faction_standing

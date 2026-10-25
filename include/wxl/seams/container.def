@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Container domain: seams on ContainerFrame.cpp, the bags as the interface follows them.
+//
+// Every row is a mirror handler the client registers on a slot field when the player enters the
+// world or a bag is equipped: a file function whose address is taken, reached only through
+// CallMirrorFunctions, which pushes six dwords (the guid's two, the field's offset and size, the
+// previous value by address, the handler's parameter) and cleans 0x18 at 0x004D5254: cdecl. Each
+// runs after the server wrote the slot, so the item now there is in the descriptor block.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including container.def"
+#endif
+
+// The equipped bags (PLAYER_FIELD_INV_SLOT_HEAD's slots 19-22) and the bank's bags (67-73) of the
+// local player: reads the guid and the offset and ends in a bare `ret`. Before raises
+// InventorySlotChanged for the player's slot.
+WXL_SEAM_BEFORE(Container, InvUpdateHandler, "InvUpdateHandler", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Container, InvUpdateHandler, InventorySlotChanged)
+WXL_SEAM_WITNESS(Container, InvUpdateHandler, 0x004D5254)
+
+// The backpack (slots 23-38), the keyring and the currencies (86-149) of the local player: reads
+// the guid, the offset and the previous value and ends in a bare `ret`. Before raises
+// InventorySlotChanged for the player's slot.
+WXL_SEAM_BEFORE(Container, UpdateInvContents, "UpdateInvContents", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Container, UpdateInvContents, InventorySlotChanged)
+WXL_SEAM_WITNESS(Container, UpdateInvContents, 0x004D5254)
+
+// One slot of an equipped bag (CONTAINER_FIELD_SLOT_n): the same reads. Before raises
+// InventorySlotChanged for the bag's slot.
+WXL_SEAM_BEFORE(Container, UpdateContainerContents, "UpdateContainerContents", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Container, UpdateContainerContents, InventorySlotChanged)
+WXL_SEAM_WITNESS(Container, UpdateContainerContents, 0x004D5254)
