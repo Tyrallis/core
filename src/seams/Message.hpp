@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // A reader of a server message a seam was handed, for the bodies that read a message before
 // the client parses it, on both builds.
@@ -38,8 +38,40 @@ namespace wxl::core::seams
         }
 
         bool U8(uint8_t& out) { return Take(&out, sizeof out); }
+        bool U16(uint16_t& out) { return Take(&out, sizeof out); }
         bool U32(uint32_t& out) { return Take(&out, sizeof out); }
         bool U64(uint64_t& out) { return Take(&out, sizeof out); }
+        bool F32(float& out) { return Take(&out, sizeof out); }
+
+        /// A NUL-terminated string in place: its first byte and its length without the NUL.
+        /// Fails when no NUL is left in the message.
+        bool CString(const char*& out, uint32_t& length)
+        {
+            if (!at_) return false;
+            const uint8_t* nul = static_cast<const uint8_t*>(std::memchr(at_, 0, Left()));
+            if (!nul)
+            {
+                at_ = nullptr;
+                return false;
+            }
+            out    = reinterpret_cast<const char*>(at_);
+            length = static_cast<uint32_t>(nul - at_);
+            at_    = nul + 1;
+            return true;
+        }
+
+        /// A string the client reads in situ: its length (the NUL counted) as a dword, then its
+        /// bytes. Answers the text without the NUL; an empty string for a length of zero.
+        bool SizedString(const char*& out, uint32_t& length)
+        {
+            uint32_t size = 0;
+            if (!U32(size)) return false;
+            const uint8_t* start = at_;
+            if (!Skip(size)) return false;
+            out    = reinterpret_cast<const char*>(start);
+            length = size && start[size - 1] == 0 ? size - 1 : size;
+            return true;
+        }
 
         bool Skip(size_t count)
         {

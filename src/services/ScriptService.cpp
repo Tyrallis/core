@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The wxl.script service: the SDK's script table over the client's own Lua, through the binding.
 
@@ -7,6 +7,7 @@
 
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
+#include "runtime/Code.hpp"
 #include "runtime/Core.hpp"
 
 #include "wxl/events.h"
@@ -37,6 +38,7 @@ namespace
 {
     constexpr char kTag[] = "script";
 
+    namespace code    = wxl::core::code;
     namespace binding = wxl::core::binding;
 
     /// A function a mod registered on the live context. Its slot (index + 1) is the closure's
@@ -230,6 +232,8 @@ namespace
 
     uint32_t WXL_CALL Context(void) { return g_context; }
 
+    wxl_bool WXL_CALL LiveNow(void) { return g_live ? WXL_TRUE : WXL_FALSE; }
+
     wxl_result WXL_CALL RegisterFunction(const char* name, wxl_script_fn fn, void* user)
     {
         if (!name || !*name || !fn) return WXL_E_INVALID;
@@ -246,6 +250,8 @@ namespace
                       name);
             return WXL_E_INVALID;
         }
+
+        if (!code::Handable(reinterpret_cast<const void*>(&NativeThunk), "register_function")) return WXL_E_FAILED;
 
         const uint32_t owner = CurrentMod();
         g_functions.push_back(Registration{name, fn, user, owner, true});
@@ -394,6 +400,7 @@ namespace
         &PushBool,
         &PushNil,
         &Fail,
+        &LiveNow,
     };
 }
 

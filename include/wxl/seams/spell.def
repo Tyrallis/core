@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Spell domain: seams on the client's spell casting, Spell_C.cpp -- what the server tells
 // the client about casts, and what the local player asks for.
@@ -63,8 +63,8 @@ WXL_SEAM_RAISES(Spell, CastSpell, SpellCastRequest)
 
 // The rows below are packet handlers reached only through the handler table, with the four
 // arguments every handler takes on the stack (cdecl, as the handlers above), and one free
-// function with external linkage. Their conventions are fixed by that linkage; the check of
-// each against the binary is pending.
+// function with external linkage. Each reads its arguments from the stack and ends in a bare
+// `ret`, which tools/seams/check_conventions.py confirms against the binary.
 
 // The handler of MSG_CHANNEL_START: the caster as a packed guid, the spell id and the
 // channel's length. Shows the channel on the unit and signals the interface, for a spell the

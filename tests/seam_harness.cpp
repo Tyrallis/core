@@ -1,15 +1,19 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The seam harness: the seam bodies, driven by hand against a real mod host and a fake client.
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
+#include "runtime/Code.hpp"
+#include "runtime/Crash.hpp"
 #include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
+#include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
@@ -18,6 +22,8 @@
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
+#include "wxl/core/profile.h"
+#include "wxl/core/storm.hpp"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -26,16 +32,24 @@
     #include "seams/RegparmX86.hpp"
 #endif
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <iterator>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <windows.h>
+#undef far
+#undef near
 
 // --- What Core.cpp and the attachments supply in the DLL -------------------------------------
 
@@ -73,11 +87,40 @@ namespace
         uint32_t typeId = 0;
         uint32_t entry  = 0;
         wxl_vec3 position{};
-        uint32_t health = 0;
+        int32_t  health = 0;
         int32_t  visibleItems[19]{};
         uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
         uint32_t channelSpellId = 0; ///< the channel it shows
+        uint32_t movementFlags  = 0; ///< the movement block's flags
+        float    facing         = 0.0f;
+        uint32_t money          = 0; ///< the local block's coinage
+        std::vector<uint32_t> block; ///< the descriptor block, empty for none
     };
+
+    /// A terrain click and a sprite click, as the GameUI rows read them.
+    struct FakeTerrainClick
+    {
+        uint64_t guid   = 0;
+        wxl_vec3 point{};
+        uint32_t button = 0;
+    };
+
+    struct FakeSpriteClick
+    {
+        uint64_t guid   = 0;
+        uint32_t button = 0;
+    };
+
+    /// A console variable, as the ConsoleVar rows read one.
+    struct FakeCVar
+    {
+        const char* name  = nullptr;
+        const char* value = nullptr;
+        uint32_t    flags = 0;
+    };
+
+    /// The glue screen the fake client shows.
+    char g_glueScreen[64] = {};
 
     /// A visible item as CGPlayer_C::UpdateInventoryComponent is handed one.
     struct FakeVisibleItem
@@ -99,12 +142,24 @@ namespace
 
     int32_t WXL_CALL FakeMapId(void) { return g_mapId; }
     const void* WXL_CALL FakeLocalPlayer(void) { return g_localPlayer; }
+
+    /// What the fake client's object manager holds, announced or not: object_by_guid's table.
+    std::vector<FakeObject*> g_held;
+
+    const void* WXL_CALL FakeObjectByGuid(uint64_t guid);
     uint64_t WXL_CALL FakeTargetGuid(void) { return g_targetGuid; }
 
     uint64_t WXL_CALL FakeGuid(const void* object) { return Obj(object)->guid; }
+
+    const void* WXL_CALL FakeObjectByGuid(uint64_t guid)
+    {
+        for (FakeObject* object : g_held)
+            if (object->guid == guid) return object;
+        return nullptr;
+    }
     uint32_t WXL_CALL FakeTypeId(const void* object) { return Obj(object)->typeId; }
     uint32_t WXL_CALL FakeEntry(const void* object) { return Obj(object)->entry; }
-    uint32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
+    int32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
     uint32_t WXL_CALL FakeCastingSpellId(const void* object) { return Obj(object)->castingSpellId; }
     uint32_t WXL_CALL FakeChannelSpellId(const void* object) { return Obj(object)->channelSpellId; }
 
@@ -113,6 +168,61 @@ namespace
         if (Obj(object)->typeId == WXL_OBJECT_ITEM) return WXL_FALSE;
         *out = Obj(object)->position;
         return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeFacing(const void* object, float* out)
+    {
+        if (Obj(object)->typeId == WXL_OBJECT_ITEM) return WXL_FALSE;
+        *out = Obj(object)->facing;
+        return WXL_TRUE;
+    }
+
+    uint32_t WXL_CALL FakeMovementFlags(const void* object) { return Obj(object)->movementFlags; }
+    uint32_t WXL_CALL FakeMoney(const void* object) { return Obj(object)->money; }
+
+    const FakeTerrainClick* Terrain(const void* evt) { return static_cast<const FakeTerrainClick*>(evt); }
+    uint64_t WXL_CALL FakeTerrainGuid(const void* evt) { return Terrain(evt)->guid; }
+    float WXL_CALL FakeTerrainX(const void* evt) { return Terrain(evt)->point.x; }
+    float WXL_CALL FakeTerrainY(const void* evt) { return Terrain(evt)->point.y; }
+    float WXL_CALL FakeTerrainZ(const void* evt) { return Terrain(evt)->point.z; }
+    uint32_t WXL_CALL FakeTerrainButton(const void* evt) { return Terrain(evt)->button; }
+
+    const FakeSpriteClick* Sprite(const void* evt) { return static_cast<const FakeSpriteClick*>(evt); }
+    uint64_t WXL_CALL FakeSpriteGuid(const void* evt) { return Sprite(evt)->guid; }
+    uint32_t WXL_CALL FakeSpriteButton(const void* evt) { return Sprite(evt)->button; }
+
+    const FakeCVar* CVarOf(const void* cvar) { return static_cast<const FakeCVar*>(cvar); }
+    const char* WXL_CALL FakeCVarName(const void* cvar) { return CVarOf(cvar)->name; }
+    const char* WXL_CALL FakeCVarValue(const void* cvar) { return CVarOf(cvar)->value; }
+    uint32_t WXL_CALL FakeCVarFlags(const void* cvar) { return CVarOf(cvar)->flags; }
+
+    const char* WXL_CALL FakeGlueScreen(void) { return g_glueScreen; }
+
+    /// A login object as the fake client keeps it: what its GetLoginServerType answers.
+    struct FakeLogin
+    {
+        int32_t serverType = 0;
+    };
+
+    int32_t WXL_CALL FakeLoginServerType(const void* login)
+    {
+        return login ? static_cast<const FakeLogin*>(login)->serverType : -1;
+    }
+
+    /// A line the chat holds, as PENDINGCHAT keeps it: the copy of its text.
+    struct FakePendingChat
+    {
+        const char* text = nullptr;
+    };
+
+    /// The tail of the chat's held lines: the one a test just queued.
+    const FakePendingChat* g_pendingLast = nullptr;
+
+    const void* WXL_CALL FakePendingLast() { return g_pendingLast; }
+
+    const char* WXL_CALL FakePendingText(const void* line)
+    {
+        return line ? static_cast<const FakePendingChat*>(line)->text : nullptr;
     }
 
     wxl_bool WXL_CALL FakeVisibleItemId(const void* object, uint32_t slot, int32_t* out)
@@ -438,6 +548,90 @@ namespace
 
     wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
 
+    // The client's folder and its archives' listfiles, as find and the search path see them.
+    std::string              g_basePath;
+    std::vector<std::string> g_listed = {"Interface\\FrameXML\\FrameXML.toc",
+                                         "Interface\\FrameXML\\Bindings.xml",
+                                         "INTERFACE\\Icons\\A.blp", "Interface\\Glues\\Glues.toc"};
+
+    const char* WXL_CALL FakeBasePath() { return g_basePath.c_str(); }
+
+    uint32_t WXL_CALL FakeArchiveList(wxl_core_name_fn fn, void* user)
+    {
+        for (const std::string& name : g_listed)
+            if (!fn(name.c_str(), user)) break;
+        return 1;
+    }
+
+    // What wxl.footprint reads of the client: a texture of each pool and a buffer, the sound and
+    // script heaps, two archives, two databases.
+    wxl_core_gpu_resource g_gpu[] = {
+        {WXL_CORE_GPU_TEXTURE, 1, 4096}, {WXL_CORE_GPU_TEXTURE, 1, 1024}, {WXL_CORE_GPU_TEXTURE, 0, 8192},
+        {WXL_CORE_GPU_BUFFER, 0, 65536},
+    };
+
+    uint32_t WXL_CALL FakeGxResources(wxl_core_gpu_fn fn, void* user)
+    {
+        for (const wxl_core_gpu_resource& resource : g_gpu) fn(&resource, user);
+        return static_cast<uint32_t>(sizeof g_gpu / sizeof g_gpu[0]);
+    }
+
+    wxl_bool WXL_CALL FakeSoundHeap(uint64_t* current, uint64_t* peak)
+    {
+        *current = 3000000;
+        *peak    = 5000000;
+        return WXL_TRUE;
+    }
+
+    uint64_t WXL_CALL FakeScriptHeap() { return 12345678; }
+
+    wxl_core_archive g_archives[] = {
+        {"Data\\common.MPQ", 0, 65536, 40000, 2000000},
+        {"Data\\patch-3.MPQ", 30, 16384, 9000, 500000},
+    };
+
+    /// An SArchive as SFile::OpenArchive hands one out: its type, then its record.
+    struct FakeSArchive
+    {
+        uint32_t          type;
+        wxl_core_archive* record;
+    };
+
+    uint32_t WXL_CALL FakeArchiveTables(wxl_core_archive_fn fn, void* user)
+    {
+        for (const wxl_core_archive& archive : g_archives) fn(&archive, user);
+        return 2;
+    }
+
+    wxl_bool WXL_CALL FakeArchiveOf(void* archive, wxl_core_archive* out)
+    {
+        const FakeSArchive* handle = static_cast<const FakeSArchive*>(archive);
+        if (!handle || handle->type != 0 || !handle->record) return WXL_FALSE;
+        *out = *handle->record;
+        return WXL_TRUE;
+    }
+
+    alignas(8) char g_spellRecords[64];
+    alignas(8) char g_spellStrings[32];
+
+    uint32_t WXL_CALL FakeClientDbs(wxl_core_db_fn fn, void* user)
+    {
+        wxl_core_db spell{};
+        spell.file         = "DBFilesClient\\Spell.dbc";
+        spell.loaded       = WXL_TRUE;
+        spell.records      = 2;
+        spell.record_size  = 32;
+        spell.blocks[0]    = g_spellRecords;
+        spell.estimates[0] = 64;
+        spell.blocks[1]    = g_spellStrings;
+        spell.blocks[2]    = nullptr;
+        fn(&spell, user);
+        wxl_core_db unread{};
+        unread.file = "DBFilesClient\\Map.dbc";
+        fn(&unread, user);
+        return 2;
+    }
+
     // The graphics device, as the paint and the device's resets see it.
     bool     g_gxContext = true;
     bool     g_gxVisible = true;
@@ -457,6 +651,135 @@ namespace
         return WXL_TRUE;
     }
 
+    // The descriptor blocks and the mirror handlers, as the field rows see them.
+    void* WXL_CALL FakeDescriptor(const void* object)
+    {
+        FakeObject* fake = const_cast<FakeObject*>(Obj(object));
+        return fake->block.empty() ? nullptr : fake->block.data();
+    }
+
+    /// A mirror handler the runtime set: on a kind, or on one object when `guid` is not 0.
+    struct FakeMirror
+    {
+        uint64_t           guid;
+        uint32_t           type;
+        uint32_t           offset;
+        uint32_t           size;
+        wxl_core_mirror_fn handler;
+        void*              param;
+    };
+    std::vector<FakeMirror> g_mirrors;
+
+    wxl_bool WXL_CALL FakeWatchType(uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler,
+                                    void* param)
+    {
+        g_mirrors.push_back(FakeMirror{0, type, offset, size, handler, param});
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeWatchOne(uint64_t guid, uint32_t type, uint32_t offset, uint32_t size,
+                                   wxl_core_mirror_fn handler, void* param)
+    {
+        g_mirrors.push_back(FakeMirror{guid, type, offset, size, handler, param});
+        return WXL_TRUE;
+    }
+
+    /// Takes a handler back as the client does: the first one set with that function and param.
+    wxl_bool Unset(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        for (auto it = g_mirrors.begin(); it != g_mirrors.end(); ++it)
+        {
+            if (it->guid != guid || it->type != type || it->offset != offset || it->handler != handler ||
+                it->param != param)
+                continue;
+            g_mirrors.erase(it);
+            return WXL_TRUE;
+        }
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeUnwatchType(uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param)
+    {
+        return Unset(0, type, offset, handler, param);
+    }
+
+    wxl_bool WXL_CALL FakeUnwatchOne(uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler,
+                                     void* param)
+    {
+        return Unset(guid, type, offset, handler, param);
+    }
+
+    /// The changes a mod other than the harness received, by the handler it subscribed.
+    std::vector<wxl_object_field_args> g_modChanges;
+
+    void WXL_CALL OnModFieldChanged(void*, const void* args)
+    {
+        g_modChanges.push_back(*static_cast<const wxl_object_field_args*>(args));
+    }
+
+    // --- Assets: a model, a map object and a placed doodad, as the asset rows read them -------
+
+    struct FakeModel
+    {
+        char        name[260] = {};
+        std::string bytes;
+        std::string replaced;    ///< what model_replace_bytes put in place, when it was asked
+        bool        replace_fails = false;
+    };
+
+    struct FakeMapObj
+    {
+        char        name[260] = {};
+        std::string bytes;
+    };
+
+    struct FakeDoodad
+    {
+        wxl_vec3 position{};
+    };
+
+    const char* WXL_CALL FakeModelPath(const void* shared)
+    {
+        return shared ? static_cast<const FakeModel*>(shared)->name : nullptr;
+    }
+
+    const void* WXL_CALL FakeModelBytes(const void* shared, uint32_t* size)
+    {
+        if (!shared) return nullptr;
+        const FakeModel* model = static_cast<const FakeModel*>(shared);
+        const std::string& now = model->replaced.empty() ? model->bytes : model->replaced;
+        if (size) *size = static_cast<uint32_t>(now.size());
+        return now.data();
+    }
+
+    wxl_bool WXL_CALL FakeModelReplace(void* shared, const void* bytes, uint32_t size)
+    {
+        FakeModel* model = static_cast<FakeModel*>(shared);
+        if (!model || !bytes || !size || model->replace_fails) return WXL_FALSE;
+        model->replaced.assign(static_cast<const char*>(bytes), size);
+        return WXL_TRUE;
+    }
+
+    const char* WXL_CALL FakeMapObjPath(const void* map_obj)
+    {
+        return map_obj ? static_cast<const FakeMapObj*>(map_obj)->name : nullptr;
+    }
+
+    const void* WXL_CALL FakeMapObjBytes(const void* map_obj, uint32_t* size)
+    {
+        if (!map_obj) return nullptr;
+        const FakeMapObj* root = static_cast<const FakeMapObj*>(map_obj);
+        if (size) *size = static_cast<uint32_t>(root->bytes.size());
+        return root->bytes.data();
+    }
+
+    wxl_bool WXL_CALL FakeDoodadPosition(const void* def, wxl_vec3* out)
+    {
+        if (!def || !out) return WXL_FALSE;
+        *out = static_cast<const FakeDoodad*>(def)->position;
+        return WXL_TRUE;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
     wxl_core_init FakeInit()
     {
@@ -464,6 +787,7 @@ namespace
         init.struct_size            = sizeof init;
         init.map_id                 = &FakeMapId;
         init.local_player_object    = &FakeLocalPlayer;
+        init.object_by_guid         = &FakeObjectByGuid;
         init.ui_target_guid         = &FakeTargetGuid;
         init.object_guid            = &FakeGuid;
         init.object_type_id         = &FakeTypeId;
@@ -507,6 +831,8 @@ namespace
         init.file_read              = &FakeFileRead;
         init.file_close             = &FakeFileClose;
         init.archive_mount          = &FakeArchiveMount;
+        init.storage_base_path      = &FakeBasePath;
+        init.archive_list           = &FakeArchiveList;
         init.gx_device_exists       = &FakeGxDeviceExists;
         init.gx_has_context         = &FakeGxHasContext;
         init.gx_window_visible      = &FakeGxWindowVisible;
@@ -514,6 +840,40 @@ namespace
         init.pending_cast_caster    = &FakePendingCaster;
         init.pending_cast_spell_id  = &FakePendingSpellId;
         init.pending_cast_count     = &FakePendingCount;
+        init.object_facing          = &FakeFacing;
+        init.unit_movement_flags    = &FakeMovementFlags;
+        init.player_money           = &FakeMoney;
+        init.terrain_click_guid     = &FakeTerrainGuid;
+        init.terrain_click_x        = &FakeTerrainX;
+        init.terrain_click_y        = &FakeTerrainY;
+        init.terrain_click_z        = &FakeTerrainZ;
+        init.terrain_click_button   = &FakeTerrainButton;
+        init.sprite_click_guid      = &FakeSpriteGuid;
+        init.sprite_click_button    = &FakeSpriteButton;
+        init.cvar_name              = &FakeCVarName;
+        init.cvar_value             = &FakeCVarValue;
+        init.cvar_flags             = &FakeCVarFlags;
+        init.glue_current_screen    = &FakeGlueScreen;
+        init.login_server_type      = &FakeLoginServerType;
+        init.chat_pending_last      = &FakePendingLast;
+        init.pending_chat_text      = &FakePendingText;
+        init.object_descriptor      = &FakeDescriptor;
+        init.object_watch_type      = &FakeWatchType;
+        init.object_watch_one       = &FakeWatchOne;
+        init.object_unwatch_type    = &FakeUnwatchType;
+        init.object_unwatch_one     = &FakeUnwatchOne;
+        init.gx_resources           = &FakeGxResources;
+        init.sound_heap             = &FakeSoundHeap;
+        init.script_heap            = &FakeScriptHeap;
+        init.archive_tables         = &FakeArchiveTables;
+        init.archive_of             = &FakeArchiveOf;
+        init.client_dbs             = &FakeClientDbs;
+        init.model_path             = &FakeModelPath;
+        init.model_bytes            = &FakeModelBytes;
+        init.model_replace_bytes    = &FakeModelReplace;
+        init.map_obj_path           = &FakeMapObjPath;
+        init.map_obj_bytes          = &FakeMapObjBytes;
+        init.doodad_position        = &FakeDoodadPosition;
         return init;
     }
 }
@@ -569,6 +929,22 @@ namespace
     }
 
     int g_failures = 0;
+
+    /// The harness's own subscription to each event it records, so a check can take it away to
+    /// see what a seam does when nobody listens, and give it back.
+    wxl_subscription g_heard[WXL_EV_COUNT]{};
+
+    void Mute(wxl_event event)
+    {
+        g_host->Events().Unsubscribe(g_heard[event]);
+        g_heard[event] = WXL_SUBSCRIPTION_NONE;
+    }
+
+    void Unmute(wxl_event event)
+    {
+        if (g_heard[event] == WXL_SUBSCRIPTION_NONE)
+            g_heard[event] = g_host->Events().Subscribe(event, &OnEvent, &g_tags[event], 0);
+    }
 
     void Check(bool ok, const char* what)
     {
@@ -677,6 +1053,7 @@ namespace
             g_tags[event] = event;
             const wxl_subscription subscription =
                 g_host->Events().Subscribe(event, &OnEvent, &g_tags[event], 0);
+            g_heard[event] = subscription;
             char what[128];
             snprintf(what, sizeof what, "a mod can subscribe to event %u", unsigned(event));
             Check(subscription != WXL_SUBSCRIPTION_NONE, what);
@@ -780,7 +1157,7 @@ namespace
         const wxl_object_api* api = wxl::core::objects::Api();
         Check(api->valid(args.object) == WXL_TRUE, "the handle resolves through wxl.object");
         Check(api->guid(args.object) == boar.guid, "and reads the guid");
-        uint32_t health = 0;
+        int32_t health = 0;
         Check(api->unit_health(args.object, &health) == WXL_OK && health == 90,
               "a unit read goes through the binding to the client's object");
         wxl_vec3 position{};
@@ -828,6 +1205,268 @@ namespace
               "DestroyRemovedObject on a tracked object raises ObjectDestroy once");
         Check(api->valid(Only(WXL_EV_ObjectDestroy)->As<wxl_object_args>().object) == WXL_FALSE,
               "and the handle is gone after it");
+    }
+
+    /// GetUpdateObject: an object brought back from the lazy-cleanup set is tracked again with a
+    /// handle of its own and announced; one already tracked raises nothing; from_guid finds what
+    /// the client holds even when no seam announced it.
+    void CheckRevivedObjects()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject wolf;
+        wolf.guid   = 0xF130000000000789ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        wolf.health = 70;
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 8000u);
+        const wxl_handle first = Only(WXL_EV_ObjectCreate) ? Only(WXL_EV_ObjectCreate)->As<wxl_object_args>().object
+                                                           : WXL_HANDLE_NONE;
+        int32_t reenabled = 0;
+        g_received.clear();
+        Check(wxl::core::objects::IsTracked(&wolf), "a created object is tracked");
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        Check(g_received.empty(), "GetUpdateObject on a tracked object raises nothing");
+
+        // Out of range: ObjDelete lets it go to the lazy-cleanup set, its handle goes stale.
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        Check(api->valid(first) == WXL_FALSE && api->from_guid(wolf.guid) == WXL_HANDLE_NONE,
+              "after ObjDelete neither the handle nor the guid resolves");
+
+        // Back in range before the client freed it: GetUpdateObject revives the same object.
+        g_received.clear();
+        reenabled = 1;
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        const Received* revived = Only(WXL_EV_ObjectCreate);
+        Check(revived != nullptr, "GetUpdateObject on a revived object raises ObjectCreate exactly once");
+        if (!revived) return;
+        const wxl_object_args args = revived->As<wxl_object_args>();
+        Check(args.object != WXL_HANDLE_NONE && args.object != first,
+              "with a new handle: one per visibility episode");
+        Check(args.guid == wolf.guid && args.type == WXL_OBJECT_UNIT, "and the object's guid and type");
+        Check(api->valid(args.object) == WXL_TRUE && api->valid(first) == WXL_FALSE,
+              "the new handle resolves and the old one stays stale");
+        Check(api->from_guid(wolf.guid) == args.object, "the guid resolves to the new handle");
+        int32_t health = 0;
+        Check(api->unit_health(args.object, &health) == WXL_OK && health == 70,
+              "and reads reach the revived object");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        wxl::seam::ObjectMgr::GetUpdateObject::After(nullptr, 0x1234ull, &reenabled);
+        Check(g_received.empty(), "the next update of it raises nothing, nor does an update of nothing");
+
+        // Revived while still on the reenabled list: `*reenabled` stays clear, it is tracked anyway.
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        g_received.clear();
+        reenabled = 0;
+        wxl::seam::ObjectMgr::GetUpdateObject::After(&wolf, wolf.guid, &reenabled);
+        Check(Only(WXL_EV_ObjectCreate) != nullptr &&
+                  Only(WXL_EV_ObjectCreate)->As<wxl_object_args>().object != args.object,
+              "an untracked object handed back without the reenabled flag is announced too");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        Check(Only(WXL_EV_ObjectDestroy) != nullptr, "and leaves with ObjectDestroy like any other");
+
+        // from_guid through the client: an object the client holds that no seam announced.
+        FakeObject ghost;
+        ghost.guid   = 0xF130000000000999ull;
+        ghost.typeId = WXL_OBJECT_UNIT;
+        g_held.push_back(&ghost);
+        g_received.clear();
+        const wxl_handle found = api->from_guid(ghost.guid);
+        Check(found != WXL_HANDLE_NONE && api->valid(found) == WXL_TRUE,
+              "from_guid resolves a guid the client holds, through ClntObjMgrObjectPtr");
+        Check(g_received.empty(), "tracking it on demand raises nothing");
+        Check(api->from_guid(ghost.guid) == found, "and the next lookup answers the same handle");
+        Check(api->from_guid(0xF130000000000998ull) == WXL_HANDLE_NONE,
+              "a guid the client does not hold resolves to nothing");
+        wxl::seam::ObjectMgr::ObjDelete::Before(&ghost);
+        Check(Only(WXL_EV_ObjectDestroy) != nullptr &&
+                  Only(WXL_EV_ObjectDestroy)->As<wxl_object_args>().object == found,
+              "an object tracked on demand is announced when it leaves");
+        g_held.clear();
+        Check(api->from_guid(ghost.guid) == WXL_HANDLE_NONE, "and is not found once the client let it go");
+    }
+
+    /// The descriptor fields: read_fields and write_fields through the block the client hands
+    /// over; watch_field setting the client's mirror handlers -- on the kinds while in a world,
+    /// again at each InitializeShared, on the active player for its local fields -- and a
+    /// handler's report raising ObjectFieldChanged.
+    void CheckFields()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject me;
+        me.guid   = 0x0000000000000042ull;
+        me.typeId = WXL_OBJECT_PLAYER;
+        me.block.assign(0x52E, 0u);
+        me.block[0x18]  = 5000;
+        me.block[0x27A] = 100; // PLAYER_XP
+        FakeObject troll;
+        troll.guid   = 0x0000000000000043ull;
+        troll.typeId = WXL_OBJECT_PLAYER;
+        troll.block.assign(0x52E, 0u);
+        FakeObject wolf;
+        wolf.guid   = 0xF130000000000555ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        wolf.block.assign(0x94, 0u);
+        wolf.block[0x18] = 70;
+        g_held = {&me, &troll, &wolf};
+
+        g_mirrors.clear();
+        wxl::seam::ObjectMgr::DestroyShared::Before(); // out of any world
+        g_received.clear();
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 9000u);
+        wxl::seam::ObjectMgr::InitObject::After(&troll, nullptr, 9001u);
+        const wxl_handle hWolf  = api->from_guid(wolf.guid);
+        const wxl_handle hTroll = api->from_guid(troll.guid);
+
+        uint32_t value = 0;
+        Check(api->field_count(hWolf) == 0x94 && api->read_fields(hWolf, 0x18, 1, &value) == WXL_OK && value == 70,
+              "read_fields reads a unit's block through object_descriptor");
+        Check(api->field_count(hTroll) == 0x144 && api->read_fields(hTroll, 0x27A, 1, &value) == WXL_E_INVALID,
+              "a player other than the active one has no fields past PLAYER_FIELD_PAD_0");
+        const uint32_t sixty = 60;
+        Check(api->write_fields(hWolf, 0x18, 1, &sixty, WXL_FIELD_WRITE_PLAIN) == WXL_OK && wolf.block[0x18] == 60,
+              "write_fields writes the client's dword");
+        Check(api->write_fields(hWolf, 0x95, 1, &sixty, 0) == WXL_E_INVALID,
+              "and refuses a dword past the block");
+
+        // A watch asked for out of a world waits for the next one.
+        Check(api->watch_field(WXL_OBJECT_UNIT, 0x18, 1) == WXL_OK && g_mirrors.empty(),
+              "a watch asked for outside a world sets nothing on the client yet");
+        wxl::seam::ObjectMgr::InitializeShared::After();
+        Check(g_mirrors.size() == 1 && g_mirrors[0].guid == 0 && g_mirrors[0].type == WXL_OBJECT_UNIT &&
+                  g_mirrors[0].offset == (0x18 - 6) * 4 && g_mirrors[0].size == 4,
+              "InitializeShared sets it on the unit's fields, offset from their first");
+        Check(api->watch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == 2 &&
+                  g_mirrors[1].type == WXL_OBJECT_UNKNOWN && g_mirrors[1].offset == 12,
+              "in a world, a new watch is set at once, OBJECT_FIELD_ENTRY on every object's");
+        Check(api->watch_field(WXL_OBJECT_UNIT, 0x10, 2) == WXL_E_UNSUPPORTED && g_mirrors.size() == 2,
+              "a field the client keeps no copy of is refused and sets nothing");
+
+        // The local fields go on the active player, when there is one.
+        Check(api->watch_field(WXL_OBJECT_PLAYER, 0x27A, 1) == WXL_OK && g_mirrors.size() == 2,
+              "PLAYER_XP waits for the active player");
+        g_localPlayer = &me;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9002u);
+        Check(g_mirrors.size() == 3 && g_mirrors[2].guid == me.guid && g_mirrors[2].type == WXL_OBJECT_PLAYER &&
+                  g_mirrors[2].offset == (0x27A - 0x94) * 4,
+              "and is set on it, by guid, when the client builds it");
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9003u);
+        Check(g_mirrors.size() == 3, "once");
+
+        // The client reports a change through the handler it was given.
+        const FakeMirror health = g_mirrors[0];
+        const uint32_t   was    = 70;
+        wolf.block[0x18]        = 55;
+        g_received.clear();
+        health.handler(wolf.guid, health.offset, health.size, &was, health.param);
+        const Received* changed = Only(WXL_EV_ObjectFieldChanged);
+        Check(changed != nullptr, "a report becomes ObjectFieldChanged");
+        if (changed)
+        {
+            const wxl_object_field_args args = changed->As<wxl_object_field_args>();
+            Check(args.object == hWolf && args.type == WXL_OBJECT_UNIT && args.field == 0x18 && args.count == 1 &&
+                      args.old_value == 70 && args.new_value == 55,
+                  "with the object, its type, the field's index, its old value and the new one");
+        }
+        const uint32_t xp = 100;
+        me.block[0x27A]   = 250;
+        g_received.clear();
+        g_mirrors[2].handler(me.guid, g_mirrors[2].offset, g_mirrors[2].size, &xp, g_mirrors[2].param);
+        Check(Only(WXL_EV_ObjectFieldChanged) &&
+                  Only(WXL_EV_ObjectFieldChanged)->As<wxl_object_field_args>().new_value == 250,
+              "the active player's experience too");
+        g_received.clear();
+        health.handler(0x1234ull, health.offset, health.size, &was, health.param);
+        Check(g_received.empty(), "a report on an object the client does not hold raises nothing");
+
+        // Leaving the world drops the client's handlers; the next world gets them again.
+        wxl::seam::ObjectMgr::DestroyShared::Before();
+        g_mirrors.clear();
+        wxl::seam::ObjectMgr::InitializeShared::After();
+        Check(g_mirrors.size() == 2, "the next world's InitializeShared sets the kinds' handlers again");
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9004u);
+        Check(g_mirrors.size() == 3 && g_mirrors[2].guid == me.guid,
+              "and the active player's local ones when the client builds it again");
+
+        // A watch belongs to the mod that asked for it, and only that mod receives its changes.
+        // Mod 7 subscribes like any mod; the harness, which is nobody's code, watched the rest.
+        constexpr wxl::host::ModHost::ModToken kMod = 7;
+        const wxl_subscription modSub =
+            g_host->Events().Subscribe(WXL_EV_ObjectFieldChanged, &OnModFieldChanged, nullptr, 0, kMod);
+        const auto asMod = [&](auto call) {
+            const wxl::host::ModHost::ModToken previous = g_host->SwapCurrentMod(kMod);
+            const wxl_result                   result   = call();
+            g_host->SwapCurrentMod(previous);
+            return result;
+        };
+        const size_t before = g_mirrors.size();
+        Check(asMod([&] { return api->watch_field(WXL_OBJECT_UNIT, 0x20, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "a mod's watch of UNIT_FIELD_MAXHEALTH sets one handler on the client");
+        const FakeMirror maxHealth = g_mirrors.back();
+        const uint32_t   wasMax    = 90;
+        wolf.block[0x20]           = 120;
+        g_received.clear();
+        g_modChanges.clear();
+        maxHealth.handler(wolf.guid, maxHealth.offset, maxHealth.size, &wasMax, maxHealth.param);
+        Check(g_modChanges.size() == 1 && g_modChanges[0].field == 0x20 && g_modChanges[0].new_value == 120 &&
+                  Count(WXL_EV_ObjectFieldChanged) == 0,
+              "its change reaches that mod's handler and no one else's");
+        const FakeMirror healthNow = g_mirrors[0];
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.empty() && Count(WXL_EV_ObjectFieldChanged) == 1,
+              "and a change the mod did not watch reaches only who watched it");
+
+        Check(asMod([&] { return api->watch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "a second mod's watch of a watched field sets no second handler");
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.size() == 1 && Count(WXL_EV_ObjectFieldChanged) == 1, "and both receive it");
+        Check(asMod([&] { return api->unwatch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK &&
+                  g_mirrors.size() == before + 1,
+              "giving one watch back keeps the handler the other still needs");
+        g_received.clear();
+        g_modChanges.clear();
+        healthNow.handler(wolf.guid, healthNow.offset, healthNow.size, &was, healthNow.param);
+        Check(g_modChanges.empty() && Count(WXL_EV_ObjectFieldChanged) == 1, "and the other goes on receiving");
+        Check(asMod([&] { return api->unwatch_field(WXL_OBJECT_UNIT, 0x18, 1); }) == WXL_OK,
+              "giving back what is not watched is no mistake");
+        Check(api->unwatch_field(WXL_OBJECT_UNIT, 0x19, 2) == WXL_OK &&
+                  api->unwatch_field(WXL_OBJECT_UNIT, 0x95, 1) == WXL_E_INVALID,
+              "unwatch_field checks its range as watch_field does");
+
+        Check(wxl::core::objects::Service().WatchCount(kMod) == 1, "the mod holds one watch");
+        wxl::core::objects::Service().DropWatches(kMod);
+        Check(wxl::core::objects::Service().WatchCount(kMod) == 0 && g_mirrors.size() == before,
+              "a mod that goes gives back every watch, and the handler no one needs leaves the client");
+        g_modChanges.clear();
+        maxHealth.handler(wolf.guid, maxHealth.offset, maxHealth.size, &wasMax, maxHealth.param);
+        Check(g_modChanges.empty(), "a report still in flight for it raises nothing");
+
+        Check(api->unwatch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == before - 1,
+              "the last watch of OBJECT_FIELD_ENTRY takes its handler off the kind");
+        Check(api->unwatch_field(WXL_OBJECT_PLAYER, 0x27A, 1) == WXL_OK && g_mirrors.size() == before - 2 &&
+                  std::none_of(g_mirrors.begin(), g_mirrors.end(), [&](const FakeMirror& m) { return m.guid == me.guid; }),
+              "and the last watch of PLAYER_XP its handler off the active player");
+        Check(api->watch_field(WXL_OBJECT_UNKNOWN, 0x3, 1) == WXL_OK && g_mirrors.size() == before - 1,
+              "watching again sets it again");
+        g_host->Events().Unsubscribe(modSub);
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&troll);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
+        g_held.clear();
     }
 
     /// Unit: OnDeath's After raises UnitDeath for a tracked unit; the aura pair raises
@@ -977,6 +1616,220 @@ namespace
         wxl::seam::ObjectMgr::ObjDelete::Before(&bat);
     }
 
+    /// Listening: the host's answer follows the subscriptions, and so do the flags the x64
+    /// client tests before a seam.
+    void CheckListening()
+    {
+        Check(g_host->Listening(WXL_EV_TextureLoad), "an event the harness subscribed to is listened to");
+        Mute(WXL_EV_TextureLoad);
+        Check(!g_host->Listening(WXL_EV_TextureLoad), "with its one subscription gone, nobody listens");
+        Unmute(WXL_EV_TextureLoad);
+        Check(g_host->Listening(WXL_EV_TextureLoad), "and subscribing again is heard at once");
+    }
+
+    /// Texture, M2Shared and MapObj: an asset named, read or walked raises its event with what
+    /// the binding reads, and nothing is read when nobody listens.
+    void CheckAssets()
+    {
+        g_received.clear();
+        wxl::seam::Texture::Create::Before("Interface\\Icons\\Spell_Fire_Fireball.blp", 0u, nullptr, 0u);
+        const Received* texture = Only(WXL_EV_TextureLoad);
+        Check(texture && texture->As<wxl_texture_load_args>().path.size == 39,
+              "Texture.Create raises TextureLoad with the name asked for");
+        g_received.clear();
+        wxl::seam::Texture::Create::Before("", 0u, nullptr, 0u);
+        wxl::seam::Texture::Create::Before(nullptr, 0u, nullptr, 0u);
+        Check(g_received.empty(), "an empty or missing name raises nothing");
+        Mute(WXL_EV_TextureLoad);
+        wxl::seam::Texture::Create::Before("Textures\\a.blp", 0u, nullptr, 0u);
+        Unmute(WXL_EV_TextureLoad);
+        Check(g_received.empty(), "nor does any name while nobody listens");
+
+        FakeModel boar;
+        strcpy(boar.name, "Creature\\Boar\\Boar.m2");
+        boar.bytes = std::string("MD20") + std::string(60, '\x01');
+        g_received.clear();
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&boar);
+        const Received* model = Only(WXL_EV_ModelLoad);
+        Check(model != nullptr, "M2Shared.LoadSucceededCallback raises ModelLoad once");
+        if (model)
+        {
+            const wxl_model_load_args args = model->As<wxl_model_load_args>();
+            Check(args.path.size == strlen(boar.name) && args.size == 64u,
+                  "with the model's path and the size of the bytes read");
+            Check(args.replacement && args.replacement_size, "and the native answer to write");
+        }
+        Check(boar.replaced.empty(), "bytes nobody answers stay the client's");
+
+        // A native handler that answers other bytes: the client parses those.
+        static const char kOther[] = "MD20 other bytes";
+        struct Answer
+        {
+            static void WXL_CALL Give(void*, const void* raw)
+            {
+                const wxl_model_load_args* args = static_cast<const wxl_model_load_args*>(raw);
+                *args->replacement      = kOther;
+                *args->replacement_size = static_cast<uint32_t>(sizeof kOther - 1);
+            }
+        };
+        const wxl_subscription answer = g_host->Events().Subscribe(WXL_EV_ModelLoad, &Answer::Give, nullptr, 0);
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&boar);
+        Check(boar.replaced == std::string(kOther, sizeof kOther - 1),
+              "bytes a handler answers are put in place of the ones read");
+        FakeModel stuck;
+        strcpy(stuck.name, "Creature\\Rat\\Rat.m2");
+        stuck.bytes         = "MD20";
+        stuck.replace_fails = true;
+        wxl::seam::M2Shared::LoadSucceededCallback::Before(&stuck);
+        Check(stuck.replaced.empty(), "a copy the client cannot make leaves the model as read");
+        g_host->Events().Unsubscribe(answer);
+
+        FakeMapObj keep;
+        strcpy(keep.name, "World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo");
+        keep.bytes = std::string("REVM") + std::string(28, '\0');
+        g_received.clear();
+        wxl::seam::MapObj::Load::Before(&keep);
+        const Received* root = Only(WXL_EV_MapObjectLoad);
+        Check(root && root->As<wxl_map_object_args>().size == 32u &&
+                  root->As<wxl_map_object_args>().path.size == strlen(keep.name),
+              "MapObj.Load raises MapObjectLoad with the root's path and bytes");
+        Mute(WXL_EV_MapObjectLoad);
+        g_received.clear();
+        wxl::seam::MapObj::Load::Before(&keep);
+        Unmute(WXL_EV_MapObjectLoad);
+        Check(g_received.empty(), "and nothing while nobody listens");
+    }
+
+    /// Map: a doodad an overload placed is announced once; one it answered from the hash is not.
+    void CheckDoodads()
+    {
+        FakeDoodad tree;
+        tree.position = {100.0f, 200.0f, 30.0f};
+        const wxl_vec3 center{0.0f, 0.0f, 0.0f};
+
+        g_received.clear();
+        wxl::seam::Map::AllocDoodadDef::After(&tree);
+        wxl::seam::Map::CreateDoodadDef::After(&tree, "World\\Azeroth\\Elwynn\\Tree01.m2", nullptr, &center);
+        const Received* spawn = Only(WXL_EV_DoodadSpawn);
+        Check(spawn != nullptr, "Map.CreateDoodadDef raises DoodadSpawn for the def it allocated");
+        if (spawn)
+        {
+            const wxl_doodad_args args = spawn->As<wxl_doodad_args>();
+            Check(args.position.x == 100.0f && args.position.z == 30.0f &&
+                      args.path.size == strlen("World\\Azeroth\\Elwynn\\Tree01.m2"),
+                  "with the model's path and where the def was placed");
+            Check(args.doodad == WXL_HANDLE_NONE, "a doodad is no object of wxl.object: no handle");
+        }
+
+        g_received.clear();
+        wxl::seam::Map::CreateDoodadDef::After(&tree, "World\\Azeroth\\Elwynn\\Tree01.m2", nullptr, &center);
+        Check(g_received.empty(), "the same def answered from the hash is not placed again");
+
+        FakeDoodad lamp, chair;
+        g_received.clear();
+        wxl::seam::Map::AllocDoodadDef::After(&lamp);
+        wxl::seam::Map::CreateDoodadDefAt::After(&lamp, "World\\Generic\\Lamp.m2", &center, 1.5f, 0);
+        wxl::seam::Map::AllocDoodadDef::After(&chair);
+        wxl::seam::Map::CreateDoodadDefInMapObj::After(&chair, 3u, nullptr, const_cast<char*>("Chair.m2"), 7u,
+                                                       nullptr, 0);
+        Check(Count(WXL_EV_DoodadSpawn) == 2, "the other two overloads announce theirs");
+
+        Mute(WXL_EV_DoodadSpawn);
+        wxl::seam::Map::AllocDoodadDef::After(&lamp);
+        Unmute(WXL_EV_DoodadSpawn);
+        g_received.clear();
+        wxl::seam::Map::CreateDoodadDefAt::After(&lamp, "World\\Generic\\Lamp.m2", &center, 1.5f, 0);
+        Check(g_received.empty(), "a def allocated while nobody listened is not announced later");
+    }
+
+    /// Storage.OpenEx: the result of every open, found or not, with the name the client opened.
+    void CheckFileOpened()
+    {
+        FakeFile file;
+        file.name  = "DBFilesClient\\Spell.dbc";
+        file.bytes = std::string(1234, 'x');
+        void* handle = &file;
+
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
+        const Received* opened = Only(WXL_EV_FileOpened);
+        Check(opened != nullptr, "Storage.OpenEx raises FileOpened once");
+        if (opened)
+        {
+            const wxl_file_opened_args args = opened->As<wxl_file_opened_args>();
+            Check(args.found == WXL_TRUE && args.size == 1234u && args.path.size == 23u,
+                  "with the name, found, and the size the binding reads");
+        }
+
+        void* none = nullptr;
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(0, nullptr, "Missing\\File.blp", 0u, &none);
+        const Received* missing = Only(WXL_EV_FileOpened);
+        Check(missing && missing->As<wxl_file_opened_args>().found == WXL_FALSE &&
+                  missing->As<wxl_file_opened_args>().size == 0u,
+              "an open that found nothing is raised too, not found and empty");
+
+        Mute(WXL_EV_FileOpened);
+        g_received.clear();
+        wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
+        Unmute(WXL_EV_FileOpened);
+        Check(g_received.empty(), "nothing is raised while nobody listens");
+    }
+
+    /// ObjectMgr: ObjectUpdate once per tracked object per packet, after the whole packet.
+    void CheckObjectUpdate()
+    {
+        FakeObject wolf, hawk, egg;
+        wolf.guid   = 0xF130000000000201ull;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        hawk.guid   = 0xF130000000000202ull;
+        hawk.typeId = WXL_OBJECT_UNIT;
+        egg.guid    = 0xF110000000000203ull;
+        egg.typeId  = WXL_OBJECT_GAMEOBJECT;
+
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 1u);
+        wxl::seam::ObjectMgr::InitObject::After(&hawk, nullptr, 1u);
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &hawk, hawk.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &egg, egg.guid, nullptr, true, false);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(0, &hawk, hawk.guid, nullptr, false, false);
+        Check(Count(WXL_EV_ObjectUpdate) == 0, "nothing is raised while the packet is being applied");
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(Count(WXL_EV_ObjectUpdate) == 2, "the packet raises ObjectUpdate once per tracked object it wrote");
+        bool ordered = false;
+        if (Count(WXL_EV_ObjectUpdate) == 2)
+        {
+            std::vector<uint64_t> guids;
+            for (const Received& r : g_received)
+                if (r.event == WXL_EV_ObjectUpdate) guids.push_back(r.As<wxl_object_args>().guid);
+            ordered = guids[0] == wolf.guid && guids[1] == hawk.guid;
+        }
+        Check(ordered, "in the order the packet first named them, the untracked one left out");
+
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(g_received.empty(), "a packet that wrote nothing raises nothing");
+
+        // An object let go before the packet ends is not announced.
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &hawk, hawk.guid, nullptr, false, false);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&hawk);
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(Count(WXL_EV_ObjectUpdate) == 0, "an object gone before the packet ends is not updated");
+
+        Mute(WXL_EV_ObjectUpdate);
+        wxl::seam::ObjectMgr::FillInPartialObjectData::After(1, &wolf, wolf.guid, nullptr, false, false);
+        Unmute(WXL_EV_ObjectUpdate);
+        g_received.clear();
+        wxl::seam::ObjectMgr::Packet_SMSG_UPDATE_OBJECT::After(1, nullptr, 0xA9u, 0u, nullptr);
+        Check(g_received.empty(), "writes made while nobody listened are not noted");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+    }
+
     /// MapArea: PrepareChunk's Before raises TerrainChunkBuild with the map, the tile and the chunk.
     void CheckMapArea()
     {
@@ -1056,10 +1909,62 @@ namespace
         *static_cast<wxl_result*>(user) = Script().register_function("WxlHarnessGreet", &Greet, &g_greetCalls);
     }
 
-    /// FrameScript: Initialize's After raises ScriptVmReady naming the context CGGameUI's state
-    /// implies, Destroy's Before raises ScriptVmClosing naming the same one; the service takes
-    /// registrations only between the two, drives calls through the engine, and starts over on
-    /// the next context.
+    __declspec(noinline) int32_t WXL_CALL CodeProbe(void*) { return 0; }
+
+    /// The code the client accepts: the runtime's image and the binaries the host maps, by their
+    /// executable sections; nothing else, the heap, the stack and generated code included.
+    void CheckCode()
+    {
+        namespace code = wxl::core::code;
+        namespace os   = wxl::seam::Os::ValidateFunctionPointer;
+        code::Reset();
+        const void* own = reinterpret_cast<const void*>(&CodeProbe);
+        Check(!code::Accepts(own), "with nothing registered, no pointer is accepted");
+        Check(code::AddOwnImage() && code::Accepts(own) &&
+                  code::Accepts(reinterpret_cast<const void*>(&wxl::core::code::Accepts)),
+              "the runtime's own image is accepted once registered");
+        Check(code::AddOwnImage() && code::Accepts(own), "registering it twice keeps one set of ranges");
+
+        std::unique_ptr<char[]> heap(new char[64]);
+        int                     local     = 0;
+        void* const             generated = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        Check(!code::Accepts(heap.get()) && !code::Accepts(&local) && !code::Accepts(generated) &&
+                  !code::Accepts(nullptr),
+              "the heap, the stack, generated code and null are not");
+        HMODULE exe = GetModuleHandleW(nullptr);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+            reinterpret_cast<const uint8_t*>(exe) + reinterpret_cast<const IMAGE_DOS_HEADER*>(exe)->e_lfanew);
+        Check(!code::Accepts(exe) && !code::Accepts(reinterpret_cast<const uint8_t*>(exe) + nt->OptionalHeader.SizeOfImage - 1),
+              "nor the image's headers and data: only its executable sections");
+
+        const void* pointer = own;
+        Check(os::Gate(&pointer) && pointer == own, "Os.ValidateFunctionPointer takes the call for the runtime's code");
+        pointer = heap.get();
+        Check(!os::Gate(&pointer) && pointer == heap.get(), "and leaves any other pointer to the client's check");
+
+        // A binary the host maps, through the loader the runtime gives it: a system DLL stands in.
+        wchar_t system[MAX_PATH];
+        const UINT n = GetSystemDirectoryW(system, MAX_PATH);
+        const std::filesystem::path dll = std::filesystem::path(std::wstring(system, n)) / L"version.dll";
+        std::string     error;
+        wxl::host::LibraryLoader& loader  = code::HostLoader();
+        void* const               library = loader.Open(dll, error);
+        const void* const         export_ = library ? loader.Symbol(library, "GetFileVersionInfoSizeW") : nullptr;
+        Check(library && export_ && code::Accepts(export_), "a function of a binary the host loader opened is accepted");
+        pointer = export_;
+        Check(export_ && os::Gate(&pointer), "and the gate takes the call for it");
+        if (library) loader.Close(library);
+        Check(export_ && !code::Accepts(export_) && code::Accepts(own),
+              "closing the binary takes its code back and leaves the runtime's");
+        Check(!code::Handable(heap.get(), "harness"), "a pointer outside is refused before it is handed over");
+        if (generated) VirtualFree(generated, 0, MEM_RELEASE);
+    }
+
+    /// FrameScript: a context Initialize makes is announced at its first CreateEvents, with the
+    /// context CGGameUI's state implied when it was made; Destroy's Before raises ScriptVmClosing
+    /// naming the same one, and a placeholder the client destroys before any interface raises
+    /// nothing. The service takes registrations only between the two, drives calls through the
+    /// engine, and starts over on the next context.
     void CheckFrameScript()
     {
         const wxl_script_api& api = Script();
@@ -1073,6 +1978,17 @@ namespace
                   api.fire_event("WXL_HARNESS_EARLY", nullptr, 0) == WXL_E_FAILED &&
                   api.run(Str("x = 1"), "early") == WXL_E_FAILED,
               "so are register_event, fire_event and run");
+        Check(api.live() == WXL_FALSE, "and live() says no context is live");
+
+        // The placeholder InitializeClient makes: destroyed before any interface is loaded.
+        g_vm.live = true;
+        g_received.clear();
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        Check(g_received.empty() && api.live() == WXL_FALSE &&
+                  api.register_function("WxlHarnessEarly", &Greet, nullptr) == WXL_E_FAILED,
+              "a context is not announced when it is made, and takes nothing before");
+        wxl::seam::FrameScript::Destroy::Before();
+        Check(g_received.empty(), "a context destroyed before its event table is installed raises nothing at all");
 
         wxl_result registered = WXL_E_FAILED;
         const wxl_subscription onReady =
@@ -1083,16 +1999,31 @@ namespace
         g_uiInitialized = 0;
         g_uiLoggingIn   = 0;
         g_received.clear();
+        const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         const Received* ready = Only(WXL_EV_ScriptVmReady);
-        Check(ready != nullptr, "FrameScript.Initialize raises ScriptVmReady once");
+        Check(ready != nullptr, "FrameScript.CreateEvents raises ScriptVmReady once, for the context made before it");
         if (ready)
             Check(ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE &&
                       ready->As<wxl_script_vm_args>().native_state == &g_vm,
                   "it says glue while CGGameUI is neither logging in nor initialised, and carries the client's state");
-        Check(api.context() == WXL_SCRIPT_CONTEXT_GLUE, "context() says the same");
+        Check(api.context() == WXL_SCRIPT_CONTEXT_GLUE && api.live() == WXL_TRUE, "context() says the same, live() yes");
+        g_received.clear();
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
+        Check(!Only(WXL_EV_ScriptVmReady), "a second table in the same context announces nothing");
         Check(registered == WXL_OK && g_vm.closures.count("WxlHarnessGreet") == 1,
               "a function registered from the ScriptVmReady handler is a global of that context");
+        {
+            const void* pushed = reinterpret_cast<const void*>(g_vm.closures["WxlHarnessGreet"].fn);
+            Check(pushed && wxl::seam::Os::ValidateFunctionPointer::Gate(&pushed),
+                  "the function the global is pushed as is code the client's pointer check accepts");
+            wxl::core::code::Reset();
+            Check(api.register_function("WxlHarnessUnhanded", &Greet, nullptr) == WXL_E_FAILED &&
+                      g_vm.closures.count("WxlHarnessUnhanded") == 0,
+                  "with the runtime's image unregistered, nothing is pushed: the client would end at the call");
+            wxl::core::code::AddOwnImage();
+        }
         Check(api.register_function("WxlHarnessGreet", &Greet, nullptr) == WXL_E_INVALID,
               "registering a name again is refused");
         g_vm.clientGlobals.insert("GetTime");
@@ -1128,18 +2059,15 @@ namespace
                   g_vm.ran.back() == "harness: print(1)",
               "run hands the chunk and its name to the engine");
 
-        // Events: one declared before the client installs its table, one after.
-        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1 &&
-                  g_vm.eventTables.back() == std::vector<std::string>{"WXL_HARNESS_EVENT"},
-              "an event declared before the client's table is installed on its own");
-        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == 1,
-              "declaring it again changes nothing");
-        const char* clientNames[] = {"PLAYER_LOGIN", "PLAYER_LOGOUT"};
-        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
-        Check(g_vm.eventTables.size() == 2 &&
+        // Events: the client's table is installed when the context is announced; a declared
+        // event is installed behind it.
+        const size_t tables = g_vm.eventTables.size();
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == tables + 1 &&
                   g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT"},
-              "once the client installs its table, FrameScript.CreateEvents installs it again with the declared event behind it");
-        Check(api.register_event("WXL_HARNESS_LATE") == WXL_OK && g_vm.eventTables.size() == 3 &&
+              "an event declared is installed behind the client's table");
+        Check(api.register_event("WXL_HARNESS_EVENT") == WXL_OK && g_vm.eventTables.size() == tables + 1,
+              "declaring it again changes nothing");
+        Check(api.register_event("WXL_HARNESS_LATE") == WXL_OK && g_vm.eventTables.size() == tables + 2 &&
                   g_vm.eventTables.back() == std::vector<std::string>{"PLAYER_LOGIN", "PLAYER_LOGOUT", "WXL_HARNESS_EVENT", "WXL_HARNESS_LATE"},
               "an event declared afterwards is appended, keeping every index");
         const wxl_value payload[2] = {wxl_value{WXL_VALUE_NUMBER, {7.0}}, wxl_value{WXL_VALUE_STRING, {0.0}}};
@@ -1171,8 +2099,8 @@ namespace
               "FrameScript.Destroy raises ScriptVmClosing once, naming the context Ready did");
         g_vm.live = false;
         Check(api.register_function("WxlHarnessLate", &Greet, nullptr) == WXL_E_FAILED &&
-                  api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_FAILED,
-              "after ScriptVmClosing nothing is accepted until the next context");
+                  api.fire_event("WXL_HARNESS_LATE", nullptr, 0) == WXL_E_FAILED && api.live() == WXL_FALSE,
+              "after ScriptVmClosing nothing is accepted until the next context, and live() says so");
         {
             // A closure the dead context left behind, called anyway: an error, not the mod.
             g_greetCalls      = 0;
@@ -1193,6 +2121,7 @@ namespace
         registered    = WXL_E_FAILED;
         g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 1);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
               "the context created while CGGameUI is logging in is the game's");
@@ -1210,16 +2139,22 @@ namespace
         g_uiInitialized = 1;
         g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GAME,
               "a context recreated while the game interface is initialised is the game's");
 
-        // Back to the glue: ShutdownGame cleared both flags before the flush.
+        // Back to the glue: ShutdownGame cleared both flags before its flush, which makes a
+        // placeholder; the glue's own flush makes the context it loads into.
         wxl::seam::FrameScript::Destroy::Before();
         g_vm.closures.clear();
         g_uiInitialized = 0;
-        g_received.clear();
         wxl::seam::FrameScript::Initialize::After(1, 0);
+        g_received.clear();
+        wxl::seam::FrameScript::Destroy::Before();
+        Check(g_received.empty(), "the placeholder between the game and the glue raises nothing");
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        wxl::seam::FrameScript::CreateEvents::After(clientNames, 2);
         ready = Only(WXL_EV_ScriptVmReady);
         Check(ready != nullptr && ready->As<wxl_script_vm_args>().context == WXL_SCRIPT_CONTEXT_GLUE,
               "a context recreated once the game interface is down is the glue's");
@@ -1670,10 +2605,219 @@ namespace
               "Disconnected is raised before the client tears the connection down");
     }
 
+    // --- wxl.storage: a folder in the search, and the names across the archives ---------------
+
+    void WriteFileAt(const std::filesystem::path& path, const std::string& text)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream(path, std::ios::binary) << text;
+    }
+
+    void CheckSearchPath(const wxl_storage_api& api)
+    {
+        namespace fs = std::filesystem;
+        namespace storage = wxl::core::services::storage;
+        const fs::path root = fs::temp_directory_path() / "wxl-harness-storage";
+        std::error_code ignored;
+        fs::remove_all(root, ignored);
+        const fs::path client = root / "client";
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "Mine.blp", "mine");
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "FrameXML" / "FrameXML.toc", "ours");
+        WriteFileAt(client / "Mods" / "low" / "Interface" / "FrameXML" / "FrameXML.toc", "low");
+        WriteFileAt(client / "Mods" / "low" / "Interface" / "Only.txt", "only here");
+        WriteFileAt(root / "elsewhere" / "Interface" / "Far.txt", "far");
+        g_basePath = client.string() + "\\";
+        g_files.push_back(FakeFile{"Interface\\FrameXML\\FrameXML.toc", "the client's", 0, false});
+
+        const std::string assets = (client / "Mods" / "mymod" / "assets").string();
+        const std::string low    = (client / "Mods" / "low").string();
+        const std::string far    = (root / "elsewhere").string();
+        Check(api.add_search_path(Str(assets.c_str()), 1) == WXL_OK &&
+                  api.add_search_path(Str(low.c_str()), 0) == WXL_OK &&
+                  api.add_search_path(Str(far.c_str()), 5) == WXL_OK,
+              "folders join the search, at their priorities");
+        Check(api.add_search_path(Str((root / "nowhere").string().c_str()), 1) == WXL_E_NOT_FOUND &&
+                  api.add_search_path(Str(""), 1) == WXL_E_INVALID,
+              "a folder that is not there is not found; no name is invalid");
+        Check(api.exists(Str("Interface\\Icons\\Mine.blp")) == WXL_TRUE &&
+                  api.exists(Str("interface/only.txt")) == WXL_TRUE && api.exists(Str("Interface\\None.txt")) == WXL_FALSE,
+              "exists sees a folder's files, by their client names");
+
+        // The gate turns a name a folder wins into its path in the client's folder, behind two
+        // backslashes: the client opens it from the disk without its table of loose files.
+        const auto open = [](const char* asked, uint32_t& flags) {
+            void*       archive = nullptr;
+            const char* name    = asked;
+            void**      file    = nullptr;
+            int32_t     answer  = -1;
+            flags               = 0;
+            wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file);
+            return std::string(name);
+        };
+        uint32_t flags = 0;
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp" &&
+                  flags == 0,
+              "a folder's file is opened by its path in the client's folder, the open's flags left alone");
+        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) ==
+                      "\\\\Mods\\mymod\\assets\\Interface\\FrameXML\\FrameXML.toc",
+              "a folder above 0 wins a name over the client's own");
+        Check(open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
+              "a folder at 0 fills a name the client does not have");
+        api.add_search_path(Str(assets.c_str()), -1);
+        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) == "Interface\\FrameXML\\FrameXML.toc",
+              "but never one it has; a folder added again takes its new priority");
+        Check(open("Interface\\Far.txt", flags) == "Interface\\Far.txt" && flags == 0,
+              "a folder outside the client's folder cannot serve the client, and is passed over");
+        Check(open("World\\Elsewhere.wdt", flags) == "World\\Elsewhere.wdt" && flags == 0 &&
+                  open("C:\\x\\Interface\\Only.txt", flags) == "C:\\x\\Interface\\Only.txt",
+              "a name no folder holds, or that is not a client name, is the client's");
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "New.blp", "new");
+        Check(open("Interface\\Icons\\New.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\New.blp",
+              "a file put in a folder since it joined is found at the next open");
+        fs::remove(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "New.blp", ignored);
+        const fs::path working = fs::current_path();
+        fs::current_path(client);
+        g_basePath.clear();
+        Check(open("Interface\\Icons\\Mine.blp", flags) == assets + "\\Interface\\Icons\\Mine.blp",
+              "with no base path, in the client's folder, the name is the file's absolute path, opened as it is");
+        g_basePath = client.string() + "\\";
+        fs::current_path(working);
+
+        // find: the listfiles of the archives, then the folders, each name once.
+        std::vector<wxl_str> names(16);
+        const uint32_t count = api.find(Str("interface\\framexml\\*.toc"), names.data(), 16);
+        Check(count == 1 && std::string(names[0].data, names[0].size) == "Interface\\FrameXML\\FrameXML.toc",
+              "find matches case aside, and names a file both an archive and a folder have once");
+        const uint32_t icons = api.find(Str("Interface\\Icons\\*"), nullptr, 0);
+        const uint32_t again = api.find(Str("Interface\\Icons\\*"), names.data(), 16);
+        Check(icons == 2 && again == 2 && std::string(names[0].data, names[0].size) == "INTERFACE\\Icons\\A.blp" &&
+                  std::string(names[1].data, names[1].size) == "Interface\\Icons\\Mine.blp",
+              "a count then a fill give the same names, sorted, from the archives and the folders");
+        Check(api.find(Str("*.txt"), nullptr, 0) == 1 && api.find(Str("Nothing*"), nullptr, 0) == 0 &&
+                  api.exists(Str("Interface\\Far.txt")) == WXL_FALSE,
+              "a pattern spans the folders the client can open from, and may match nothing");
+
+        // wxl.data takes a table from a folder: its check is the storage's.
+        const wxl_data_api& data = wxl::core::services::DataApi();
+        Check(data.serve_table(Str("Only.dbc"), Str("Interface\\Only.txt")) == WXL_OK,
+              "a table served from a folder's file is accepted");
+        data.restore_table(Str("Only.dbc"));
+
+        // A folder is the mod's that added it: removed by it, or when it goes.
+        constexpr wxl::host::ModHost::ModToken kMod = 9;
+        const auto asMod = [&](auto call) {
+            const wxl::host::ModHost::ModToken previous = g_host->SwapCurrentMod(kMod);
+            const wxl_result                   result   = call();
+            g_host->SwapCurrentMod(previous);
+            return result;
+        };
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_OK &&
+                  open("Interface\\Only.txt", flags) == "Interface\\Only.txt" && flags == 0,
+              "a folder removed serves nothing from then on");
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_E_NOT_FOUND &&
+                  api.remove_search_path(Str("")) == WXL_E_INVALID,
+              "removing it again finds nothing; no name is invalid");
+        Check(asMod([&] { return api.add_search_path(Str(low.c_str()), 0); }) == WXL_OK &&
+                  open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
+              "a mod adds the folder again");
+        Check(api.remove_search_path(Str(low.c_str())) == WXL_E_NOT_FOUND &&
+                  open("Interface\\Only.txt", flags) == "\\\\Mods\\low\\Interface\\Only.txt",
+              "and no other mod's code removes it for that mod");
+        Check(asMod([&] { return api.remove_search_path(Str((low + "\\").c_str())); }) == WXL_OK,
+              "its own code does, by another spelling of the same folder");
+        asMod([&] { return api.add_search_path(Str(low.c_str()), 0); });
+        storage::RemoveSearchPathsOf(kMod);
+        Check(open("Interface\\Only.txt", flags) == "Interface\\Only.txt",
+              "a mod that goes takes its folders with it");
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp",
+              "and leaves the other folders");
+
+        // Redirects: a name opens another, for the mod that made it; the latest answers.
+        const std::string mine = "\\\\Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp";
+        Check(open("Interface\\Icons\\Q.blp", flags) == "Interface\\Icons\\Q.blp",
+              "no name is redirected before a mod asks");
+        Check(api.redirect(Str("Interface\\Icons\\Q.blp"), Str("Interface/Icons/Mine.blp")) == WXL_OK &&
+                  open("interface/icons/q.BLP", flags) == mine,
+              "a redirected name, in any case and with either slash, opens the other, found through the search path");
+        Check(asMod([&] { return api.redirect(Str("INTERFACE\\ICONS\\Q.BLP"), Str("World\\Other.blp")); }) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == "World\\Other.blp",
+              "another mod's later redirect of the name wins");
+        Check(api.unredirect(Str("Interface\\Icons\\Nothing.blp")) == WXL_E_NOT_FOUND &&
+                  api.redirect(Str(""), Str("x")) == WXL_E_INVALID &&
+                  api.redirect(Str("x"), Str(std::string(512, 'a').c_str())) == WXL_E_INVALID,
+              "a name nobody redirected is not found; an empty name or one past the buffer is invalid");
+        Check(asMod([&] { return api.unredirect(Str("interface\\icons\\q.blp")); }) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == mine,
+              "taking it back uncovers the earlier redirect");
+        Check(asMod([&] { return api.unredirect(Str("Interface\\Icons\\Q.blp")); }) == WXL_E_NOT_FOUND,
+              "and a mod takes back only its own");
+        asMod([&] { return api.redirect(Str("Interface\\Icons\\Q.blp"), Str("World\\Other.blp")); });
+        storage::RemoveRedirectsOf(kMod);
+        Check(open("Interface\\Icons\\Q.blp", flags) == mine, "a mod that goes takes its redirects with it");
+        {
+            std::string seen;
+            const auto  watch = [](void* user, const void* args) {
+                const wxl_file_open_args& o = *static_cast<const wxl_file_open_args*>(args);
+                *static_cast<std::string*>(user) = std::string(o.path.data, o.path.size) + " > " + o.redirect;
+                if (g_answerWith) std::memcpy(o.redirect, g_answerWith, std::strlen(g_answerWith) + 1);
+            };
+            const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_FileOpen, watch, &seen, 0);
+            g_answerWith               = nullptr;
+            Check(open("Interface\\Icons\\Q.blp", flags) == mine &&
+                      seen == "Interface\\Icons\\Q.blp > Interface\\Icons\\Mine.blp",
+                  "a FileOpen handler sees the name asked for, and the redirect's answer in `redirect`");
+            g_answerWith = "World\\Handler.blp";
+            Check(open("Interface\\Icons\\Q.blp", flags) == "World\\Handler.blp",
+                  "and a handler that answers has the last word");
+            g_answerWith = nullptr;
+            g_host->Events().Unsubscribe(sub);
+        }
+        std::string elsewhere;
+        std::thread([&] {
+            uint32_t loader = 0;
+            elsewhere       = open("Interface\\Icons\\Q.blp", loader);
+        }).join();
+        Check(elsewhere == mine, "a redirect answers an open on another thread, where no handler can");
+        Check(api.unredirect(Str("Interface\\Icons\\Q.blp")) == WXL_OK &&
+                  open("Interface\\Icons\\Q.blp", flags) == "Interface\\Icons\\Q.blp",
+              "taken back, the name opens as itself");
+
+        storage::ForgetSearchPaths();
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "Interface\\Icons\\Mine.blp",
+              "forgotten folders serve nothing");
+        g_files.clear();
+        g_basePath.clear();
+        fs::remove_all(root, ignored);
+    }
+
     // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
 
     void CheckStorageService()
     {
+        // How the binding reads Storm's answers.
+        Check(wxl::core::storm::SeekLanded(0, 0) && wxl::core::storm::SeekLanded(12, 12) &&
+                  !wxl::core::storm::SeekLanded(0, 12) && !wxl::core::storm::SeekLanded(0, 0x100000000ull),
+              "a seek to 0 answers 0 and has landed; a cursor elsewhere, or an offset past 32 bits, has not");
+        Check(std::strcmp(wxl::core::storm::ArchiveName("Data\\patch.MPQ", "x"), "Data\\patch.MPQ") == 0 &&
+                  std::strcmp(wxl::core::storm::ArchiveName("", "Data\\Patch-4.MPQ\\"), "Data\\Patch-4.MPQ\\") == 0,
+              "an archive is known by its name, a folder opened as one by its folder");
+#if defined(_M_IX86)
+        {
+            uint8_t inline_string[0x1C] = {};
+            std::memcpy(inline_string + 4, "Data\\", 6);
+            inline_string[0x14] = 5;
+            inline_string[0x18] = 15;
+            const char* longText = "Data\\Patch-4.MPQ\\";
+            uint8_t     heap_string[0x1C] = {};
+            const uint32_t pointer = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(longText));
+            std::memcpy(heap_string + 4, &pointer, 4);
+            heap_string[0x18] = 31;
+            Check(std::strcmp(wxl::core::storm::Msvc9String(inline_string), "Data\\") == 0 &&
+                      wxl::core::storm::Msvc9String(heap_string) == longText,
+                  "the stock client's std::string holds short text in place and points to longer text");
+        }
+#endif
+
         g_files.clear();
         g_files.push_back(FakeFile{"World\\Maps\\Azeroth\\Azeroth.wdt", "MVER....hello", 0, false});
         g_opens  = 0;
@@ -1730,6 +2874,7 @@ namespace
               "its handle stops resolving with it");
 
         g_files.clear();
+        CheckSearchPath(api);
     }
 
     // --- Spell: casts read off the server's messages, and the two requests a mod can refuse ---
@@ -1755,6 +2900,34 @@ namespace
         {
             for (int i = 0; i < 8; ++i) bytes.push_back(static_cast<uint8_t>(value >> (i * 8)));
             return *this;
+        }
+
+        Body& U16(uint16_t value)
+        {
+            bytes.push_back(static_cast<uint8_t>(value));
+            bytes.push_back(static_cast<uint8_t>(value >> 8));
+            return *this;
+        }
+
+        Body& F32(float value)
+        {
+            uint32_t bits = 0;
+            memcpy(&bits, &value, sizeof bits);
+            return U32(bits);
+        }
+
+        /// A NUL-terminated string.
+        Body& Str(const char* text)
+        {
+            bytes.insert(bytes.end(), text, text + strlen(text) + 1);
+            return *this;
+        }
+
+        /// A string as the chat carries one: its length with the NUL, then the bytes.
+        Body& Sized(const char* text)
+        {
+            U32(static_cast<uint32_t>(strlen(text) + 1));
+            return Str(text);
         }
 
         /// A guid packed as the server packs it: the mask, then the non-zero bytes.
@@ -2472,13 +3645,13 @@ namespace
         store = ticks.Store();
         g_received.clear();
         wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
-        Check(g_received.size() == 2 && g_received[0].event == WXL_EV_CombatDamage &&
-                  g_received[1].event == WXL_EV_CombatHeal,
-              "Combat.HandlePeriodicAuraLog raises the damage and heal ticks, in order, up to the stop");
-        if (g_received.size() == 2)
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_CombatDamage &&
+                  g_received[1].event == WXL_EV_CombatEnergize && g_received[2].event == WXL_EV_CombatHeal,
+              "Combat.HandlePeriodicAuraLog raises the damage, energize and heal ticks, in order, up to the stop");
+        if (g_received.size() == 3)
         {
             const wxl_combat_damage_args tick = g_received[0].As<wxl_combat_damage_args>();
-            const wxl_combat_heal_args   hot  = g_received[1].As<wxl_combat_heal_args>();
+            const wxl_combat_heal_args   hot  = g_received[2].As<wxl_combat_heal_args>();
             Check(tick.kind == 2 && tick.spell_id == 589 && tick.amount == 80 && tick.school == 32 &&
                       tick.resisted == 10 && tick.crit == WXL_FALSE && tick.hit_info == 0 &&
                       tick.source == warriorHandle && tick.target == boarHandle,
@@ -2498,6 +3671,808 @@ namespace
 
         wxl::seam::ObjectMgr::ObjDelete::Before(&warrior);
         wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    // --- The third wave: the world, the player, the console, the glue, the chat, energize --
+
+    /// Strings of an args struct, copied out while they were valid: the harness keeps only
+    /// the struct's bytes, and a wxl_str in it points at memory the seam owned for the call.
+    struct StrWatch
+    {
+        std::vector<std::string> strings;
+        int                      calls = 0;
+    };
+
+    void WXL_CALL OnZone(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_zone_args& zone  = *static_cast<const wxl_zone_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(zone.zone_text.data, zone.zone_text.size),
+                          std::string(zone.subzone_text.data, zone.subzone_text.size),
+                          std::string(zone.real_zone_text.data, zone.real_zone_text.size) };
+    }
+
+    void CheckWorldZoneMouseoverClick()
+    {
+        FakeObject boar;
+        boar.guid     = 0xF130000000000123ull;
+        boar.typeId   = WXL_OBJECT_UNIT;
+        boar.position = wxl_vec3{ 10.0f, 20.0f, 30.0f };
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 9000u);
+        const wxl_handle boarHandle = wxl::core::objects::HandleOf(&boar);
+
+        // The zone: the first call announces, the same again does not, a subzone change does.
+        StrWatch zoneWatch;
+        const wxl_subscription zoneSub = g_host->Events().Subscribe(WXL_EV_ZoneChanged, &OnZone, &zoneWatch, 0);
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 0, -1, "Elwynn Forest", nullptr, "Elwynn Forest", 0);
+        const Received* zone = Only(WXL_EV_ZoneChanged);
+        Check(zone != nullptr, "GameUI.NewZoneFeedback raises ZoneChanged once for a new zone");
+        if (zone)
+        {
+            const wxl_zone_args args = zone->As<wxl_zone_args>();
+            Check(args.area_id == 12 && args.subzone_id == 0 && args.wmo_group_id == -1 &&
+                      args.indoors == WXL_FALSE && args.new_area == WXL_TRUE,
+                  "with the ids, outdoors, and a new area");
+            Check(zoneWatch.strings.size() == 3 && zoneWatch.strings[0] == "Elwynn Forest" &&
+                      zoneWatch.strings[1].empty() && zoneWatch.strings[2] == "Elwynn Forest",
+                  "and the texts, an absent one empty");
+        }
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 0, -1, "Elwynn Forest", nullptr, "Elwynn Forest", 0);
+        Check(g_received.empty(), "the same zone again raises nothing");
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 87, -1, "Elwynn Forest", "Goldshire", "Elwynn Forest", 0);
+        Check(Only(WXL_EV_ZoneChanged) && Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().new_area == WXL_FALSE &&
+                  Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().subzone_id == 87 && zoneWatch.strings[1] == "Goldshire",
+              "a subzone within the area raises ZoneChanged without a new area");
+        g_received.clear();
+        wxl::seam::GameUI::NewZoneFeedback::Before(12, 87, 3, "Elwynn Forest", "Goldshire", "Elwynn Forest", 1);
+        Check(Only(WXL_EV_ZoneChanged) && Only(WXL_EV_ZoneChanged)->As<wxl_zone_args>().indoors == WXL_TRUE,
+              "going indoors raises it with indoors set");
+        g_host->Events().Unsubscribe(zoneSub);
+
+        // The mouseover: announced once per change, from the previous object to the current.
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(boar.guid, 0);
+        const Received* over = Only(WXL_EV_MouseoverChanged);
+        Check(over != nullptr, "GameUI.HandleObjectTrackChange raises MouseoverChanged once");
+        if (over)
+        {
+            const wxl_mouseover_args args = over->As<wxl_mouseover_args>();
+            Check(args.previous == WXL_HANDLE_NONE && args.previous_guid == 0 && args.current == boarHandle &&
+                      args.current_guid == boar.guid,
+                  "from nothing to the unit's handle");
+        }
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(boar.guid, 0);
+        Check(g_received.empty(), "the same object again raises nothing");
+        g_received.clear();
+        wxl::seam::GameUI::HandleObjectTrackChange::Before(0, boar.guid);
+        Check(Only(WXL_EV_MouseoverChanged) && Only(WXL_EV_MouseoverChanged)->As<wxl_mouseover_args>().previous == boarHandle &&
+                  Only(WXL_EV_MouseoverChanged)->As<wxl_mouseover_args>().current == WXL_HANDLE_NONE,
+              "leaving it raises MouseoverChanged to nothing");
+
+        // A terrain click: the point, the game object (none here), the button renumbered.
+        FakeTerrainClick terrain;
+        terrain.point  = wxl_vec3{ 1.0f, 2.0f, 3.0f };
+        terrain.button = 4;
+        g_received.clear();
+        wxl::seam::GameUI::HandleTerrainClick::Before(&terrain);
+        const Received* ground = Only(WXL_EV_WorldClick);
+        Check(ground != nullptr, "GameUI.HandleTerrainClick raises WorldClick once");
+        if (ground)
+        {
+            const wxl_world_click_args args = ground->As<wxl_world_click_args>();
+            Check(args.point.x == 1.0f && args.point.y == 2.0f && args.point.z == 3.0f &&
+                      args.object == WXL_HANDLE_NONE && args.button == 1,
+                  "with the hit point, no object, and the right button as 1");
+        }
+
+        // A sprite click: the object, its position as the point, the left button as 0.
+        FakeSpriteClick sprite;
+        sprite.guid   = boar.guid;
+        sprite.button = 1;
+        g_received.clear();
+        wxl::seam::GameUI::HandleSpriteClick::Before(&sprite);
+        const Received* model = Only(WXL_EV_WorldClick);
+        Check(model != nullptr, "GameUI.HandleSpriteClick raises WorldClick once");
+        if (model)
+        {
+            const wxl_world_click_args args = model->As<wxl_world_click_args>();
+            Check(args.object == boarHandle && args.point.x == 10.0f && args.point.z == 30.0f && args.button == 0,
+                  "with the object, its position, and the left button as 0");
+        }
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+    }
+
+    void CheckPlayerMoveMoneyLevel()
+    {
+        FakeObject me;
+        me.guid          = 0x0000000000000042ull;
+        me.typeId        = WXL_OBJECT_PLAYER;
+        me.position      = wxl_vec3{ -8949.0f, -132.0f, 83.5f };
+        me.facing        = 1.5f;
+        me.movementFlags = 0x1;
+        me.money         = 12345;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 9100u);
+        const wxl_handle handle = wxl::core::objects::HandleOf(&me);
+
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1000, 181, 0.0f, 0, 0, 255);
+        const Received* start = Only(WXL_EV_PlayerMoveStart);
+        Check(start != nullptr && Count(WXL_EV_PlayerMoveStop) == 0,
+              "Unit.SendMovementUpdate raises PlayerMoveStart for MSG_MOVE_START_FORWARD");
+        if (start)
+        {
+            const wxl_player_move_args args = start->As<wxl_player_move_args>();
+            Check(args.unit == handle && args.unit_guid == me.guid && args.opcode == 181 && args.flags == 0x1 &&
+                      args.position.x == -8949.0f && args.facing == 1.5f,
+                  "with the unit, the opcode, the flags, the position and the facing");
+        }
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1200, 183, 0.0f, 0, 0, 255);
+        Check(Only(WXL_EV_PlayerMoveStop) != nullptr && Count(WXL_EV_PlayerMoveStart) == 0,
+              "PlayerMoveStop for MSG_MOVE_STOP");
+        g_received.clear();
+        wxl::seam::Unit::SendMovementUpdate::Before(&me, 1300, 238, 0.0f, 0, 0, 255);
+        Check(g_received.empty(), "a heartbeat raises nothing");
+
+        const uint32_t previous = 10000;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateMoney::Before(me.guid, 0xFF8, 4, &previous, nullptr);
+        const Received* money = Only(WXL_EV_PlayerMoneyChanged);
+        Check(money != nullptr, "Player.OnUpdateMoney raises PlayerMoneyChanged once");
+        if (money)
+        {
+            const wxl_money_args args = money->As<wxl_money_args>();
+            Check(args.player == handle && args.previous == 10000 && args.current == 12345,
+                  "with the player, the value the mirror hands over and the field's");
+        }
+
+        // SMSG_LEVEL_UP_INFO: the level, the health, seven powers, five stats.
+        Body level;
+        level.U32(10).U32(25).U32(40).U32(0).U32(0).U32(0).U32(0).U32(0).U32(0).U32(1).U32(2).U32(3).U32(4).U32(5);
+        FakeStore store = level.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x1D4, 0, &store);
+        const Received* leveled = Only(WXL_EV_PlayerLevelUp);
+        Check(leveled != nullptr, "Player.Packet_Group_9 raises PlayerLevelUp for SMSG_LEVEL_UP_INFO");
+        if (leveled)
+        {
+            const wxl_level_up_args args = leveled->As<wxl_level_up_args>();
+            Check(args.level == 10 && args.health == 25 && args.mana == 40 && args.runic_power == 0 &&
+                      args.strength == 1 && args.spirit == 5,
+                  "with the level, the health, the powers and the stats");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+        store = level.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x1D5, 0, &store);
+        Check(g_received.empty(), "another opcode of the group raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+    }
+
+    void WXL_CALL OnCVar(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_cvar_args& cvar  = *static_cast<const wxl_cvar_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(cvar.name.data, cvar.name.size),
+                          std::string(cvar.previous.data, cvar.previous.size),
+                          std::string(cvar.value.data, cvar.value.size) };
+    }
+
+    void CheckConsoleVar()
+    {
+        StrWatch                      watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_CVarChanged, &OnCVar, &watch, 0);
+
+        FakeCVar cvar;
+        cvar.name  = "farclip";
+        cvar.value = "777";
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 1, 0, 0, 1);
+        Check(watch.calls == 1 && watch.strings.size() == 3 && watch.strings[0] == "farclip" &&
+                  watch.strings[1] == "777" && watch.strings[2] == "1000",
+              "ConsoleVar.InternalSet raises CVarChanged with the name, the previous and the new value");
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "777", 1, 0, 0, 1);
+        Check(watch.calls == 1, "setting the same value raises nothing");
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 0, 1, 1, 0);
+        Check(watch.calls == 1, "a set of the reset and default values alone raises nothing");
+        cvar.flags = 0x4;
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "1000", 1, 0, 0, 1);
+        Check(watch.calls == 1, "a read-only variable raises nothing");
+        cvar.flags = 0;
+        cvar.value = nullptr;
+        wxl::seam::ConsoleVar::InternalSet::Before(&cvar, "5", 1, 1, 1, 0);
+        Check(watch.calls == 2 && watch.strings[1].empty() && watch.strings[2] == "5",
+              "the first value of a variable raises it with an empty previous");
+
+        g_host->Events().Unsubscribe(sub);
+    }
+
+    void WXL_CALL OnGlueScreen(void* user, const void* args)
+    {
+        StrWatch&                   watch  = *static_cast<StrWatch*>(user);
+        const wxl_glue_screen_args& screen = *static_cast<const wxl_glue_screen_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(screen.screen.data, screen.screen.size),
+                          std::string(screen.previous.data, screen.previous.size) };
+    }
+
+    void WXL_CALL OnCharacter(void* user, const void* args)
+    {
+        StrWatch&                 watch     = *static_cast<StrWatch*>(user);
+        const wxl_character_args& character = *static_cast<const wxl_character_args*>(args);
+        ++watch.calls;
+        watch.strings.push_back(std::string(character.name.data, character.name.size));
+    }
+
+    void WXL_CALL OnRealm(void* user, const void* args)
+    {
+        StrWatch&             watch = *static_cast<StrWatch*>(user);
+        const wxl_realm_args& realm = *static_cast<const wxl_realm_args*>(args);
+        ++watch.calls;
+        watch.strings.push_back(std::string(realm.name.data, realm.name.size));
+        watch.strings.push_back(std::string(realm.address.data, realm.address.size));
+    }
+
+    /// One character of SMSG_CHAR_ENUM, as the server writes it.
+    void WriteCharacter(Body& body, uint64_t guid, const char* name, uint8_t level, uint32_t map)
+    {
+        body.U64(guid).Str(name).U8(1).U8(4).U8(0).U8(1).U8(2).U8(3).U8(4).U8(5).U8(level).U32(12).U32(map)
+            .F32(-8949.0f).F32(-132.0f).F32(83.5f).U32(0).U32(0x2).U32(0).U8(level == 1 ? 1 : 0)
+            .U32(0).U32(0).U32(0);
+        for (int slot = 0; slot < 23; ++slot) body.U32(0).U8(0).U32(0);
+    }
+
+    void CheckGlue()
+    {
+        StrWatch                      screens;
+        const wxl_subscription screenSub = g_host->Events().Subscribe(WXL_EV_GlueScreenChanged, &OnGlueScreen, &screens, 0);
+        strcpy(g_glueScreen, "login");
+        wxl::seam::Glue::UpdateCurrentScreen::Before("charselect");
+        Check(screens.calls == 1 && screens.strings.size() == 2 && screens.strings[0] == "charselect" &&
+                  screens.strings[1] == "login",
+              "Glue.UpdateCurrentScreen raises GlueScreenChanged with the screen coming up and the one left");
+        g_host->Events().Unsubscribe(screenSub);
+
+        // SMSG_AUTH_RESPONSE: a queue with the billing block, then a plain refusal.
+        Body queue;
+        queue.U8(27).U32(0).U8(0).U32(0).U8(2).U32(42).U8(1);
+        FakeStore store = queue.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        const Received* queued = Only(WXL_EV_GlueAuthResult);
+        Check(queued != nullptr, "RealmConnection.HandleAuthResponse raises GlueAuthResult once");
+        if (queued)
+        {
+            const wxl_auth_result_args args = queued->As<wxl_auth_result_args>();
+            Check(args.result == 27 && args.queue_position == 42 && args.expansion == 2 &&
+                      args.free_character_migration == WXL_TRUE,
+                  "with the result, the queue position, the expansion and the migration flag");
+        }
+        Body refused;
+        refused.U8(13);
+        store = refused.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        Check(Only(WXL_EV_GlueAuthResult) && Only(WXL_EV_GlueAuthResult)->As<wxl_auth_result_args>().result == 13 &&
+                  Only(WXL_EV_GlueAuthResult)->As<wxl_auth_result_args>().queue_position == 0,
+              "a refusal carries the result alone");
+
+        // A queue message with fewer than the queue's five bytes left: the client's unsigned
+        // test wraps and reads the billing block, which runs out after its first dword, and
+        // tells the glue the result all the same.
+        Body shortQueue;
+        shortQueue.U8(27).U32(7);
+        store = shortQueue.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleAuthResponse::Before(nullptr, 0x1EE, 0, &store);
+        {
+            const Received* cut = Only(WXL_EV_GlueAuthResult);
+            Check(cut && cut->As<wxl_auth_result_args>().result == 27 &&
+                      cut->As<wxl_auth_result_args>().billing_time_remaining == 7 &&
+                      cut->As<wxl_auth_result_args>().expansion == 0 &&
+                      cut->As<wxl_auth_result_args>().queue_position == 0,
+                  "a queue message cut short reads as the client reads it, and still carries the result");
+        }
+
+        // SMSG_CHAR_ENUM: two characters, then one cut short, then too many.
+        StrWatch                      names;
+        const wxl_subscription charSub = g_host->Events().Subscribe(WXL_EV_GlueCharacter, &OnCharacter, &names, 0);
+        Body list;
+        list.U8(2);
+        WriteCharacter(list, 0x1ull, "Thrall", 80, 1);
+        WriteCharacter(list, 0x2ull, "Jaina", 1, 0);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_GlueCharacterList &&
+                  g_received[1].event == WXL_EV_GlueCharacter && g_received[2].event == WXL_EV_GlueCharacter,
+              "RealmConnection.HandleCharEnum raises GlueCharacterList, then GlueCharacter per entry");
+        if (g_received.size() == 3)
+        {
+            const wxl_character_list_args head   = g_received[0].As<wxl_character_list_args>();
+            const wxl_character_args      first  = g_received[1].As<wxl_character_args>();
+            const wxl_character_args      second = g_received[2].As<wxl_character_args>();
+            Check(head.count == 2 && head.valid == WXL_TRUE, "the list with its count, valid");
+            Check(first.index == 0 && first.count == 2 && first.guid == 0x1ull && first.race == 1 && first.class_id == 4 &&
+                      first.level == 80 && first.zone_id == 12 && first.map_id == 1 && first.position.z == 83.5f &&
+                      first.flags == 0x2 && first.first_login == WXL_FALSE,
+                  "the first with its guid, race, class, level, zone, map, position and flags");
+            Check(second.index == 1 && second.level == 1 && second.first_login == WXL_TRUE &&
+                      names.strings.size() == 2 && names.strings[0] == "Thrall" && names.strings[1] == "Jaina",
+                  "the second as a first login, and both names");
+        }
+        Check(store.read == 0u, "reading the list left the store's cursor where it was");
+        Body cut;
+        cut.U8(2);
+        WriteCharacter(cut, 0x1ull, "Thrall", 80, 1);
+        cut.U64(0x2ull).Str("Jaina");
+        store = cut.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(g_received.empty(), "a list cut short raises none of it");
+        Body many;
+        many.U8(11);
+        store = many.Store();
+        g_received.clear();
+        wxl::seam::RealmConnection::HandleCharEnum::Before(nullptr, 59, 0, &store);
+        Check(Only(WXL_EV_GlueCharacterList) && Only(WXL_EV_GlueCharacterList)->As<wxl_character_list_args>().valid == WXL_FALSE &&
+                  Count(WXL_EV_GlueCharacter) == 0,
+              "a list the client refuses raises the list alone, not valid");
+        g_host->Events().Unsubscribe(charSub);
+
+        g_received.clear();
+        wxl::seam::RealmConnection::RequestCharacterLogin::Before(nullptr, 0x1ull, 0);
+        Check(Only(WXL_EV_GlueEnterWorld) && Only(WXL_EV_GlueEnterWorld)->As<wxl_enter_world_args>().character_guid == 0x1ull,
+              "RealmConnection.RequestCharacterLogin raises GlueEnterWorld with the character");
+
+        // The realm list: two realms, one with a version, positioned at the count.
+        StrWatch                      realms;
+        const wxl_subscription realmSub = g_host->Events().Subscribe(WXL_EV_GlueRealm, &OnRealm, &realms, 0);
+        Body realmList;
+        realmList.U16(2)
+            .U8(1).U8(0).U8(0x4).Str("Dawnlight").Str("127.0.0.1:8085").F32(1.5f).U8(3).U8(2).U8(1).U8(3).U8(3).U8(5).U16(12340)
+            .U8(0).U8(1).U8(0x2).Str("Old").Str("10.0.0.1:8085").F32(0.0f).U8(0).U8(1).U8(2);
+        store = realmList.Store();
+        FakeLogin grunt;
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&grunt, &store);
+        Check(g_received.size() == 3 && g_received[0].event == WXL_EV_GlueRealmList &&
+                  g_received[0].As<wxl_realm_list_args>().count == 2,
+              "Login.RealmListResult raises GlueRealmList with the count, then GlueRealm per entry");
+        if (g_received.size() == 3)
+        {
+            const wxl_realm_args first  = g_received[1].As<wxl_realm_args>();
+            const wxl_realm_args second = g_received[2].As<wxl_realm_args>();
+            Check(first.index == 0 && first.type == 1 && first.flags == 0x4 && first.locked == WXL_FALSE &&
+                      first.population == 1.5f && first.characters == 3 && first.category == 2 && first.realm_id == 1 &&
+                      first.version_major == 3 && first.version_build == 12340,
+                  "the first with its type, flags, population, characters, category, id and version");
+            Check(second.index == 1 && second.locked == WXL_TRUE && second.realm_id == 2 && second.version_major == 0 &&
+                      realms.strings.size() == 4 && realms.strings[0] == "Dawnlight" &&
+                      realms.strings[1] == "127.0.0.1:8085" && realms.strings[2] == "Old",
+                  "the second locked and without a version, and the names and addresses");
+        }
+
+        // The list BattlenetLogin::BuildRealmListResult writes: the region, the battlegroup, the
+        // realm id and the build as dwords where a Grunt list has the id's byte.
+        Body battlenetList;
+        battlenetList.U16(1)
+            .U8(0).U8(0).U8(0x4).Str("Lordaeron").Str("10.1.0.1:3724").F32(400.0f).U8(1).U8(9)
+            .U32(2).U32(14).U32(301).U32(12340).U8(3).U8(3).U8(5).U16(12340)
+            .U16(0);
+        store = battlenetList.Store();
+        FakeLogin battlenet;
+        battlenet.serverType = 1;
+        realms.strings.clear();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&battlenet, &store);
+        Check(g_received.size() == 2 && g_received[0].event == WXL_EV_GlueRealmList &&
+                  g_received[0].As<wxl_realm_list_args>().count == 1,
+              "Login.RealmListResult reads a Battle.net login's list too");
+        if (g_received.size() == 2)
+        {
+            const wxl_realm_args realm = g_received[1].As<wxl_realm_args>();
+            Check(realm.region_id == 2 && realm.battlegroup_id == 14 && realm.realm_id == 301 &&
+                      realm.build == 12340 && realm.category == 9 && realm.version_major == 3 &&
+                      realm.version_build == 12340 && realms.strings.size() == 2 &&
+                      realms.strings[0] == "Lordaeron",
+                  "with its region, battlegroup, dword realm id, build and version");
+        }
+
+        // The layout follows the login, not the bytes: a Grunt login reads the id's byte.
+        store = battlenetList.Store();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(&grunt, &store);
+        Check(g_received.size() == 2 && g_received[1].As<wxl_realm_args>().realm_id == 2 &&
+                  g_received[1].As<wxl_realm_args>().region_id == 0,
+              "a Grunt login reads the id's byte and no Battle.net members");
+
+        store = realmList.Store();
+        g_received.clear();
+        wxl::seam::Login::RealmListResult::Before(nullptr, &store);
+        Check(g_received.empty(), "and a login the binding cannot ask raises nothing");
+        g_host->Events().Unsubscribe(realmSub);
+    }
+
+    void WXL_CALL OnChat(void* user, const void* args)
+    {
+        StrWatch&            watch = *static_cast<StrWatch*>(user);
+        const wxl_chat_args& chat  = *static_cast<const wxl_chat_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(chat.sender_name.data, chat.sender_name.size),
+                          std::string(chat.target_name.data, chat.target_name.size),
+                          std::string(chat.channel.data, chat.channel.size),
+                          std::string(chat.text.data, chat.text.size),
+                          std::string(chat.shown_text.data, chat.shown_text.size) };
+    }
+
+    /// What the chat-send handler saw and whether it suppressed the message.
+    struct SendWatch
+    {
+        StrWatch strings;
+        bool     suppress = false;
+    };
+
+    void WXL_CALL OnChatSend(void* user, const void* args)
+    {
+        SendWatch&                watch = *static_cast<SendWatch*>(user);
+        const wxl_chat_send_args& send  = *static_cast<const wxl_chat_send_args*>(args);
+        ++watch.strings.calls;
+        watch.strings.strings = { std::string(send.text.data, send.text.size),
+                                  std::string(send.type.data, send.type.size),
+                                  std::string(send.language.data, send.language.size),
+                                  std::string(send.target.data, send.target.size),
+                                  std::string(send.prefix.data, send.prefix.size),
+                                  send.addon ? "addon" : "chat" };
+        if (watch.suppress) *send.suppressed = WXL_TRUE;
+    }
+
+    /// What the client does with a message it reads, up to AddChatMessage handing over the text
+    /// where it lies in the message. A null `text` is a message ChatMessageReceived drops.
+    const char* AddReceived(FakeStore& store, const char* text, int32_t shown_type, uint64_t sender_guid,
+                            uint8_t is_gm, uint32_t language = 0)
+    {
+        if (!text) return nullptr;
+        const uint8_t* at = std::search(store.data, store.data + store.size, text, text + strlen(text));
+        const char*    in = reinterpret_cast<const char*>(at);
+        wxl::seam::Chat::AddChatMessage::Before(in, shown_type, nullptr, language, nullptr, nullptr, "", sender_guid, 0,
+                                                0, 0, is_gm, nullptr);
+        return in;
+    }
+
+    /// The client committing the line AddChatMessage is adding: RecordChat with the line as
+    /// the frames get it.
+    void Commit(const char* shown, int32_t type, uint64_t sender_guid, uint32_t line_id,
+                const char* sender_name = nullptr)
+    {
+        wxl::seam::Chat::RecordChat::Before(shown, type, sender_name, sender_guid, 0, 0, nullptr, line_id, nullptr);
+    }
+
+    /// The client holding the line AddChatMessage is adding: QueueChatText appends `line`.
+    void Hold(FakePendingChat& line, const char* copy, int32_t type, uint64_t sender_guid, uint32_t language = 0)
+    {
+        line.text     = copy;
+        g_pendingLast = &line;
+        wxl::seam::Chat::QueueChatText::After(copy, type, nullptr, nullptr, language, nullptr, "", 0, 0, sender_guid, 0,
+                                              0, 0, 0, nullptr);
+    }
+
+    /// The client adding a held line again from its copy.
+    void AddHeld(const FakePendingChat& line, int32_t type, uint64_t sender_guid, uint32_t language = 0)
+    {
+        wxl::seam::Chat::AddChatMessage::Before(line.text, type, nullptr, language, nullptr, nullptr, "", sender_guid, 0,
+                                                0, 0, 0, nullptr);
+    }
+
+    /// A message the client reads and shows at once: read, added, committed.
+    void ReceiveChat(FakeStore& store, uint8_t is_gm, const char* text, int32_t shown_type,
+                     uint64_t sender_guid)
+    {
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, is_gm);
+        if (AddReceived(store, text, shown_type, sender_guid, is_gm)) Commit(text, shown_type, sender_guid, 1);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, is_gm);
+    }
+
+    void CheckChat()
+    {
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABCull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+        const wxl_handle orcHandle = wxl::core::objects::HandleOf(&orc);
+
+        StrWatch                      watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_ChatMessage, &OnChat, &watch, 0);
+
+        // A say: the default layout.
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("Lok'tar").U8(0);
+        FakeStore store = say.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Lok'tar", 1, orc.guid);
+        const Received* said = Only(WXL_EV_ChatMessage);
+        Check(said != nullptr, "Chat.RecordChat raises ChatMessage once for a say the client shows");
+        if (said)
+        {
+            const wxl_chat_args args = said->As<wxl_chat_args>();
+            Check(args.type == 1 && args.language == 7 && args.sender == orcHandle && args.sender_guid == orc.guid &&
+                      args.tag == 0 && args.gm == WXL_FALSE && args.line_id == 1 && watch.strings[3] == "Lok'tar" &&
+                      watch.strings[4] == "Lok'tar" && watch.strings[0].empty(),
+                  "with the type, the language, the sender, the text, the line and no name");
+        }
+        Check(store.read == 0u, "reading the message left the store's cursor where it was");
+
+        // A channel message with a chat tag, as a GM message with the sender's name.
+        Body channel;
+        channel.U8(17).U32(0).U64(orc.guid).U32(0).Sized("Thrall").Str("General").U64(0).Sized("hello").U8(0x4);
+        store = channel.Store();
+        g_received.clear();
+        ReceiveChat(store, 1, "hello", 17, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().gm == WXL_TRUE &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().tag == 0x4 && watch.strings[0] == "Thrall" &&
+                  watch.strings[2] == "General" && watch.strings[3] == "hello",
+              "a GM channel message carries the sender's name, the channel and the tag");
+
+        // A monster yell at a creature, whose name the message carries; a player's it does not.
+        Body yell;
+        yell.U8(14).U32(0).U64(0xF130000000000123ull).U32(0).Sized("Hogger").U64(0xF130000000000456ull).Sized("Gnoll")
+            .Sized("Grrr!").U8(0);
+        store = yell.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Grrr!", 14, 0xF130000000000123ull);
+        Check(Only(WXL_EV_ChatMessage) &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().target_guid == 0xF130000000000456ull &&
+                  watch.strings[0] == "Hogger" && watch.strings[1] == "Gnoll" && watch.strings[3] == "Grrr!",
+              "a monster yell carries the creature's name, the target and its name");
+        Body yellAtPlayer;
+        yellAtPlayer.U8(14).U32(0).U64(0xF130000000000123ull).U32(0).Sized("Hogger").U64(orc.guid).Sized("Grrr!")
+            .U8(0);
+        store = yellAtPlayer.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "Grrr!", 14, 0xF130000000000123ull);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().target_guid == orc.guid &&
+                  watch.strings[1].empty() && watch.strings[3] == "Grrr!",
+              "and at a player, no target name");
+
+        // An achievement message, and a message cut short.
+        Body achievement;
+        achievement.U8(48).U32(0).U64(orc.guid).U32(0).U64(0).Sized("earned").U8(0).U32(1234);
+        store = achievement.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "earned", 48, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().achievement_id == 1234,
+              "an achievement message carries its id");
+        Body cut;
+        cut.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).U32(50);
+        store = cut.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, nullptr, 0, orc.guid);
+        Check(g_received.empty(), "a message cut short raises nothing");
+
+        // A foreign whisper: 8 on the wire, shown as a whisper, which is the type raised.
+        Body foreign;
+        foreign.U8(8).U32(1).U64(orc.guid).U32(0).Sized("Thrall").U64(0).Sized("psst").U8(0);
+        store = foreign.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, "psst", 7, orc.guid);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().type == 7 &&
+                  watch.strings[0] == "Thrall" && watch.strings[3] == "psst",
+              "a foreign whisper is raised as the whisper the client shows");
+
+        // A message ChatMessageReceived drops (an ignored sender): read, never added, never raised.
+        store = say.Store();
+        g_received.clear();
+        ReceiveChat(store, 0, nullptr, 0, orc.guid);
+        Check(g_received.empty(), "a message the client drops raises nothing");
+
+        // A line AddChatMessage drops (the spam filter, the UTF-8 check): added, never committed.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Check(g_received.empty(), "Chat.AddChatMessage raises nothing itself");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Commit("Lok'tar", 1, orc.guid, 2);
+        Check(g_received.empty(), "a line the client's own filters drop is never raised, not even by a later commit");
+
+        // The line as the frames get it: the name from the cache, the final type, the line id,
+        // the text translated and filtered.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Commit("Kek'ta", 10, orc.guid, 77, "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().type == 10 &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 77 && watch.strings[0] == "Thrall" &&
+                  watch.strings[3] == "Lok'tar" && watch.strings[4] == "Kek'ta",
+              "the committed line carries its final type, its number, the name it shows and the text as shown");
+
+        // The client's own lines raise nothing, inside a received message or outside one.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before("You are now AFK.", 0, nullptr, 0, nullptr, nullptr, "", 0, 0, 0, 0,
+                                                0, nullptr);
+        Commit("You are now AFK.", 0, 0, 3);
+        store = say.Store();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        wxl::seam::Chat::AddChatMessage::Before("Lok'tar", 1, nullptr, 0, nullptr, nullptr, "", orc.guid, 0, 0, 0, 0,
+                                                nullptr);
+        Commit("Lok'tar", 1, orc.guid, 4);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_received.empty(), "a line that is not the received message's own text raises nothing");
+
+        // A line the client holds until it knows the name: nothing while it is held, the line
+        // once the client adds its copy again and commits it, with the name it then shows.
+        FakePendingChat held;
+        char            copy[] = "Lok'tar";
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        store = FakeStore{};
+        Check(g_received.empty(), "Chat.QueueChatText: a line the client holds raises nothing yet");
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 5, "Thrall");
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 5 &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().language == 7 && watch.strings[0] == "Thrall" &&
+                  watch.strings[3] == "Lok'tar",
+              "the held line raises when the client adds it again, with what the message carried and the name");
+        g_received.clear();
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 6);
+        Check(g_received.empty(), "and only once");
+
+        // Held, added again and held again (the name still unknown), then shown.
+        FakePendingChat again;
+        char            secondCopy[] = "Lok'tar";
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        AddHeld(held, 1, orc.guid);
+        Hold(again, secondCopy, 1, orc.guid);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        AddHeld(again, 1, orc.guid);
+        Commit(secondCopy, 1, orc.guid, 7);
+        wxl::seam::Chat::DestroyPendingChat::Before(&again);
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 7,
+              "a line held twice raises once, when it is shown");
+
+        // Held, then given up on (a name query that failed): freed, never shown, never raised,
+        // even if a later line comes with a copy at the same address.
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Lok'tar", 1, orc.guid, 0);
+        Hold(held, copy, 1, orc.guid);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        AddHeld(held, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 8);
+        Check(g_received.empty(), "Chat.DestroyPendingChat: a held line the client frees raises nothing");
+
+        // The client's own line, held: nothing kept, nothing raised.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before(copy, 0, nullptr, 0, nullptr, nullptr, "", orc.guid, 0, 0, 0, 0,
+                                                nullptr);
+        Hold(held, copy, 0, orc.guid);
+        AddHeld(held, 0, orc.guid);
+        Commit(copy, 0, orc.guid, 9);
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(g_received.empty(), "a line of the client's own, held and shown, raises nothing");
+        g_pendingLast = nullptr;
+        g_host->Events().Unsubscribe(sub);
+
+        // The gates: the script's arguments off the Lua stack, suppressed or not.
+        SendWatch                     send;
+        const wxl_subscription sendSub = g_host->Events().Subscribe(WXL_EV_ChatSend, &OnChatSend, &send, 0);
+        g_vm.stack = { String("hello"), String("SAY"), FakeValue{}, FakeValue{} };
+        int32_t result = 7;
+        void*   state  = &g_vm;
+        Check(!wxl::seam::Chat::Script_SendChatMessage::Gate(&result, &state) && result == 7,
+              "Chat.Script_SendChatMessage lets the call through when nothing suppresses it");
+        Check(send.strings.calls == 1 && send.strings.strings.size() == 6 && send.strings.strings[0] == "hello" &&
+                  send.strings.strings[1] == "SAY" && send.strings.strings[2].empty() && send.strings.strings[3].empty() &&
+                  send.strings.strings[5] == "chat",
+              "having raised ChatSend with the text, the type and the absent arguments empty");
+        send.suppress = true;
+        g_vm.stack    = { String("psst"), String("WHISPER"), String("Orcish"), String("Thrall") };
+        Check(wxl::seam::Chat::Script_SendChatMessage::Gate(&result, &state) && result == 0,
+              "a suppressed message takes the call and answers no result");
+        Check(send.strings.strings[2] == "Orcish" && send.strings.strings[3] == "Thrall",
+              "with the language and the target as the script passed them");
+        g_vm.stack = { String("MyAddon"), String("payload"), String("GUILD"), FakeValue{} };
+        Check(wxl::seam::Chat::Script_SendAddonMessage::Gate(&result, &state) && send.strings.strings[4] == "MyAddon" &&
+                  send.strings.strings[0] == "payload" && send.strings.strings[1] == "GUILD" &&
+                  send.strings.strings[5] == "addon",
+              "Chat.Script_SendAddonMessage raises ChatSend as an addon message with its prefix");
+        g_vm.stack.clear();
+        g_host->Events().Unsubscribe(sendSub);
+
+        // SMSG_LOG_XPGAIN: a kill with its bonus and rate, then a quest.
+        Body kill;
+        kill.U64(0xF130000000000123ull).U32(150).U8(0).U32(30).F32(0.5f).U8(1);
+        store = kill.Store();
+        g_received.clear();
+        wxl::seam::Chat::Packet_SMSG_LOG_XPGAIN::Before(nullptr, 0x1D0, 0, &store);
+        const Received* gained = Only(WXL_EV_PlayerXpGain);
+        Check(gained != nullptr, "Chat.Packet_SMSG_LOG_XPGAIN raises PlayerXpGain once");
+        if (gained)
+        {
+            const wxl_xp_gain_args args = gained->As<wxl_xp_gain_args>();
+            Check(args.source_guid == 0xF130000000000123ull && args.source == WXL_HANDLE_NONE && args.amount == 150 &&
+                      args.kind == 0 && args.bonus == 30 && args.group_multiplier == 0.5f && args.refer_a_friend == WXL_TRUE,
+                  "with the source, the amount, the kind, the bonus, the rate and the flag");
+        }
+        Body quest;
+        quest.U64(orc.guid).U32(500).U8(1).U8(0);
+        store = quest.Store();
+        g_received.clear();
+        wxl::seam::Chat::Packet_SMSG_LOG_XPGAIN::Before(nullptr, 0x1D0, 0, &store);
+        Check(Only(WXL_EV_PlayerXpGain) && Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().kind == 1 &&
+                  Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().group_multiplier == 1.0f &&
+                  Only(WXL_EV_PlayerXpGain)->As<wxl_xp_gain_args>().source == orcHandle,
+              "a gain that is not a kill carries no bonus and a rate of 1");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
+    }
+
+    void CheckEnergize()
+    {
+        FakeObject priest;
+        priest.guid   = 0x0000000000000ABCull;
+        priest.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&priest, nullptr, 9300u);
+        const wxl_handle priestHandle = wxl::core::objects::HandleOf(&priest);
+
+        // SMSG_SPELLENERGIZELOG: the target first, then the caster.
+        Body energize;
+        energize.Packed(priest.guid).Packed(priest.guid).U32(29166).U32(0).U32(300);
+        FakeStore store = energize.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandleSpellLogEnergizeLog::Before(&store, 0);
+        const Received* gained = Only(WXL_EV_CombatEnergize);
+        Check(gained != nullptr, "Combat.HandleSpellLogEnergizeLog raises CombatEnergize once");
+        if (gained)
+        {
+            const wxl_combat_energize_args args = gained->As<wxl_combat_energize_args>();
+            Check(args.source == priestHandle && args.target == priestHandle && args.spell_id == 29166 &&
+                      args.power_type == 0 && args.amount == 300 && args.periodic == WXL_FALSE && args.drain == WXL_FALSE,
+                  "with the caster, the target, the spell, the power and the amount");
+        }
+
+        // SMSG_PERIODICAURALOG: an energize tick and a drain tick.
+        Body ticks;
+        ticks.Packed(priest.guid).Packed(priest.guid).U32(589).U32(2).U32(21).U32(3).U32(20).U32(64).U32(0).U32(50).F32(2.0f);
+        store = ticks.Store();
+        g_received.clear();
+        wxl::seam::Combat::HandlePeriodicAuraLog::Before(&store, 0);
+        Check(g_received.size() == 2 && Count(WXL_EV_CombatEnergize) == 2,
+              "Combat.HandlePeriodicAuraLog raises CombatEnergize for an energize and a drain tick");
+        if (g_received.size() == 2)
+        {
+            const wxl_combat_energize_args tick  = g_received[0].As<wxl_combat_energize_args>();
+            const wxl_combat_energize_args drain = g_received[1].As<wxl_combat_energize_args>();
+            Check(tick.periodic == WXL_TRUE && tick.drain == WXL_FALSE && tick.power_type == 3 && tick.amount == 20 &&
+                      tick.spell_id == 589,
+                  "the energize tick as periodic, with its power and amount");
+            Check(drain.drain == WXL_TRUE && drain.power_type == 0 && drain.amount == 50 && drain.multiplier == 2.0f,
+                  "the drain tick with its multiplier");
+        }
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&priest);
     }
 
     // --- FrameScript: the UI events the client fires, and the errors its Lua raises --------
@@ -2573,6 +4548,111 @@ namespace
         g_vm.live = false;
     }
 
+    void WXL_CALL OnChatAddon(void* user, const void* args)
+    {
+        StrWatch&                  watch = *static_cast<StrWatch*>(user);
+        const wxl_chat_addon_args& addon = *static_cast<const wxl_chat_addon_args*>(args);
+        ++watch.calls;
+        watch.strings = { std::string(addon.prefix.data, addon.prefix.size),
+                          std::string(addon.text.data, addon.text.size),
+                          std::string(addon.channel.data, addon.channel.size),
+                          std::string(addon.sender_name.data, addon.sender_name.size) };
+    }
+
+    /// CHAT_MSG_ADDON fired as AddChatMessage fires it: the prefix, the text, the channel and
+    /// the sender's name.
+    void DeliverAddon(const char* prefix, const char* text, const char* channel, const char* sender)
+    {
+        Fire(1, "%s%s%s%s", prefix, text, channel, sender);
+    }
+
+    void CheckChatAddon()
+    {
+        g_vm.live       = true;
+        g_uiLoggingIn   = 1;
+        g_uiInitialized = 0;
+        wxl::seam::FrameScript::Initialize::After(1, 0);
+        static const char* names[] = { "CHAT_MSG_SAY", "CHAT_MSG_ADDON" };
+        wxl::seam::FrameScript::CreateEvents::After(names, 2);
+
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABDull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+        const wxl_handle orcHandle = wxl::core::objects::HandleOf(&orc);
+
+        StrWatch               watch;
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_ChatAddonMessage, &OnChatAddon, &watch, 0);
+
+        // A party addon message: the addon language, the prefix and the text joined by a tab.
+        Body party;
+        party.U8(2).U32(0xFFFFFFFFu).U64(orc.guid).U32(0).U64(0).Sized("MyAddon\tping").U8(0);
+        FakeStore store = party.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Check(g_received.empty(), "an addon message raises nothing before the client delivers it");
+        DeliverAddon("MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        const Received* addon = Only(WXL_EV_ChatAddonMessage);
+        Check(addon != nullptr && Count(WXL_EV_ChatMessage) == 0,
+              "FrameScript.vSignalEvent raises ChatAddonMessage once at CHAT_MSG_ADDON, and no ChatMessage");
+        if (addon)
+        {
+            const wxl_chat_addon_args args = addon->As<wxl_chat_addon_args>();
+            Check(args.type == 2 && args.sender == orcHandle && args.sender_guid == orc.guid && args.gm == WXL_FALSE &&
+                      watch.strings[0] == "MyAddon" && watch.strings[1] == "ping" && watch.strings[2] == "PARTY" &&
+                      watch.strings[3] == "Thrall",
+                  "with the type, the sender and the strings the interface receives");
+        }
+
+        // An addon message the client holds for the sender's name, delivered when it adds the copy.
+        FakePendingChat held;
+        char            copy[] = "MyAddon\tping";
+        store = party.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Hold(held, copy, 2, orc.guid, 0xFFFFFFFFu);
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_received.empty(), "a held addon message raises nothing yet");
+        AddHeld(held, 2, orc.guid, 0xFFFFFFFFu);
+        DeliverAddon("MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::DestroyPendingChat::Before(&held);
+        Check(Only(WXL_EV_ChatAddonMessage) && watch.strings[3] == "Thrall",
+              "and is raised when the client delivers it, with the name it then has");
+
+        // CHAT_MSG_ADDON outside a received addon message, and another event inside one.
+        g_received.clear();
+        wxl::seam::Chat::AddChatMessage::Before("Own\tline", 2, nullptr, 0xFFFFFFFFu, nullptr, nullptr, "", 0, 0, 0, 0,
+                                                0, nullptr);
+        DeliverAddon("Own", "line", "PARTY", "");
+        store = party.Store();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "MyAddon\tping", 2, orc.guid, 0, 0xFFFFFFFFu);
+        Fire(0, "%s%s%s%s", "MyAddon", "ping", "PARTY", "Thrall");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Count(WXL_EV_ChatAddonMessage) == 0,
+              "an addon line of the client's own, or another event, raises no ChatAddonMessage");
+
+        // A chat line is not an addon message: CHAT_MSG_ADDON cannot be its outcome.
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("hello").U8(0);
+        store = say.Store();
+        g_received.clear();
+        wxl::seam::Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "hello", 1, orc.guid, 0, 7);
+        DeliverAddon("hello", "", "UNKNOWN", "");
+        wxl::seam::Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(Count(WXL_EV_ChatAddonMessage) == 0, "a message in a spoken language raises no ChatAddonMessage");
+
+        g_pendingLast = nullptr;
+        g_host->Events().Unsubscribe(sub);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
+        wxl::seam::FrameScript::Destroy::Before();
+        g_vm.live = false;
+    }
+
     void CheckScriptError()
     {
         g_vm.live       = true;
@@ -2617,6 +4697,215 @@ namespace
         g_vm.live = false;
     }
 
+    // --- wxl.footprint: Storm's allocations, the client's consumers, the address space -------
+
+    std::string_view Text(wxl_str text) { return std::string_view(text.data ? text.data : "", text.size); }
+
+    /// The source row of a file in the last picture, or null.
+    const wxl_footprint_source* SourceNamed(const std::vector<wxl_footprint_source>& rows, const char* file)
+    {
+        for (const wxl_footprint_source& row : rows)
+            if (row.file.size == std::strlen(file) && std::memcmp(row.file.data, file, row.file.size) == 0) return &row;
+        return nullptr;
+    }
+
+    const wxl_footprint_category* CategoryNamed(const std::vector<wxl_footprint_category>& rows, const char* name)
+    {
+        for (const wxl_footprint_category& row : rows)
+            if (row.name.size == std::strlen(name) && std::memcmp(row.name.data, name, row.name.size) == 0) return &row;
+        return nullptr;
+    }
+
+    template <class T>
+    std::vector<T> Listed(uint32_t (WXL_CALL* list)(T*, uint32_t))
+    {
+        std::vector<T> rows(list(nullptr, 0));
+        for (T& row : rows) row.struct_size = sizeof(T);
+        rows.resize(list(rows.data(), static_cast<uint32_t>(rows.size())) < rows.size() ? 0 : rows.size());
+        return rows;
+    }
+
+    void CheckFootprint()
+    {
+        namespace Storm = wxl::seam::Storm;
+        const wxl_footprint_api& api = wxl::core::services::FootprintApi();
+        wxl::core::services::footprint::Reset();
+
+        static const char kClient[] = ".\\Client.cpp";
+        static const char kNew[]    = "new";
+        void* const       a         = reinterpret_cast<void*>(0x10001000);
+        void* const       b         = reinterpret_cast<void*>(0x10002000);
+        void* const       c         = reinterpret_cast<void*>(0x10003000);
+
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);
+        Check(api.running() == WXL_FALSE, "accounting is off until a mod starts it: an allocation counts nothing");
+        api.snapshot();
+        Check(Listed(api.sources).empty() && !CategoryNamed(Listed(api.categories), "storm"),
+              "and a picture taken then has no source and no storm category");
+
+        Check(api.start() == WXL_OK && api.running() == WXL_TRUE, "start begins accounting");
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);  // 104 with Storm's rounding
+        Storm::SMemAlloc::After(b, 8, kClient, 11, 0);
+        Storm::SMemAlloc::After(c, 1000, kNew, -1, 0);
+        Storm::SMemFree::Before(b, "free", 0, 0);
+        Storm::SMemFree::Before(reinterpret_cast<void*>(0x20000000), "free", 0, 0); // never counted
+        api.snapshot();
+        std::vector<wxl_footprint_source> sources = Listed(api.sources);
+        const wxl_footprint_source*       client  = SourceNamed(sources, kClient);
+        const wxl_footprint_source*       news    = SourceNamed(sources, kNew);
+        Check(client && client->bytes == 104 && client->count == 1 && client->allocations == 2 && client->peak == 112,
+              "a source counts its live bytes rounded to 8, its live blocks, every allocation and its peak");
+        Check(news && news->bytes == 1000 && sources.front().bytes == 1000,
+              "each file is its own row, and the largest comes first");
+        const std::vector<wxl_footprint_category> categories = Listed(api.categories);
+        const wxl_footprint_category*             storm      = CategoryNamed(categories, "storm");
+        Check(storm && storm->bytes == 1104 && storm->count == 2 && storm->peak == 1112,
+              "the storm category is every source together, with its own peak");
+
+        // The client's arrays name their element type, decorated: a row spells it as C++ does.
+        {
+            static const char kPointers[] = ".PBVTaxiPathRec@@";
+            static const char kBytes[]    = ".E";
+            static const char kClass[]    = ".?AVCSimpleTexture@@";
+            static const char kNested[]   = ".PAPAUInner@Outer@@";
+            static const char kTemplate[] = ".?AV?$TSList@VX@@@@";
+            void* const       typed[]     = {reinterpret_cast<void*>(0x10011000), reinterpret_cast<void*>(0x10012000),
+                                             reinterpret_cast<void*>(0x10013000), reinterpret_cast<void*>(0x10014000),
+                                             reinterpret_cast<void*>(0x10015000)};
+            const char* const names[]     = {kPointers, kBytes, kClass, kNested, kTemplate};
+            for (int i = 0; i < 5; ++i) Storm::SMemAlloc::After(typed[i], 8, names[i], -2, 0);
+            api.snapshot();
+            const std::vector<wxl_footprint_source> rows = Listed(api.sources);
+            Check(SourceNamed(rows, "const TaxiPathRec*") && SourceNamed(rows, "unsigned char") &&
+                      SourceNamed(rows, "CSimpleTexture") && SourceNamed(rows, "Outer::Inner**"),
+                  "a type's decorated name reads as C++ spells it: pointers, const, scopes, basic types");
+            Check(SourceNamed(rows, kTemplate) != nullptr, "one it cannot read is kept as the client wrote it");
+            for (void* block : typed) Storm::SMemFree::Before(block, "free", 0, 0);
+        }
+
+        // SMemReAlloc: moved, failed, freed, and the calls that leave the block alone.
+        void* const d = reinterpret_cast<void*>(0x10004000);
+        Storm::SMemReAlloc::Before(a, 300, kNew, 0, 0);
+        Storm::SMemReAlloc::After(d, a, 300, kNew, 0, 0);
+        Storm::SMemReAlloc::Before(c, 4000, kNew, 0, 0);
+        Storm::SMemReAlloc::After(nullptr, c, 4000, kNew, 0, 0); // the call failed: c stays
+        Storm::SMemReAlloc::Before(c, 64, kNew, 0, 0x10);
+        Storm::SMemReAlloc::After(nullptr, c, 64, kNew, 0, 0x10); // no move allowed: c stays
+        api.snapshot();
+        sources = Listed(api.sources);
+        client  = SourceNamed(sources, kClient);
+        news    = SourceNamed(sources, kNew);
+        Check(client && client->bytes == 0 && client->count == 0 && news && news->bytes == 1304 && news->count == 2,
+              "a block that moves is counted under the file that moved it; one a call left alone stays");
+        Storm::SMemReAlloc::Before(d, 0, kNew, 0, 0);
+        Storm::SMemReAlloc::After(nullptr, d, 0, kNew, 0, 0);
+        api.snapshot();
+        sources = Listed(api.sources);
+        news    = SourceNamed(sources, kNew);
+        Check(news && news->bytes == 1000 && news->count == 1, "and a resize to nothing frees it");
+
+        // The client's consumers, read when the picture is taken.
+        const std::vector<wxl_footprint_category> seen = Listed(api.categories);
+        const wxl_footprint_category* managed = CategoryNamed(seen, "textures.managed");
+        const wxl_footprint_category* target  = CategoryNamed(seen, "textures.default");
+        const wxl_footprint_category* buffers = CategoryNamed(seen, "buffers.default");
+        const wxl_footprint_category* sound   = CategoryNamed(seen, "sound");
+        const wxl_footprint_category* script  = CategoryNamed(seen, "script");
+        const wxl_footprint_category* paks    = CategoryNamed(seen, "archives");
+        Check(managed && managed->bytes == 5120 && managed->count == 2 && target && target->bytes == 8192 && buffers &&
+                  buffers->bytes == 65536,
+              "the device's textures and buffers are summed by pool");
+        Check(sound && sound->bytes == 3000000 && sound->peak == 5000000 && script && script->bytes == 12345678 &&
+                  paks && paks->bytes == 2500000 && paks->count == 2,
+              "the sound and script heaps and the archives' tables are categories of their own");
+        Check(std::is_sorted(seen.begin(), seen.end(),
+                             [](const wxl_footprint_category& x, const wxl_footprint_category& y) { return x.bytes > y.bytes; }),
+              "categories come largest first");
+
+        const std::vector<wxl_footprint_archive> archives = Listed(api.archives);
+        Check(archives.size() == 2 && archives[1].priority == 30 && archives[1].hash_entries == 16384 &&
+                  Text(archives[1].path) == "Data\\patch-3.MPQ",
+              "each archive is listed with its priority, its tables and its path");
+
+        // A database: a block Storm handed out while counting is known exactly; others are estimated.
+        Storm::SMemAlloc::After(g_spellStrings, 20, kClient, 0, 0);
+        api.snapshot();
+        const std::vector<wxl_footprint_table> tables = Listed(api.tables);
+        Check(tables.size() == 1 && Text(tables[0].name) == "DBFilesClient\\Spell.dbc" && tables[0].records == 2 &&
+                  tables[0].bytes == 64 + 24,
+              "a loaded database counts its records, and its strings as Storm handed them out; one unread is left out");
+        Storm::SMemFree::Before(g_spellStrings, "free", 0, 0);
+
+        const std::vector<wxl_footprint_region> regions = Listed(api.regions);
+        uint64_t committed = 0, freeLargest = 0;
+        for (const wxl_footprint_region& region : regions)
+        {
+            if (Text(region.state) == "committed") committed += region.bytes;
+            if (Text(region.state) == "free") freeLargest = region.largest;
+        }
+        Check(regions.size() == 7 && committed > 0 && freeLargest > 0,
+              "the address space is listed by state and type, with the largest free block");
+
+        // What a mod reports of its own.
+        Check(api.report(Str(""), 1, 1) == WXL_E_INVALID, "a report needs a name");
+        api.report(Str("cache"), 777, 3);
+        api.snapshot();
+        const std::vector<wxl_footprint_category> reported = Listed(api.categories);
+        const wxl_footprint_category*             cache    = CategoryNamed(reported, "cache");
+        Check(cache && cache->bytes == 777 && cache->count == 3 && Text(cache->owner) == "runtime",
+              "a report is a category, owned by whoever reported it");
+        api.report(Str("cache"), 0, 0);
+        api.snapshot();
+        Check(!CategoryNamed(Listed(api.categories), "cache"), "and a report of nothing removes it");
+
+        // MemoryPressure: armed by a threshold, raised once under it, again only after recovering.
+        wxl_memory_pressure_args pressure{};
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "with no threshold nothing is due");
+        api.watch_pressure(~0ull);
+        Check(wxl::core::services::footprint::PressureDue(&pressure) && pressure.largest_free > 0 &&
+                  pressure.threshold == ~0ull && pressure.committed > 0,
+              "a threshold above the largest free block is due at the first look, with what was seen");
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "and not again within the second");
+        wxl::core::services::footprint::ForgetMod(0);
+        Check(!wxl::core::services::footprint::PressureDue(&pressure), "a mod's threshold goes with it");
+
+        api.stop();
+        Check(api.running() == WXL_FALSE, "stop ends accounting");
+        Storm::SMemAlloc::After(a, 100, kClient, 10, 0);
+        api.snapshot();
+        sources = Listed(api.sources);
+        news    = SourceNamed(sources, kNew);
+        const wxl_footprint_source* stale = SourceNamed(sources, kClient);
+        Check(news && news->bytes == 1000 && stale && stale->allocations == 3,
+              "the last counts stay after stop, and nothing more is counted");
+        wxl::core::services::footprint::Reset();
+    }
+
+    void CheckArchivesAndDatabases()
+    {
+        FakeSArchive patch{0, &g_archives[1]};
+        void*        handle = &patch;
+
+        g_received.clear();
+        wxl::seam::Storage::OpenArchive::After(1, "Data\\patch-3.MPQ", 30, 0, &handle);
+        const Received* mounted = Only(WXL_EV_ArchiveMounted);
+        Check(mounted && mounted->As<wxl_archive_args>().priority == 30 &&
+                  mounted->As<wxl_archive_args>().block_entries == 9000 && mounted->As<wxl_archive_args>().bytes == 500000,
+              "Storage.OpenArchive raises ArchiveMounted with the archive's priority and tables");
+        g_received.clear();
+        wxl::seam::Storage::OpenArchive::After(0, "Data\\absent.MPQ", 30, 0, &handle);
+        Check(g_received.empty(), "and nothing for an archive that did not open");
+        wxl::seam::Storage::CloseArchive::Before(handle);
+        Check(Only(WXL_EV_ArchiveUnmounted) != nullptr, "Storage.CloseArchive raises ArchiveUnmounted before it closes");
+
+        g_received.clear();
+        wxl::seam::ClientDb::Initialize::After();
+        const Received* loaded = Only(WXL_EV_ClientDbLoaded);
+        Check(loaded && loaded->As<wxl_client_db_args>().record_count == 2 &&
+                  loaded->As<wxl_client_db_args>().records == g_spellRecords,
+              "ClientDb.Initialize raises ClientDbLoaded for each database the client loaded, and only those");
+    }
+
 #if defined(_M_IX86)
     // --- The generated detour, on the architecture it is generated for --------------------------
 
@@ -2642,6 +4931,18 @@ namespace
         g_shimAfter = self == g_shimSelf ? result + a + b : -1;
     }
 
+    /// A function pointer read back through a volatile slot, so the optimiser cannot see which
+    /// function it holds. The shim checks call across conventions on purpose (a __fastcall detour
+    /// as the __thiscall it stands in for, a __thiscall original through the detour's __fastcall
+    /// pointer); a call whose callee the optimiser can see with another convention than the
+    /// call's own is undefined to it, and it drops the call and everything after it.
+    template <class Fn>
+    Fn Opaque(Fn fn)
+    {
+        Fn volatile slot = fn;
+        return slot;
+    }
+
     using ShimSeam = wxl::core::seams::DetourOf<wxl::seam::detail::conv_thiscall,
                                                 int32_t(void*, int32_t, int32_t)>;
     using ShimLink = ShimSeam::Link<&ShimBefore, &ShimAfter>;
@@ -2653,10 +4954,10 @@ namespace
     {
         Thing thing;
         auto  member        = &Thing::Add;
-        ShimLink::original  = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimLink::original  = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
 
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
-        const AsThiscall detour = reinterpret_cast<AsThiscall>(&ShimLink::Detour);
+        const AsThiscall detour = Opaque(reinterpret_cast<AsThiscall>(&ShimLink::Detour));
         const int32_t result = detour(&thing, 5, 7);
 
         Check(result == 112, "the thiscall shim returns the original's result (100 + 5 + 7)");
@@ -2674,15 +4975,15 @@ namespace
         auto  member = &Thing::Add;
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
 
-        ShimBeforeLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimBeforeLink::original = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
         g_shimSelf = nullptr, g_shimBefore = 0, g_shimAfter = 0;
-        int32_t result = reinterpret_cast<AsThiscall>(&ShimBeforeLink::Detour)(&thing, 5, 7);
+        int32_t result = Opaque(reinterpret_cast<AsThiscall>(&ShimBeforeLink::Detour))(&thing, 5, 7);
         Check(result == 112 && g_shimBefore == 57 && g_shimAfter == 0,
               "a Before-only detour runs Before and the original, and no After");
 
-        ShimAfterLink::original = reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member));
+        ShimAfterLink::original = Opaque(reinterpret_cast<ShimSeam::Fn>(*reinterpret_cast<void**>(&member)));
         g_shimSelf = &thing, g_shimBefore = 0, g_shimAfter = 0;
-        result = reinterpret_cast<AsThiscall>(&ShimAfterLink::Detour)(&thing, 5, 7);
+        result = Opaque(reinterpret_cast<AsThiscall>(&ShimAfterLink::Detour))(&thing, 5, 7);
         Check(result == 112 && g_shimBefore == 0 && g_shimAfter == 112 + 5 + 7,
               "an After-only detour runs the original and After, and no Before");
     }
@@ -2712,10 +5013,10 @@ namespace
         Thing thing;
         auto  member = &Thing::Add;
         ShimGateLink::original =
-            reinterpret_cast<ShimGateSeam::Fn>(*reinterpret_cast<void**>(&member));
+            Opaque(reinterpret_cast<ShimGateSeam::Fn>(*reinterpret_cast<void**>(&member)));
 
         using AsThiscall = int32_t(__thiscall*)(Thing*, int32_t, int32_t);
-        const AsThiscall detour = reinterpret_cast<AsThiscall>(&ShimGateLink::Detour);
+        const AsThiscall detour = Opaque(reinterpret_cast<AsThiscall>(&ShimGateLink::Detour));
 
         g_gateTakes    = false;
         int32_t result = detour(&thing, 5, 7);
@@ -2727,6 +5028,158 @@ namespace
         result      = detour(&thing, 5, 7);
         Check(result == 6 * 1000 + 7, "a gate that takes the call answers in the original's place");
         Check(g_gateCalls == 2, "and the original never ran");
+    }
+
+    // --- ObjectMgr.GetUpdateObject's generated detour, against a stand-in of the client's -------
+
+    FakeObject* g_lazyObject  = nullptr; ///< what the stand-in finds in its lazy-cleanup set
+    uint32_t    g_seenGuidLo  = 0, g_seenGuidHi = 0;
+    uint32_t    g_espBefore   = 0, g_espAfter = 0;
+    void*       g_getAnswered = nullptr;
+
+    /// A cdecl function of GetUpdateObject's shape: the guid as two stack dwords, the out-pointer.
+    __declspec(noinline) void* __cdecl FakeGetUpdateObject(uint64_t guid, int32_t* reenabled)
+    {
+        g_seenGuidLo = static_cast<uint32_t>(guid);
+        g_seenGuidHi = static_cast<uint32_t>(guid >> 32);
+        *reenabled   = 0;
+        if (!g_lazyObject || g_lazyObject->guid != guid) return nullptr;
+        *reenabled = 1;
+        return g_lazyObject;
+    }
+
+    /// Calls a detour the way ClntObjMgrReenableObject does at 0x004D6F1D: the pointer and the two
+    /// halves of the guid pushed, the call, `add esp,0xc`; and records ESP on both sides.
+    __declspec(noinline) void CallLikeReenable(void* detour, uint32_t lo, uint32_t hi, int32_t* reenabled)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  eax, reenabled
+            push eax
+            push hi
+            push lo
+            call detour
+            add  esp, 0Ch
+            mov  dword ptr [g_getAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using GetUpdateSeam = wxl::core::seams::DetourOf<wxl::seam::ObjectMgr::GetUpdateObject::Convention,
+                                                     wxl::seam::ObjectMgr::GetUpdateObject::Signature>;
+    using GetUpdateLink = GetUpdateSeam::Link<nullptr, &wxl::seam::ObjectMgr::GetUpdateObject::After>;
+
+    /// The detour AttachX86.cpp generates for the row, called as the client calls the function.
+    void CheckGetUpdateObjectDetour()
+    {
+        FakeObject bear;
+        bear.guid   = 0xF1300000ABCD0042ull;
+        bear.typeId = WXL_OBJECT_UNIT;
+        g_lazyObject = &bear;
+
+        GetUpdateLink::original = Opaque(&FakeGetUpdateObject);
+        void* const detour      = Opaque(reinterpret_cast<void*>(&GetUpdateLink::Detour));
+
+        int32_t reenabled = -1;
+        g_received.clear();
+        CallLikeReenable(detour, static_cast<uint32_t>(bear.guid), static_cast<uint32_t>(bear.guid >> 32),
+                         &reenabled);
+        Check(g_espBefore == g_espAfter, "the GetUpdateObject detour leaves the stack as cdecl's caller expects");
+        Check(g_seenGuidLo == 0xABCD0042u && g_seenGuidHi == 0xF1300000u,
+              "the original receives both halves of the guid in order");
+        Check(g_getAnswered == &bear && reenabled == 1,
+              "the detour answers the original's object and leaves its out-parameter");
+        const Received* created = Only(WXL_EV_ObjectCreate);
+        Check(created != nullptr && created->As<wxl_object_args>().guid == bear.guid,
+              "and After announced the object it brought back");
+
+        g_received.clear();
+        CallLikeReenable(detour, 0x1u, 0x2u, &reenabled);
+        Check(g_getAnswered == nullptr && reenabled == 0 && g_received.empty() && g_espBefore == g_espAfter,
+              "an update of an object the client does not hold answers null and raises nothing");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&bear);
+        g_lazyObject = nullptr;
+    }
+
+    // --- The mirror handler and the shared seams, as the client calls them ----------------------
+
+    /// Calls a mirror handler the way CallMirrorFunctions does at 0x004D5254: the param, the old
+    /// value's address, the size, the offset and the guid's two halves pushed, `call ecx`,
+    /// `add esp, 0x18`; and records ESP on both sides.
+    __declspec(noinline) void CallLikeMirror(void* handler, uint32_t lo, uint32_t hi, uint32_t at,
+                                             uint32_t bytes, const void* old_value, void* param)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push param
+            push old_value
+            push bytes
+            push at
+            push hi
+            push lo
+            mov  ecx, handler
+            call ecx
+            add  esp, 18h
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour of a function that takes nothing, as ClientInitializeGame calls
+    /// ClntObjMgrInitializeShared at 0x004055D4: nothing pushed, nothing cleaned.
+    __declspec(noinline) void CallWithNothing(void* detour)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    uint32_t g_sharedCalls = 0;
+    __declspec(noinline) void __cdecl FakeInitializeShared() { ++g_sharedCalls; }
+
+    using SharedSeam = wxl::core::seams::DetourOf<wxl::seam::ObjectMgr::InitializeShared::Convention,
+                                                  wxl::seam::ObjectMgr::InitializeShared::Signature>;
+    using SharedLink = SharedSeam::Link<nullptr, &wxl::seam::ObjectMgr::InitializeShared::After>;
+
+    void CheckMirrorDetours()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+        FakeObject            boar;
+        boar.guid   = 0xF130000000000777ull;
+        boar.typeId = WXL_OBJECT_UNIT;
+        boar.block.assign(0x94, 0u);
+        boar.block[0x18] = 40;
+        g_held = {&boar};
+        wxl::seam::ObjectMgr::InitObject::After(&boar, nullptr, 9100u);
+
+        // The detour the row generates, called as the client calls the function: After runs and
+        // sets the watched fields' handlers.
+        wxl::seam::ObjectMgr::DestroyShared::Before();
+        g_mirrors.clear();
+        SharedLink::original = Opaque(&FakeInitializeShared);
+        CallWithNothing(Opaque(reinterpret_cast<void*>(&SharedLink::Detour)));
+        Check(g_espBefore == g_espAfter && g_sharedCalls == 1,
+              "the InitializeShared detour runs the original and leaves the stack as it found it");
+        Check(!g_mirrors.empty() && g_mirrors[0].type == WXL_OBJECT_UNIT && g_mirrors[0].offset == (0x18 - 6) * 4,
+              "and its After sets the watched fields' handlers");
+
+        // The runtime's handler, called through its pointer with the client's convention.
+        uint32_t was = 45;
+        g_received.clear();
+        CallLikeMirror(Opaque(reinterpret_cast<void*>(g_mirrors[0].handler)), static_cast<uint32_t>(boar.guid),
+                       static_cast<uint32_t>(boar.guid >> 32), g_mirrors[0].offset, g_mirrors[0].size, &was,
+                       g_mirrors[0].param);
+        Check(g_espBefore == g_espAfter, "the mirror handler leaves the stack as CallMirrorFunctions expects");
+        const Received* changed = Only(WXL_EV_ObjectFieldChanged);
+        Check(changed && changed->As<wxl_object_field_args>().object == api->from_guid(boar.guid) &&
+                  changed->As<wxl_object_field_args>().old_value == 45 &&
+                  changed->As<wxl_object_field_args>().new_value == 40,
+              "and reads the guid's halves, the offset, the size, the old value and its param in order");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+        g_held.clear();
     }
 
     // --- The register thunks, against stand-ins with the client's conventions -------------------
@@ -2776,9 +5229,66 @@ namespace
         }
     }
 
+    // What a stand-in combat log original answers, so the thunk can be seen handing it back.
+    constexpr uint32_t kLogAnswer = 0x600D600Du;
+    uint32_t           g_answered = 0;
+
+    __declspec(naked) void FakeLogFromEdi()
+    {
+        __asm {
+            mov  dword ptr [g_seenEdi], edi
+            mov  eax, dword ptr [esp+4]
+            mov  dword ptr [g_seenArg0], eax
+            mov  eax, 600D600Dh         // kLogAnswer
+            ret
+        }
+    }
+
+    __declspec(naked) void FakeLogFromEax()
+    {
+        __asm {
+            mov  dword ptr [g_seenEax], eax
+            mov  eax, dword ptr [esp+4]
+            mov  dword ptr [g_seenArg0], eax
+            mov  eax, 600D600Dh         // kLogAnswer
+            ret
+        }
+    }
+
+    // The callers below load EBX, ESI and EDI by hand, so each stays a function of its own: inlined
+    // into a caller whose frame is addressed through ESI (a realigned stack), the block would
+    // overwrite that base and every local after it.
+
+    /// Calls a thunk the way the combat log statics' callers do: the message in EDI, or in EAX
+    /// when `inEax`, and the time offset in one stack slot the caller cleans.
+    __declspec(noinline) void CallLog(void* thunk, bool inEax, void* msg, uint32_t timeOffset)
+    {
+        __asm {
+            mov  ebx, 0B0B0B0Bh
+            mov  esi, 05050505h
+            mov  edi, 0D0D0D0Dh
+            mov  eax, 0A0A0A0Ah
+            cmp  byte ptr [inEax], 0
+            mov  ecx, msg
+            jne  in_eax
+            mov  edi, ecx
+            jmp  call_it
+        in_eax:
+            mov  eax, ecx
+        call_it:
+            push timeOffset
+            call thunk
+            add  esp, 4
+            mov  dword ptr [g_answered], eax
+            mov  dword ptr [g_keptEbx], ebx
+            mov  dword ptr [g_keptEsi], esi
+            mov  dword ptr [g_keptEdi], edi
+        }
+    }
+
     /// Calls a thunk the way IEvtDispatchUpdate's caller does: context in EDI, two stack slots
     /// the caller cleans.
-    void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
+    __declspec(noinline) void CallWithEdi(void* thunk, void* context, uint32_t arg0, uint32_t arg1)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2795,7 +5305,7 @@ namespace
     }
 
     /// Calls a thunk the way InitObject's caller does: ESI, EAX and ECX, nothing pushed.
-    void CallWithEsiEaxEcx(void* thunk, void* esiValue, uint32_t eaxValue, uint32_t ecxValue)
+    __declspec(noinline) void CallWithEsiEaxEcx(void* thunk, void* esiValue, uint32_t eaxValue, uint32_t ecxValue)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2811,7 +5321,7 @@ namespace
     }
 
     /// Calls a thunk the way ObjDelete's callers do: the object in EAX, nothing pushed.
-    void CallWithEax(void* thunk, void* eaxValue)
+    __declspec(noinline) void CallWithEax(void* thunk, void* eaxValue)
     {
         __asm {
             mov  ebx, 0B0B0B0Bh
@@ -2896,15 +5406,539 @@ namespace
         Check(g_seenEsi == reinterpret_cast<uint32_t>(&moth),
               "ObjectMgr.DestroyRemovedObject's original finds the object in ESI");
 
+        // The combat log statics: a miss with one target, a damage line, a heal line and an energize
+        // line.
+        const regparm::Row* miss   = regparm::Find("Combat.HandleSpellLogMiss");
+        const regparm::Row* damage = regparm::Find("Combat.HandleSpellNonMeleeDamageLog");
+        const regparm::Row* heal   = regparm::Find("Combat.HandleSpellHealLog");
+        const regparm::Row* energy = regparm::Find("Combat.HandleSpellLogEnergizeLog");
+        if (miss && damage && heal && energy)
+        {
+            *miss->original   = reinterpret_cast<void*>(&FakeLogFromEdi);
+            *damage->original = reinterpret_cast<void*>(&FakeLogFromEax);
+            *heal->original   = reinterpret_cast<void*>(&FakeLogFromEax);
+            *energy->original = reinterpret_cast<void*>(&FakeLogFromEax);
+
+            Body missLog;
+            missLog.U32(116).U64(0xF130000000000001ull).U8(0).U32(1).U64(0xF130000000000002ull).U8(3);
+            FakeStore store = missLog.Store();
+            g_received.clear();
+            CallLog(miss->detour, false, &store, 7u);
+            Check(g_seenEdi == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 7u,
+                  "Combat.HandleSpellLogMiss's original finds the message in EDI, the offset on the stack");
+            Check(Only(WXL_EV_CombatMiss) != nullptr, "Before was handed the message from EDI");
+            Check(g_answered == kLogAnswer, "and the caller gets the original's answer");
+            Check(g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == reinterpret_cast<uint32_t>(&store),
+                  "and EBX, ESI and EDI back");
+
+            Body spell;
+            spell.Packed(0xF130000000000002ull).Packed(0xF130000000000001ull).U32(116).U32(900).U32(0)
+                .U8(4).U32(0).U32(0).U8(0).U8(0).U32(0).U32(0);
+            store = spell.Store();
+            g_received.clear();
+            CallLog(damage->detour, true, &store, 9u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 9u,
+                  "Combat.HandleSpellNonMeleeDamageLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatDamage) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
+            Body healLog;
+            healLog.Packed(0xF130000000000001ull).Packed(0xF130000000000002ull).U32(2061).U32(1200)
+                .U32(0).U32(0).U8(0);
+            store = healLog.Store();
+            g_received.clear();
+            CallLog(heal->detour, true, &store, 11u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 11u,
+                  "Combat.HandleSpellHealLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatHeal) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
+            Body energizeLog;
+            energizeLog.Packed(0xF130000000000001ull).Packed(0xF130000000000002ull).U32(29166).U32(0)
+                .U32(300);
+            store = energizeLog.Store();
+            g_received.clear();
+            CallLog(energy->detour, true, &store, 13u);
+            Check(g_seenEax == reinterpret_cast<uint32_t>(&store) && g_seenArg0 == 13u,
+                  "Combat.HandleSpellLogEnergizeLog's original finds the message in EAX, the offset on the stack");
+            Check(Only(WXL_EV_CombatEnergize) != nullptr, "Before was handed the message from EAX");
+            Check(g_answered == kLogAnswer && g_keptEbx == 0x0B0B0B0Bu && g_keptEsi == 0x05050505u &&
+                      g_keptEdi == 0x0D0D0D0Du,
+                  "and the caller gets the answer, EBX, ESI and EDI back");
+
+            *miss->original   = nullptr;
+            *damage->original = nullptr;
+            *heal->original   = nullptr;
+            *energy->original = nullptr;
+        }
+
         *update->original  = nullptr;
         *init->original    = nullptr;
         *remove->original  = nullptr;
         *destroy->original = nullptr;
         wxl::core::stages::Restart();
     }
+
+    // --- The chat's commit points, through the detours the attachment generates --------------
+
+    /// What a stand-in for a client function was handed, to show a detour passed it on intact.
+    struct OriginalSaw
+    {
+        const void* self   = nullptr;
+        const char* text   = nullptr;
+        uint64_t    guid   = 0;
+        uint32_t    lineId = 0;
+        int32_t     calls  = 0;
+    };
+
+    OriginalSaw g_originalSaw;
+
+    /// PENDINGCHAT's destructor: a member with nothing on the stack.
+    struct FakeLineNode
+    {
+        void __thiscall Destroy() { g_originalSaw.self = this, ++g_originalSaw.calls; }
+    };
+
+    void __cdecl FakeRecordChat(const char* text, int32_t, const char*, uint64_t sender_guid, uint32_t, uint32_t,
+                                const char*, uint32_t line_id, const void*)
+    {
+        g_originalSaw.text = text, g_originalSaw.guid = sender_guid, g_originalSaw.lineId = line_id;
+        ++g_originalSaw.calls;
+    }
+
+    void __cdecl FakeQueueChatText(const char* text, int32_t, const char*, const char*, uint32_t, const char*,
+                                   const char*, int32_t, int32_t, uint64_t sender_guid, uint32_t, uint64_t, int32_t,
+                                   uint8_t, const void* conversation)
+    {
+        g_originalSaw.text = text, g_originalSaw.guid = sender_guid, g_originalSaw.self = conversation;
+        ++g_originalSaw.calls;
+    }
+
+    /// The x86 detours of the three new chat rows, called the way AddChatMessage and the list's
+    /// DeleteNode call the functions: the guids split over two stack dwords, `this` in ECX.
+    void CheckChatDetours()
+    {
+        namespace Chat = wxl::seam::Chat;
+        using wxl::core::seams::DetourOf;
+        using Record = DetourOf<Chat::RecordChat::Convention, Chat::RecordChat::Signature>::Link<
+            &Chat::RecordChat::Before, nullptr>;
+        using Queue = DetourOf<Chat::QueueChatText::Convention, Chat::QueueChatText::Signature>::Link<
+            nullptr, &Chat::QueueChatText::After>;
+        using DestroySeam = DetourOf<Chat::DestroyPendingChat::Convention, Chat::DestroyPendingChat::Signature>;
+        using Destroy     = DestroySeam::Link<&Chat::DestroyPendingChat::Before, nullptr>;
+
+        FakeObject orc;
+        orc.guid   = 0x0000000000000ABEull;
+        orc.typeId = WXL_OBJECT_PLAYER;
+        wxl::seam::ObjectMgr::InitObject::After(&orc, nullptr, 9200u);
+
+        Body say;
+        say.U8(1).U32(7).U64(orc.guid).U32(0).U64(0).Sized("Zug zug").U8(0);
+        FakeStore store = say.Store();
+        g_received.clear();
+        g_originalSaw = OriginalSaw{};
+        Record::original = Opaque(&FakeRecordChat);
+        Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Zug zug", 1, orc.guid, 0);
+        Opaque(reinterpret_cast<void(__cdecl*)(const char*, int32_t, const char*, uint64_t, uint32_t, uint32_t,
+                                               const char*, uint32_t, const void*)>(&Record::Detour))(
+            "Zug zug", 1, "Thrall", orc.guid, 0, 0, nullptr, 31u, nullptr);
+        Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.guid == orc.guid && g_originalSaw.lineId == 31u,
+              "Chat.RecordChat's detour hands the original every argument, the guid's two halves in place");
+        Check(Only(WXL_EV_ChatMessage) && Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().line_id == 31u &&
+                  Only(WXL_EV_ChatMessage)->As<wxl_chat_args>().sender_guid == orc.guid,
+              "and its Before raises ChatMessage with them");
+
+        FakePendingChat line;
+        char            copy[] = "Zug zug";
+        line.text     = copy;
+        g_pendingLast = &line;
+        g_originalSaw = OriginalSaw{};
+        Queue::original = Opaque(&FakeQueueChatText);
+        store = say.Store();
+        g_received.clear();
+        Chat::ChatMessageReceived::Before(&store, 0);
+        AddReceived(store, "Zug zug", 1, orc.guid, 0);
+        Opaque(reinterpret_cast<void(__cdecl*)(const char*, int32_t, const char*, const char*, uint32_t, const char*,
+                                               const char*, int32_t, int32_t, uint64_t, uint32_t, uint64_t, int32_t,
+                                               uint8_t, const void*)>(&Queue::Detour))(
+            copy, 1, nullptr, nullptr, 7, nullptr, "", 0, 0, orc.guid, 0, 0, 0, 0, &line);
+        Chat::ChatMessageReceived::After(1, &store, 0);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.text == copy && g_originalSaw.guid == orc.guid &&
+                  g_originalSaw.self == &line,
+              "Chat.QueueChatText's detour hands the original all seventeen dwords");
+
+        auto member         = &FakeLineNode::Destroy;
+        g_originalSaw       = OriginalSaw{};
+        Destroy::original   = Opaque(reinterpret_cast<DestroySeam::Fn>(*reinterpret_cast<void**>(&member)));
+        Opaque(reinterpret_cast<void(__thiscall*)(const FakePendingChat*)>(&Destroy::Detour))(&line);
+        Check(g_originalSaw.calls == 1 && g_originalSaw.self == &line,
+              "Chat.DestroyPendingChat's detour runs the destructor with `this` in ECX");
+        g_received.clear();
+        AddHeld(line, 1, orc.guid);
+        Commit(copy, 1, orc.guid, 32u);
+        Check(g_received.empty(), "and its Before forgot the held line, which the client then frees");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&orc);
+        g_pendingLast     = nullptr;
+        Record::original  = nullptr;
+        Queue::original   = nullptr;
+        Destroy::original = nullptr;
+    }
+
+    // --- Storm's allocator, through the detours the client's calls reach -----------------------
+
+    alignas(16) char g_fakeHeap[1 << 16];
+    uint32_t         g_fakeNext  = 0;
+    void*            g_stormAnswered  = nullptr;
+    uint32_t         g_freed     = 0;
+
+    __declspec(noinline) void* __stdcall FakeSMemAlloc(size_t bytes, const char*, int32_t, uint32_t)
+    {
+        if (g_fakeNext + bytes + 8 > sizeof g_fakeHeap) g_fakeNext = 0;
+        void* block = g_fakeHeap + g_fakeNext;
+        g_fakeNext += static_cast<uint32_t>((bytes + 7) & ~static_cast<size_t>(7)) + 8;
+        return block;
+    }
+
+    __declspec(noinline) int32_t __stdcall FakeSMemFree(void*, const char*, int32_t, uint32_t)
+    {
+        ++g_freed;
+        return 1;
+    }
+
+    __declspec(noinline) void* __stdcall FakeSMemReAlloc(void*, size_t bytes, const char* file, int32_t line,
+                                                         uint32_t flags)
+    {
+        return FakeSMemAlloc(bytes, file, line, flags);
+    }
+
+    namespace StormSeam = wxl::seam::Storm;
+    using AllocLink = wxl::core::seams::DetourOf<StormSeam::SMemAlloc::Convention,
+                                                 StormSeam::SMemAlloc::Signature>::Link<nullptr, &StormSeam::SMemAlloc::After>;
+    using FreeLink  = wxl::core::seams::DetourOf<StormSeam::SMemFree::Convention,
+                                                 StormSeam::SMemFree::Signature>::Link<&StormSeam::SMemFree::Before, nullptr>;
+    using ReAllocLink = wxl::core::seams::DetourOf<StormSeam::SMemReAlloc::Convention, StormSeam::SMemReAlloc::Signature>::
+        Link<&StormSeam::SMemReAlloc::Before, &StormSeam::SMemReAlloc::After>;
+
+    /// Calls a detour as operator new calls SMemAlloc at 0x00401020: flags, line, file and size
+    /// pushed, the call, no cleanup -- the callee pops them.
+    __declspec(noinline) void CallLikeNew(void* detour, size_t bytes, const char* file)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push -1
+            push file
+            push bytes
+            call detour
+            mov  dword ptr [g_stormAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour as SMemFree is called: four pushed, the callee pops them.
+    __declspec(noinline) void CallLikeFree(void* detour, void* block)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push 0
+            push 0
+            push block
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a detour as SMemReAlloc is called: five pushed, the callee pops them.
+    __declspec(noinline) void CallLikeReAlloc(void* detour, void* block, size_t bytes, const char* file)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push 0
+            push 0
+            push file
+            push bytes
+            push block
+            call detour
+            mov  dword ptr [g_stormAnswered], eax
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    void CheckStormDetours()
+    {
+        const wxl_footprint_api& api = wxl::core::services::FootprintApi();
+        wxl::core::services::footprint::Reset();
+        api.start();
+        static const char kFile[] = ".\\Detour.cpp";
+
+        AllocLink::original   = Opaque(&FakeSMemAlloc);
+        FreeLink::original    = Opaque(&FakeSMemFree);
+        ReAllocLink::original = Opaque(&FakeSMemReAlloc);
+        void* const alloc     = Opaque(reinterpret_cast<void*>(&AllocLink::Detour));
+        void* const release   = Opaque(reinterpret_cast<void*>(&FreeLink::Detour));
+        void* const resize    = Opaque(reinterpret_cast<void*>(&ReAllocLink::Detour));
+
+        CallLikeNew(alloc, 100, kFile);
+        void* const block = g_stormAnswered;
+        Check(g_espBefore == g_espAfter && block != nullptr,
+              "the SMemAlloc detour pops its four as stdcall does and answers the original's block");
+        CallLikeReAlloc(resize, block, 200, kFile);
+        void* const grown = g_stormAnswered;
+        Check(g_espBefore == g_espAfter && grown != nullptr && grown != block,
+              "the SMemReAlloc detour pops its five and answers the original's block");
+        CallLikeFree(release, grown);
+        Check(g_espBefore == g_espAfter && g_freed == 1, "the SMemFree detour pops its four and frees");
+
+        api.snapshot();
+        std::vector<wxl_footprint_source> rows(api.sources(nullptr, 0));
+        for (wxl_footprint_source& row : rows) row.struct_size = sizeof row;
+        api.sources(rows.data(), static_cast<uint32_t>(rows.size()));
+        const wxl_footprint_source* seen = rows.empty() ? nullptr : &rows.front();
+        Check(seen && seen->allocations == 2 && seen->bytes == 0 && seen->peak == 200,
+              "and what went through them was counted: two allocations, nothing left");
+
+        AllocLink::original   = nullptr;
+        FreeLink::original    = nullptr;
+        ReAllocLink::original = nullptr;
+        wxl::core::services::footprint::Reset();
+    }
+
+    // --- OsValidateFunctionPointer, as luaD_precall calls it -------------------------------------
+
+    uint32_t  g_validatorFatal = 0;
+    uintptr_t g_ediAfter       = 0;
+
+    /// The client's check with its fatal path stubbed: counts the pointers that reach it.
+    __declspec(noinline) void __cdecl FakeValidate(const void*) { ++g_validatorFatal; }
+
+    /// Calls a detour as luaD_precall calls OsValidateFunctionPointer at 0x00856513: the C
+    /// function in EDI, pushed, the call, the push cleaned later; EDI must survive the call.
+    __declspec(noinline) void CallLikePrecall(void* detour, const void* function)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  edi, function
+            push edi
+            call detour
+            mov  dword ptr [g_ediAfter], edi
+            add  esp, 4
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using ValidateLink = wxl::core::seams::GateOf<wxl::seam::Os::ValidateFunctionPointer::Convention,
+                                                  wxl::seam::Os::ValidateFunctionPointer::Signature>::
+        Link<&wxl::seam::Os::ValidateFunctionPointer::Gate>;
+
+    void CheckValidatorDetour()
+    {
+        ValidateLink::original = Opaque(&FakeValidate);
+        void* const detour     = Opaque(reinterpret_cast<void*>(&ValidateLink::Detour));
+        const void* own        = reinterpret_cast<const void*>(&CodeProbe);
+        std::unique_ptr<char[]> heap(new char[16]);
+
+        g_validatorFatal = 0;
+        CallLikePrecall(detour, own);
+        Check(g_espBefore == g_espAfter && g_ediAfter == reinterpret_cast<uintptr_t>(own) && g_validatorFatal == 0,
+              "the OsValidateFunctionPointer detour takes a runtime function: the client's check is not reached");
+        CallLikePrecall(detour, heap.get());
+        Check(g_espBefore == g_espAfter && g_ediAfter == reinterpret_cast<uintptr_t>(heap.get()) && g_validatorFatal == 1,
+              "and hands any other pointer to the client's check, its fatal path, with the stack and EDI as they were");
+        ValidateLink::original = nullptr;
+    }
+
+    // --- SFile::OpenEx's two rows, chained as Install links them, and CMapObj::Load ---------------
+
+    std::string g_openedName;
+
+    /// A stdcall function of SFile::OpenEx's shape that finds nothing, noting the name it got.
+    __declspec(noinline) int32_t __stdcall FakeOpenEx(void*, const char* name, uint32_t, void** result)
+    {
+        g_openedName = name ? name : "";
+        if (result) *result = nullptr;
+        return 0;
+    }
+
+    /// Calls a detour the way SFile::ReadFile calls SFile::OpenEx: four dwords pushed, none
+    /// cleaned after the call (stdcall pops them); and records ESP on both sides.
+    __declspec(noinline) void CallLikeOpen(void* detour, const char* name, void** result)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  eax, result
+            push eax
+            push 0
+            push name
+            push 0
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using OpenGateSeam = wxl::core::seams::GateOf<wxl::seam::Storage::OpenFile::Convention,
+                                                  wxl::seam::Storage::OpenFile::Signature>;
+    using OpenGateLink = OpenGateSeam::Link<&wxl::seam::Storage::OpenFile::Gate>;
+    using OpenedLink = wxl::core::seams::DetourOf<wxl::seam::Storage::OpenEx::Convention,
+                                                  wxl::seam::Storage::OpenEx::Signature>::
+        Link<nullptr, &wxl::seam::Storage::OpenEx::After>;
+
+    uint32_t g_mapObjLoads = 0;
+    __declspec(noinline) void __fastcall FakeMapObjLoad(void*, void*) { ++g_mapObjLoads; }
+
+    /// Calls a thiscall detour that takes nothing on the stack, as PostloadCallback calls
+    /// CMapObj::Load at 0x007D7EB4: the object in ECX.
+    __declspec(noinline) void CallLikeMapObjLoad(void* detour, void* self)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  ecx, self
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    using MapObjSeam = wxl::core::seams::DetourOf<wxl::seam::MapObj::Load::Convention,
+                                                  wxl::seam::MapObj::Load::Signature>;
+    using MapObjLink = MapObjSeam::Link<&wxl::seam::MapObj::Load::Before, nullptr>;
+
+    void CheckAssetDetours()
+    {
+        const wxl_subscription sub = g_host->Events().Subscribe(WXL_EV_FileOpen, &OnFileOpen, nullptr, 0);
+        OpenGateLink::original = Opaque(reinterpret_cast<OpenGateSeam::Fn>(&OpenedLink::Detour));
+        OpenedLink::original   = Opaque(&FakeOpenEx);
+        void* const gate       = Opaque(reinterpret_cast<void*>(&OpenGateLink::Detour));
+
+        g_answerWith = "Mods\\example\\Fireball.blp";
+        void* file   = reinterpret_cast<void*>(1);
+        g_received.clear();
+        CallLikeOpen(gate, "Interface\\Icons\\Fireball.blp", &file);
+        Check(g_espBefore == g_espAfter, "the OpenFile gate and the OpenEx observer pop their four as stdcall does");
+        Check(g_openedName == g_answerWith, "the client is handed the path the FileOpen handler wrote");
+        const Received* opened = Only(WXL_EV_FileOpened);
+        Check(opened && opened->As<wxl_file_opened_args>().found == WXL_FALSE &&
+                  opened->As<wxl_file_opened_args>().path.size == strlen(g_answerWith),
+              "and the observer, nearer the function, reports the open of that path");
+        g_answerWith = nullptr;
+        g_host->Events().Unsubscribe(sub);
+        OpenGateLink::original = nullptr;
+        OpenedLink::original   = nullptr;
+
+        FakeMapObj keep;
+        strcpy(keep.name, "World\\wmo\\Test.wmo");
+        keep.bytes = "REVM";
+        MapObjLink::original = Opaque(reinterpret_cast<MapObjSeam::Fn>(&FakeMapObjLoad));
+        g_received.clear();
+        CallLikeMapObjLoad(Opaque(reinterpret_cast<void*>(&MapObjLink::Detour)), &keep);
+        Check(g_espBefore == g_espAfter && g_mapObjLoads == 1,
+              "the MapObj.Load detour takes the object in ECX, runs the original, cleans nothing");
+        Check(Only(WXL_EV_MapObjectLoad) != nullptr, "and Before raised MapObjectLoad for it");
+        MapObjLink::original = nullptr;
+    }
 #endif
 }
 
+
+// --- The profiler, before it starts -----------------------------------------------------------
+// What can be checked without a viewer: locations are kept and shared, nothing opens a zone
+// before the profiler is up, and the service and the host's zones answer nothing then. The
+// profiler is started only by --bench, which then measures a zone with no viewer connected.
+
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+void CheckProfile()
+{
+    printf("\nprofile:\n");
+    namespace profile = wxl::core::profile;
+    const void* a = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 12, 0);
+    const void* b = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 12, 0);
+    const void* c = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 13, 0);
+    Check(a && a == b && a != c, "the same five values answer the same location, another line another one");
+    Check(!profile::Location("", "f", "file", 1, 0), "an empty name has no location");
+    const auto* site = static_cast<const wxl_core_zone_site*>(a);
+    Check(std::string(site->name) == "Journal::Flush" && std::string(site->file) == "Journal.cpp" && site->line == 12,
+          "a location is laid out as the client's zone sites are, its strings kept");
+    Check(!profile::Started() && profile::Begin(a) == 0 && WarcraftXLZoneBegin(site) == 0,
+          "no zone opens before the profiler is up");
+    profile::End(0);
+    WarcraftXLZoneEnd(0);
+
+    const wxl_profile_api& api = profile::Api();
+    Check(api.struct_size == sizeof(wxl_profile_api) && api.connected && api.location && api.zone_begin &&
+              api.zone_end && api.zone_text && api.plot && api.message && api.frame_mark,
+          "wxl.profile fills every member");
+    const uintptr_t location = api.location(wxl_str{"Tick", 4}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+    Check(location != 0 && api.zone_begin(location) == 0 && api.connected() == WXL_FALSE,
+          "the service answers a location, and no zone while nobody is connected");
+    api.zone_end(0);
+    api.plot(wxl_str{"lines", 5}, 1.0);
+    api.message(wxl_str{"hello", 5});
+    api.frame_mark(wxl_str{"mod", 3});
+    profile::Present();
+    Check(!profile::Connected(), "a present before the profiler is up does nothing");
+}
+#endif
+
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+// --profile-live: the profiler started as WarcraftXL.ini's [profile] enabled = 1 starts it, on
+// 127.0.0.1:8086 (--profile-live-any: every interface), and waited on for up to a minute, so that
+// a viewer (or Tracy's capture tool) can connect; then a hundred frames of the host's zones, a
+// mod's zone, a client zone, a plot and a message, each frame ended by a present. What a viewer
+// then shows is the runtime's profiler end to end, on this architecture, without a client.
+void ProfileLive(bool any)
+{
+    namespace profile = wxl::core::profile;
+    wxl::core::settings::ProfileChoice choice;
+    choice.enabled = true;
+    choice.any     = any;
+    profile::Start(choice);
+    printf("\nprofile-live: waiting up to 60 s for a viewer on %s port 8086\n", any ? "any interface," : "127.0.0.1");
+    for (int i = 0; i < 6000 && !profile::Connected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!profile::Connected())
+    {
+        printf("profile-live: no viewer came\n");
+        ++g_failures;
+        return;
+    }
+    wxl::host::Profiler hooks;
+    hooks.location = [](void*, std::string_view name, std::string_view function, uint32_t color) {
+        return profile::Location(name, function, "", 0, color);
+    };
+    hooks.begin = [](void*, const void* location) { return profile::Begin(location); };
+    hooks.end   = [](void*, uint64_t zone) { profile::End(zone); };
+    wxl::host::EventBus bus({WXL_EV_Update}, nullptr);
+    bus.SetProfiler(&hooks, [](void*, uint32_t) { return std::string("harness"); }, nullptr);
+    bus.Subscribe(WXL_EV_Update, [](void*, const void*) { std::this_thread::sleep_for(std::chrono::microseconds(200)); },
+                  nullptr, 0, 1);
+    bus.SetProfiling(true);
+    const wxl_profile_api& api      = profile::Api();
+    const uintptr_t        location = api.location(wxl_str{"Harness.Work", 12}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+    static const wxl_core_zone_site kSite{"Harness.Client", "ProfileLive", __FILE__, __LINE__, 0};
+    wxl_update_args args{};
+    for (int frame = 0; frame < 100; ++frame)
+    {
+        const uint64_t client = WarcraftXLZoneBegin(&kSite);
+        bus.Emit(WXL_EV_Update, &args);
+        const uintptr_t zone = api.zone_begin(location);
+        api.zone_text(zone, wxl_str{"frame", 5});
+        std::this_thread::sleep_for(std::chrono::microseconds(300));
+        api.zone_end(zone);
+        WarcraftXLZoneEnd(client);
+        api.plot(wxl_str{"frame", 5}, frame);
+        if (frame % 25 == 0) api.message(wxl_str{"quarter", 7});
+        profile::Present();
+    }
+    printf("profile-live: 100 frames sent\n");
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+}
+#endif
 
 // --- A measurement, not a check ---------------------------------------------------------------
 // Two paths carry work at a rate nothing else here does: the file-open gate, which the client
@@ -2913,6 +5947,49 @@ namespace
 // on the real path, so a change to either shows up here before anyone notices it in game.
 
 void WXL_CALL BenchHandler(void*, const void*) {}
+
+/// Storm's error display told to the log: a recoverable error in one line, a fatal one as a
+/// report with the session's end, once. Before Client.Destroy, which would end the session first.
+void CheckClientError()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::filesystem::path path =
+        std::filesystem::path(temp) / ("wxl-harness-fatal-" + std::to_string(GetCurrentProcessId()) + ".log");
+    wxl::log::Open(path.c_str());
+    char message[64];
+    snprintf(message, sizeof message, "Invalid function pointer: %p", reinterpret_cast<void*>(&CodeProbe));
+    wxl::core::crash::ClientError(0x8510007F, "leaked handle", -3, "1 handle not released", true);
+    wxl::core::crash::ClientError(0x85100086, nullptr, 0, message, false);
+    wxl::core::crash::ClientError(0x85100084, "0xC0000005 (ACCESS_VIOLATION)", -5, "second", false);
+    wxl::log::Close();
+
+    std::ifstream in(path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    printf("     the log it wrote:\n");
+    for (size_t at = 0; at < text.size();)
+    {
+        const size_t eol = text.find('\n', at);
+        printf("     | %s\n", text.substr(at, eol == std::string::npos ? std::string::npos : eol - at).c_str());
+        at = eol == std::string::npos ? text.size() : eol + 1;
+    }
+    Check(text.find("[client] the client shows error #127 (0x8510007F) (leaked handle) and goes on: 1 handle not released") !=
+              std::string::npos,
+          "a recoverable error is one warning");
+    Check(text.find("[fatal] fatal error #134 (0x85100086) shown by the client") != std::string::npos &&
+              text.find(message) != std::string::npos,
+          "a fatal one is reported with its number, code and message");
+    Check(text.find("the client was handed a function at wxl-core-seam-harness.exe+") != std::string::npos,
+          "an invalid function pointer is named by module and offset");
+    Check(text.find("[fatal] #0 ") != std::string::npos && text.find("the client writes Errors\\ and ends") != std::string::npos,
+          "with a stack, then what the client does next");
+    Check(text.find("session end: fatal error (#134 0x85100086: Invalid function pointer: ") != std::string::npos,
+          "the session ends on it");
+    Check(text.find("second") == std::string::npos, "a second fatal error writes nothing: one report");
+}
 
 void Bench()
 {
@@ -2933,6 +6010,19 @@ void Bench()
 
     printf("\nbench (%s):\n", sizeof(void*) == 8 ? "x64" : "x86");
 
+    {
+        const void* client = reinterpret_cast<const void*>(uintptr_t{0x00856370});
+        const void* own    = reinterpret_cast<const void*>(&CodeProbe);
+        time("function pointer gate, the client's own", 2000000, [&] {
+            const void* p = client;
+            wxl::seam::Os::ValidateFunctionPointer::Gate(&p);
+        });
+        time("function pointer gate, the runtime's", 2000000, [&] {
+            const void* p = own;
+            wxl::seam::Os::ValidateFunctionPointer::Gate(&p);
+        });
+    }
+
     wxl::core::services::data::Clear();
     time("file-open gate, a path that is not a database", 200000, [&] {
         wxl::core::services::data::ServedPath(texture, strlen(texture), out, sizeof out);
@@ -2952,11 +6042,96 @@ void Bench()
     bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
     time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    {
+        // The profiler up and no viewer, as in a game nobody profiles: the host's zones behind
+        // their flag, which a present keeps off; then the flag forced on, every zone asked of a
+        // profiler that answers 0 -- the frame a viewer connects or leaves; then a mod's zone
+        // through wxl.profile and one of the client's own.
+        namespace profile = wxl::core::profile;
+        wxl::host::Profiler hooks;
+        hooks.location = [](void*, std::string_view name, std::string_view function, uint32_t color) {
+            return profile::Location(name, function, "", 0, color);
+        };
+        hooks.begin = [](void*, const void* location) { return profile::Begin(location); };
+        hooks.end   = [](void*, uint64_t zone) { profile::End(zone); };
+        wxl::host::EventBus traced({WXL_EV_Update}, nullptr);
+        traced.SetProfiler(&hooks, [](void*, uint32_t) { return std::string("bench"); }, nullptr);
+        traced.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0, 1);
+        time("event bus, one subscriber, profiler set", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+        traced.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0, 1);
+        time("event bus, two subscribers, profiler set", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+
+        wxl::core::settings::ProfileChoice choice;
+        choice.enabled = true;
+        profile::Start(choice);
+        for (int i = 0; i < 500 && !profile::Started(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        printf("  (profiler %s, no viewer)\n", profile::Started() ? "up" : "NOT up");
+        time("event bus, two subscribers, profiler up", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+        time("event bus, two subscribers, no profiler", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
+        traced.SetProfiling(true);
+        time("event bus, two subscribers, zones asked", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+
+        const wxl_profile_api& api      = profile::Api();
+        const uintptr_t        location = api.location(wxl_str{"Bench", 5}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+        time("wxl.profile zone_begin + zone_end, no viewer", 200000, [&] { api.zone_end(api.zone_begin(location)); });
+        static const wxl_core_zone_site kSite{"Bench.Client", "Bench", __FILE__, __LINE__, 0};
+        time("client zone (WarcraftXLZoneBegin/End), no viewer", 200000,
+             [&] { WarcraftXLZoneEnd(WarcraftXLZoneBegin(&kSite)); });
+        time("present (frame mark, flag, plots), no viewer", 200000, [&] { profile::Present(); });
+    }
+#endif
+
     wxl::core::services::data::Clear();
+
+    // Storm's seams: an allocation and its free, the client's commonest pair of calls, with
+    // accounting off and on, from one thread and from four at once.
+    const wxl_footprint_api& footprint = wxl::core::services::FootprintApi();
+    static const char        kFile[]   = ".\\Bench.cpp";
+    constexpr int            kPairs    = 1000000;
+    const auto pairs = [&](uintptr_t base, int count) {
+        for (int i = 0; i < count; ++i)
+        {
+            void* const block = reinterpret_cast<void*>(base + static_cast<uintptr_t>(i) * 16);
+            wxl::seam::Storm::SMemAlloc::After(block, 48, kFile, 1, 0);
+            wxl::seam::Storm::SMemFree::Before(block, kFile, 2, 0);
+        }
+    };
+    const auto rate = [&](const char* what, int threads) {
+        const Clock::time_point start = Clock::now();
+        std::vector<std::thread> workers;
+        for (int t = 0; t < threads; ++t)
+            workers.emplace_back([&, t] { pairs(0x10000000u + static_cast<uintptr_t>(t) * 0x01000000u, kPairs / threads); });
+        for (std::thread& worker : workers) worker.join();
+        const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+        printf("  %-46s %8.1f ns/pair, %6.2f M alloc+free/s\n", what, seconds * 1e9 / kPairs, kPairs / seconds / 1e6);
+    };
+    wxl::core::services::footprint::Reset();
+    rate("storm seams, accounting off", 1);
+    footprint.start();
+    rate("storm seams, accounting on", 1);
+    rate("storm seams, accounting on, 4 threads", 4);
+    // A live set the size of a client's: 1,000,000 blocks kept while the pairs run.
+    for (int i = 0; i < 1000000; ++i)
+        wxl::seam::Storm::SMemAlloc::After(reinterpret_cast<void*>(0x60000000u + static_cast<uintptr_t>(i) * 32), 64,
+                                           kFile, 3, 0);
+    rate("storm seams, on, 1,000,000 blocks live", 1);
+    footprint.snapshot();
+    std::vector<wxl_footprint_category> categories(footprint.categories(nullptr, 0));
+    for (wxl_footprint_category& c : categories) c.struct_size = sizeof c;
+    footprint.categories(categories.data(), static_cast<uint32_t>(categories.size()));
+    for (const wxl_footprint_category& c : categories)
+        if (std::string_view(c.name.data, c.name.size) == "accounting")
+            printf("  %-46s %8.1f MB for 1,000,000 live blocks\n", "accounting's own tables", c.bytes / 1048576.0);
+    time("snapshot, 1,000,000 blocks live", 20, [&] { footprint.snapshot(); });
+    wxl::core::services::footprint::Reset();
 }
 
 int main(int argc, char** argv)
 {
+    // Unbuffered, so the last line printed before a crash is never held back in a buffer.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     wxl::core::binding::Bind(FakeInit());
 
     wxl::host::HostConfig config;
@@ -2978,13 +6153,22 @@ int main(int argc, char** argv)
     CheckEventDispatchUpdate();
     CheckWorldPreload();
     CheckObjectMgr();
+    CheckRevivedObjects();
+    CheckFields();
     CheckUnit();
     CheckPlayer();
     CheckGameUI();
     CheckMapArea();
+    CheckListening();
+    CheckAssets();
+    CheckDoodads();
+    CheckFileOpened();
+    CheckObjectUpdate();
+    CheckCode();
     CheckFrameScript();
     CheckNetClient();
     CheckNetConnection();
+    CheckClientError();
     CheckClientDestroy();
     CheckInput();
     CheckStorage();
@@ -2999,17 +6183,42 @@ int main(int argc, char** argv)
     CheckSpellCancel();
     CheckCombat();
     CheckUiEvent();
+    CheckChatAddon();
     CheckScriptError();
+    CheckWorldZoneMouseoverClick();
+    CheckConsoleVar();
+    CheckPlayerMoveMoneyLevel();
+    CheckGlue();
+    CheckChat();
+    CheckEnergize();
+    CheckFootprint();
+    CheckArchivesAndDatabases();
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    CheckProfile();
+#endif
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckOneSidedShim();
     CheckThiscallGate();
+    CheckGetUpdateObjectDetour();
+    CheckMirrorDetours();
     CheckRegparmThunks();
+    CheckChatDetours();
+    CheckStormDetours();
+    CheckAssetDetours();
+    CheckValidatorDetour();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);
     for (int i = 1; i < argc; ++i)
         if (strcmp(argv[i], "--bench") == 0) Bench();
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    for (int i = 1; i < argc; ++i)
+    {
+        if (strcmp(argv[i], "--profile-live") == 0) ProfileLive(false);
+        if (strcmp(argv[i], "--profile-live-any") == 0) ProfileLive(true);
+    }
+#endif
 
     g_host.reset();
     return g_failures ? 1 : 0;

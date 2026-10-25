@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Os domain: a seam on the check the client makes of every function pointer it is handed.
+
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including os.def"
+#endif
+
+// Ends the process with "Invalid function pointer: %p" (SErrDisplayAppFatal, error 0x85100086)
+// unless the pointer lies in the executable's .text section, bounds read once by
+// OsFindTextSectionBounds. The client calls it before every C function its Lua calls
+// (luaD_precall, luaD_rawrunprotected), before a Lua hook (luaD_callhook), a console command's
+// handler (ConsoleCommandExecute) and a CVar's callback (CVar::Set, Reset, Default and the
+// array wrapper). A free function: [ebp+8] read, a bare `ret`, the callers clean: cdecl.
+//
+// Gated: Gate takes the call when the pointer lies in code the runtime registered (its own
+// image and every binary the mod host loaded, src/runtime/Code.cpp), so a function of the
+// runtime or of a mod may be handed to the client; any other pointer goes on to the client's
+// check, fatal as before. It runs on every one of those calls: a pointer outside every
+// registered module costs two compares.
+//
+// The x64 call site is in Engine/Source/Os/Win64/System.cpp. The fork's Win32 configuration
+// carries no runtime: the stock 32-bit client reaches this function by detour, whose jump makes
+// the client's AdditionalCheck1 (0x004046C0) skip its scan, as it does for any patch there.
+WXL_SEAM_GATE(Os, ValidateFunctionPointer, "OsValidateFunctionPointer", void, cdecl, (const void* ptr))

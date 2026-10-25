@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The client binding: every fact the runtime reads out of the client, one row per fact, one
 // domain per file under binding/. ARCHITECTURE.md lists what a row generates and where.
@@ -82,6 +82,11 @@
 #include "wxl/core/binding/storage.def"
 #include "wxl/core/binding/gx.def"
 #include "wxl/core/binding/spell.def"
+#include "wxl/core/binding/glue.def"
+#include "wxl/core/binding/consolevar.def"
+#include "wxl/core/binding/chat.def"
+#include "wxl/core/binding/memory.def"
+#include "wxl/core/binding/asset.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

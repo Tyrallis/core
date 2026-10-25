@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The ObjectMgr domain of the client binding: the object manager's own state.
 
@@ -10,3 +10,35 @@
 // The CGPlayer_C the local player controls, or null while out of the world:
 // ClntObjMgrGetActivePlayerObj(). Main thread only: the object manager it reads is thread-local.
 WXL_BINDING(local_player_object, const void*, (void), (), 0)
+
+// The object the manager holds under a guid, of any kind, or null: ClntObjMgrObjectPtr(guid,
+// TYPE_OBJECT). The client's own table, not what the runtime tracks: wxl.object's from_guid
+// falls back to it for an object no seam announced. Main thread only, like the row above.
+WXL_BINDING(object_by_guid, const void*, (uint64_t guid), (guid), 0)
+
+// Sets `handler` on the fields of a kind, for every object carrying them: the client calls it
+// when an update changes bytes [offset, offset + size), offset counted from the kind's first
+// field (type an OBJECT_TYPE_ID), with `param`. ClntObjMgrSetTypeMirrorHandler(type, offset,
+// size, handler, param, priority 0, alwaysFire 0), the call the kinds' ClientInitialize make. The
+// client keeps a copy of a field before an update only where its mirror lists say, and a
+// handler elsewhere reads and writes past that copy: only the dwords update_fields.def's WATCH
+// rows give for the kind may be asked for. ClntObjMgrDestroyShared, as the client leaves the
+// world, deletes every such handler. False when there is no client to ask. Main thread only.
+WXL_BINDING(object_watch_type, wxl_bool, (uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler, void* param), (type, offset, size, handler, param), WXL_FALSE)
+
+// The same on one object, by guid: ClntObjMgrSetObjMirrorHandler(guid, type, offset, size,
+// handler, param, 0, 0), into the object's own lists, which go with it. The only way to the
+// active player's local fields (scope local in update_fields.def), whose copy a handler set on
+// the kind would not find. False when the client holds no such object. Main thread only.
+WXL_BINDING(object_watch_one, wxl_bool, (uint64_t guid, uint32_t type, uint32_t offset, uint32_t size, wxl_core_mirror_fn handler, void* param), (guid, type, offset, size, handler, param), WXL_FALSE)
+
+// Takes back a handler object_watch_type set on a kind's fields, by the same type, offset,
+// handler and param: ClntObjMgrUnsetTypeMirrorHandler(type, offset, handler, param), which unlinks
+// it, or marks it to go once the call to it returns when the client is calling it. False when
+// there is no client to ask. Main thread only.
+WXL_BINDING(object_unwatch_type, wxl_bool, (uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param), (type, offset, handler, param), WXL_FALSE)
+
+// The same for a handler object_watch_one set on one object: ClntObjMgrUnsetObjMirrorHandler(guid,
+// type, offset, handler, param). False when the client holds no such object, whose handlers went
+// with it. Main thread only.
+WXL_BINDING(object_unwatch_one, wxl_bool, (uint64_t guid, uint32_t type, uint32_t offset, wxl_core_mirror_fn handler, void* param), (guid, type, offset, handler, param), WXL_FALSE)

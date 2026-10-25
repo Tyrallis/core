@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // wxl.object on this runtime: the one service instance and what the seams drive on it.
 
 #include "objects/Objects.hpp"
+
+#include "runtime/Core.hpp"
+
+#include "wxl/host/mod_host.hpp"
 
 #include <atomic>
 
@@ -14,6 +18,13 @@ namespace
     /// Two threads racing to be first store the same address, so the store is ordered against
     /// nothing.
     std::atomic<wxl::runtime::ObjectService*> g_service{ nullptr };
+
+    /// The mod whose code is calling: a watch belongs to it.
+    uint32_t CallingMod(void*)
+    {
+        const wxl::host::ModHost* host = wxl::core::Host();
+        return host ? host->CurrentMod() : 0;
+    }
 }
 
 namespace wxl::core::objects
@@ -25,6 +36,7 @@ namespace wxl::core::objects
         {
             static ClientObjects               binding;
             static wxl::runtime::ObjectService service(binding);
+            service.SetCaller(&CallingMod, nullptr);
             known = &service;
             g_service.store(known, std::memory_order_relaxed);
         }

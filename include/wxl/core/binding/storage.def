@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Storage domain of the client binding: the client's own file layer, as wxl.storage drives it.
 //
@@ -20,7 +20,7 @@ WXL_BINDING(file_open, void*, (const char* path), (path), 0)
 // The file's length in bytes.
 WXL_BINDING(file_size, uint64_t, (void* file), (file), 0)
 
-// Moves the read cursor to an absolute offset. False when the client refused it.
+// Moves the read cursor to an absolute offset. False when it did not land there.
 WXL_BINDING(file_seek, wxl_bool, (void* file, uint64_t offset), (file, offset), WXL_FALSE)
 
 // Reads up to `count` bytes at the cursor and answers how many it got.
@@ -31,3 +31,12 @@ WXL_BINDING(file_close, void, (void* file), (file), (void)0)
 // Adds an archive to what the client searches. Higher priority wins a name collision; the
 // client's own data is 0. There is no unmount: the client has none either.
 WXL_BINDING(archive_mount, wxl_bool, (const char* path, int32_t priority), (path, priority), WXL_FALSE)
+
+// The folder the client finds loose files from, SFile::m_basePath: "C:\Games\WoW\" with its
+// separator, empty or null before the client set it.
+WXL_BINDING(storage_base_path, const char*, (void), (), 0)
+
+// Tells `fn` every name the listfile of each mounted archive holds, archive by archive, with
+// SFile::List; answers how many archives were listed. An archive without a listfile adds none.
+// Opens each "(listfile)" through the client's open, on the calling thread.
+WXL_BINDING(archive_list, uint32_t, (wxl_core_name_fn fn, void* user), (fn, user), 0)

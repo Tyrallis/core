@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The GameUI domain of the client binding: the game interface's own state.
 
@@ -18,3 +18,17 @@ WXL_BINDING(ui_initialized, int32_t, (void), (), 0)
 // Nonzero from the start of CGGameUI::InitializeFrameXML until the first world update after
 // login: CGGameUI::m_loggingIn, a byte.
 WXL_BINDING(ui_logging_in, uint8_t, (void), (), 0)
+
+// A click on the terrain or a map object, as CGGameUI::HandleTerrainClick is handed one: the
+// guid of the game object hit (0 for bare ground), the point, and the button as the client
+// numbers it (1 left, 2 middle, 4 right).
+WXL_BINDING_FIELD(terrain_click_guid, uint64_t, CTerrainClickEvent, m_guid, 0)
+WXL_BINDING_FIELD(terrain_click_x, float, CTerrainClickEvent, m_point.x, 0.0f)
+WXL_BINDING_FIELD(terrain_click_y, float, CTerrainClickEvent, m_point.y, 0.0f)
+WXL_BINDING_FIELD(terrain_click_z, float, CTerrainClickEvent, m_point.z, 0.0f)
+WXL_BINDING_FIELD(terrain_click_button, uint32_t, CTerrainClickEvent, m_button, 0)
+
+// A click on an object's model, as CGGameUI::HandleSpriteClick is handed one: the object's
+// guid and the button.
+WXL_BINDING_FIELD(sprite_click_guid, uint64_t, CSpriteClickEvent, m_guid, 0)
+WXL_BINDING_FIELD(sprite_click_button, uint32_t, CSpriteClickEvent, m_button, 0)

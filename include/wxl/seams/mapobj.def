@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The MapObj domain: seams on CMapObj, a map object (WMO) root.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including mapobj.def"
+#endif
+
+// Walks a map object's root file: CMapObj::Read (0x007D80C0) opened it and queued an
+// asynchronous read of the whole file into m_pWmoData; the read's callback, CMapObj::
+// PostloadCallback, calls this once it is done, on the main thread, and it points the object's
+// lists (materials, groups, portals, doodads, fogs...) into the bytes, chunk by chunk.
+//
+// Before raises MapObjectLoad with the file's path (m_wmoName, the placeholder's when the file
+// was missing) and its bytes, before any chunk is read.
+//
+// thiscall, nothing on the stack: the object in ECX (`mov edi, ecx` at 0x007D7479), a bare
+// `ret` (0x007D7700). The one call, 0x007D7EB4, is in PostloadCallback.
+WXL_SEAM_BEFORE(MapObj, Load, "CMapObj::Load", void, thiscall, (void* self))
+WXL_SEAM_RAISES(MapObj, Load, MapObjectLoad)

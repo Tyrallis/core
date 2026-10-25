@@ -1,20 +1,21 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The thunks that let a seam stand in front of a function whose arguments arrive in registers.
 //
-// Four functions of build 12340 have internal linkage and one or two callers, so MSVC was free
-// to pass their arguments in registers and did. Each thunk here was written against that
-// function's first instructions and against every one of its callers; the register each argument
-// arrives in is recorded above the thunk with the addresses it was read from, so the claim can be
-// checked rather than believed.
+// Eight functions of build 12340 take arguments in registers: MSVC saw each one's every caller
+// and passed what it liked where it liked, whatever the function's linkage. Each thunk here was
+// written against that function's first instructions and against every one of its callers; the
+// register each argument arrives in is recorded above the thunk with the addresses it was read
+// from, so the claim can be checked rather than believed.
 //
 // Every thunk has the same shape. Save the register arguments into the frame before anything can
 // touch them -- EAX and ECX are scratch, so the first C++ call would lose them. Call the seam's
 // Before with them, if the row declares one. Put them back exactly as they came. Run the
 // original. Call After, if the row declares one. Return the stack as the function's own
-// convention leaves it: these four clean nothing, so the two that take stack arguments leave
-// them to the caller, as the callers' `add esp` shows they expect.
+// convention leaves it: these eight clean nothing, so the six that take stack arguments leave
+// them to the caller, as the callers' `add esp` shows they expect. A function that answers
+// something answers in EAX, which nothing after the original's call touches.
 //
 // The thunks are naked because there is no way to say "this argument arrives in EDI" in C++, and
 // no prologue the compiler writes could be trusted to leave the registers alone. That costs
@@ -47,6 +48,22 @@ static void* g_deleteOriginal               = nullptr;
 static void(__cdecl* g_destroyBefore)(void*) =
     &wxl::seam::ObjectMgr::DestroyRemovedObject::Before;
 static void* g_destroyOriginal = nullptr;
+
+static void(__cdecl* g_missBefore)(void*, int32_t) =
+    &wxl::seam::Combat::HandleSpellLogMiss::Before;
+static void* g_missOriginal = nullptr;
+
+static void(__cdecl* g_damageBefore)(void*, int32_t) =
+    &wxl::seam::Combat::HandleSpellNonMeleeDamageLog::Before;
+static void* g_damageOriginal = nullptr;
+
+static void(__cdecl* g_healBefore)(void*, int32_t) =
+    &wxl::seam::Combat::HandleSpellHealLog::Before;
+static void* g_healOriginal = nullptr;
+
+static void(__cdecl* g_energizeBefore)(void*, int32_t) =
+    &wxl::seam::Combat::HandleSpellLogEnergizeLog::Before;
+static void* g_energizeOriginal = nullptr;
 
 // --- Event.DispatchUpdate -----------------------------------------------------------------
 // IEvtDispatchUpdate @0x0047DB70: the context arrives in EDI and nothing else does. Its body
@@ -178,6 +195,140 @@ __declspec(naked) static void DestroyThunk()
     }
 }
 
+// --- Combat.HandleSpellLogMiss ------------------------------------------------------------
+// CombatLog::HandleSpellLogMiss @0x006D3090: the message arrives in EDI, which the body hands
+// to CDataStore::Get (`mov ecx,edi` at 0x006D30A0) before it reads any other argument; the time
+// offset is at [ebp+8]. Both callers set EDI immediately before the call and push the offset:
+// `mov edi,[ebp+0x14]; push 0` at 0x006D3204 (cleaned by `add esp,4` at 0x006D320E) and
+// `push edi; mov edi,esi` at 0x006D419B (cleaned by `add esp,4` at 0x006D41E3). The handler
+// returns what it answers, so EAX comes back from the original untouched.
+__declspec(naked) static void MissThunk()
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push edi                        // [ebp-04h]: the message
+        push esi
+        push ebx
+
+        push dword ptr [ebp+08h]        // time_offset
+        push dword ptr [ebp-04h]        // msg
+        call dword ptr [g_missBefore]
+        add  esp, 08h
+
+        push dword ptr [ebp+08h]
+        mov  edi, dword ptr [ebp-04h]   // back in the register the original reads it from
+        call dword ptr [g_missOriginal]
+        add  esp, 04h
+
+        pop  ebx
+        pop  esi
+        pop  edi                        // the saved message is also the caller's EDI
+        pop  ebp
+        ret                             // cdecl: the caller cleans its slot
+    }
+}
+
+// --- Combat.HandleSpellNonMeleeDamageLog --------------------------------------------------
+// CombatLog::HandleSpellNonMeleeDamageLog @0x006D3840: `mov esi,eax` at 0x006D384B, after the
+// prologue and before anything else is read; the time offset is at [ebp+8]. Its callers set EAX
+// immediately before the call and push the offset: `mov eax,[ebp+0x14]; push 0` at 0x006D3C13
+// (cleaned at 0x006D3C1D) and `push edi; mov eax,esi` at 0x006D41CC (cleaned at 0x006D41E3).
+__declspec(naked) static void DamageThunk()
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push eax                        // [ebp-04h]: the message, before a call can lose EAX
+        push esi
+        push edi
+        push ebx
+
+        push dword ptr [ebp+08h]        // time_offset
+        push dword ptr [ebp-04h]        // msg
+        call dword ptr [g_damageBefore]
+        add  esp, 08h
+
+        push dword ptr [ebp+08h]
+        mov  eax, dword ptr [ebp-04h]
+        call dword ptr [g_damageOriginal]
+        add  esp, 04h
+
+        pop  ebx
+        pop  edi
+        pop  esi
+        mov  esp, ebp                   // drops the saved message: EAX is the original's answer
+        pop  ebp
+        ret
+    }
+}
+
+// --- Combat.HandleSpellHealLog ------------------------------------------------------------
+// CombatLog::HandleSpellHealLog @0x006D3C30: `mov esi,eax` at 0x006D3C3B, the same shape. Its
+// callers: `mov eax,[ebp+0x14]; push 0` at 0x006D3DD3 (cleaned at 0x006D3DDD) and `push edi;
+// mov eax,esi` at 0x006D4191 (cleaned at 0x006D41E3).
+__declspec(naked) static void HealThunk()
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push eax                        // [ebp-04h]: the message
+        push esi
+        push edi
+        push ebx
+
+        push dword ptr [ebp+08h]        // time_offset
+        push dword ptr [ebp-04h]        // msg
+        call dword ptr [g_healBefore]
+        add  esp, 08h
+
+        push dword ptr [ebp+08h]
+        mov  eax, dword ptr [ebp-04h]
+        call dword ptr [g_healOriginal]
+        add  esp, 04h
+
+        pop  ebx
+        pop  edi
+        pop  esi
+        mov  esp, ebp
+        pop  ebp
+        ret
+    }
+}
+
+// --- Combat.HandleSpellLogEnergizeLog -----------------------------------------------------
+// CombatLog::HandleSpellLogEnergizeLog @0x006D3DF0: `mov esi,eax` at 0x006D3DFB, the same shape.
+// Its callers: `mov eax,[ebp+0x14]; push 0` at 0x006D3EF3 (cleaned at 0x006D3EFD) and `push edi;
+// mov eax,esi` at 0x006D4186 (cleaned at 0x006D41E3).
+__declspec(naked) static void EnergizeThunk()
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push eax                        // [ebp-04h]: the message
+        push esi
+        push edi
+        push ebx
+
+        push dword ptr [ebp+08h]        // time_offset
+        push dword ptr [ebp-04h]        // msg
+        call dword ptr [g_energizeBefore]
+        add  esp, 08h
+
+        push dword ptr [ebp+08h]
+        mov  eax, dword ptr [ebp-04h]
+        call dword ptr [g_energizeOriginal]
+        add  esp, 04h
+
+        pop  ebx
+        pop  edi
+        pop  esi
+        mov  esp, ebp
+        pop  ebp
+        ret
+    }
+}
+
 namespace
 {
     const wxl::core::seams::regparm::Row kRows[] = {
@@ -186,6 +337,12 @@ namespace
         { "ObjectMgr.ObjDelete", reinterpret_cast<void*>(&DeleteThunk), &g_deleteOriginal },
         { "ObjectMgr.DestroyRemovedObject", reinterpret_cast<void*>(&DestroyThunk),
           &g_destroyOriginal },
+        { "Combat.HandleSpellLogMiss", reinterpret_cast<void*>(&MissThunk), &g_missOriginal },
+        { "Combat.HandleSpellNonMeleeDamageLog", reinterpret_cast<void*>(&DamageThunk),
+          &g_damageOriginal },
+        { "Combat.HandleSpellHealLog", reinterpret_cast<void*>(&HealThunk), &g_healOriginal },
+        { "Combat.HandleSpellLogEnergizeLog", reinterpret_cast<void*>(&EnergizeThunk),
+          &g_energizeOriginal },
     };
 }
 

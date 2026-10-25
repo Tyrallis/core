@@ -1,13 +1,15 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Gx seams: what the runtime does at the present, and as the graphics device goes and comes back.
 
 #include "wxl/seams/seams.h"
 
 #include "binding/Binding.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Frame.hpp"
+#include "services/FootprintService.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -29,12 +31,21 @@ namespace wxl::seam::Gx::ScenePresent
 {
     void WXL_CALL Before()
     {
+        // Every present ends a frame on the profiler's timeline, the loading screen's included.
+        wxl::core::profile::Present();
+
         // Only the frame Scrn.OnPaint opened ends here. The loading screen presents frames of
         // its own, and a paint with nothing to draw into presents anyway; neither opened one.
+        wxl::host::ModHost* host = wxl::core::Host();
+
+        // The address space is looked at here, about once a second, while a mod watches it: the
+        // client presents through the loading screen too, which is when memory runs short.
+        wxl_memory_pressure_args pressure{};
+        if (host && wxl::core::services::footprint::PressureDue(&pressure))
+            host->Raise(WXL_EV_MemoryPressure, &pressure);
+
         wxl_frame_args args{};
         if (!wxl::core::frame::End(args)) return;
-
-        wxl::host::ModHost* host = wxl::core::Host();
         if (!host) return;
         host->Raise(WXL_EV_FrameEnd, &args);
     }

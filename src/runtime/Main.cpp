@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // DLL entry on x86: the two exports the patched client imports, and DllMain, which only opens the log.
 
 #include "runtime/Core.hpp"
+#include "runtime/Crash.hpp"
+#include "runtime/Session.hpp"
 
 #include "common/Log.hpp"
 #include "runtime/Image.hpp"
@@ -63,6 +65,7 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(module);
         wxl::core::OpenLog();
+        wxl::core::crash::Install();
         // The DLL's own link stamp, not a compile time: it moves whenever this binary is
         // relinked, so the line names the file that is running.
         char linked[wxl::core::stamp::kDescriptionSize];
@@ -88,6 +91,8 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
     }
     case DLL_PROCESS_DETACH:
         WLOG_INFO(wxl::core::kTag, "WarcraftXL.dll detaching");
+        // Only when the client did not close through Client.Destroy, which says so first.
+        wxl::core::session::End("the process exited without closing the client (DLL detach)");
         wxl::log::Close();
         break;
     default:

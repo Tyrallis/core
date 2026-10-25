@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // wxl-core-patcher: add the WarcraftXL.dll imports and the entry-point trampoline to the client PE,
 // and run every registered PatchScript.

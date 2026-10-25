@@ -4,9 +4,9 @@
 
 **The runtime that loads WarcraftXL mods into World of Warcraft 3.3.5a**
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.5-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.15-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -91,7 +91,13 @@ build/dist/
     bin/x64/WarcraftXL.dll
     Mods/wxl.glue-unlock/{mod.json,bin/x86/glue-unlock.dll}
     Mods/wxl.named-archives/{mod.json,bin/x86/named-archives.dll}
+    Mods/wxl.lua/{mod.json,LICENSE-LuaJIT.txt,bin/x86/wxl-lua.dll,bin/x64/wxl-lua.dll}
 ```
+
+`Mods/wxl.lua/` is the runtime of the Lua mods, built from the SDK's `lua/` for each architecture,
+so that a Lua mod runs with nothing else to build. The first configure downloads LuaJIT, which it
+embeds, at a fixed commit and builds it with the Visual Studio in use. `-DWXL_CORE_LUA=OFF` leaves
+it out.
 
 ### Build one
 
@@ -101,6 +107,38 @@ cmake -S . -B build/x86 -G "Visual Studio 18 2026" -A Win32 -DWXL_CORE_ARCH=win-
 
 `WXL_CORE_TARGETS` selects which architectures the driver builds; `WXL_CORE_DIST` moves the
 collection directory.
+
+### Run the tests from Linux
+
+The seam harness is a Windows executable. From Linux it builds with clang-cl and runs under Wine,
+one architecture per tree. Give the driver a toolchain file that drives clang-cl and lld-link
+against the MSVC CRT and the Windows SDK (which [xwin](https://github.com/Jake-Shadle/xwin)
+downloads), and an emulator for ctest to run the harness with, both as environment variables so
+that the per-architecture tree the driver configures gets them too (CMake 3.28 or newer):
+
+```sh
+export CMAKE_TOOLCHAIN_FILE=<toolchain for i686-pc-windows-msvc>
+export CMAKE_CROSSCOMPILING_EMULATOR=<path to the wrapper below>
+cmake -S . -B build-x86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DWXL_CORE_TARGETS=win-x86
+cmake --build build-x86
+ctest --test-dir build-x86/win-x86 --output-on-failure
+```
+
+`wxl.lua` cannot build LuaJIT there (it uses LuaJIT's `msvcbuild.bat`): give it a static LuaJIT
+built for the architecture, `-DWXL_LUAJIT_LIBRARY=<dir>/lua51.lib -DWXL_LUAJIT_INCLUDE_DIR=<dir>`
+for one architecture, or `WXL_LUAJIT_LIBRARY_X86`, `WXL_LUAJIT_INCLUDE_DIR_X86` and their `_X64`
+twins for both. The SDK's README, "Run the tests from Linux", builds one.
+
+The harness lives in the architecture's own tree, `win-x86` or `win-x64` under the driver's. The
+wrapper runs its arguments under Wine; 32-bit Wine is needed for x86:
+
+```sh
+#!/bin/sh
+export WINEDEBUG="${WINEDEBUG:--all}"
+exec wine "$@"
+```
+
+The SDK's suites run the same way; its README says how to give them LuaJIT.
 
 ## 📦 Installing
 
@@ -115,8 +153,12 @@ collection directory.
    It writes `Wow.exe.orig` beside it and is idempotent: run it again and it says so, byte for
    byte. Pass a second path to write elsewhere and leave the input alone.
 4. Copy the mods you want into `Mods/`, each as its own folder with a `mod.json` and
-   `bin/x86/<name>.dll`.
-5. Launch. The log is `Logs/WarcraftXL.log`, beside the executable.
+   `bin/x86/<name>.dll`, and `build/dist/Mods/wxl.lua/` with them for Lua mods, which are folders
+   with an `init.lua`.
+5. Launch. The log is `Logs/WarcraftXL.log`, beside the executable; earlier launches are kept
+   beside it, and `WarcraftXL.ini` sets its level (the SDK's `docs/the-log.md`) and turns the
+   Tracy profiler on, off by default (`[profile]`, the SDK's `docs/profiling.md`).
+   `python3 tools/read_logs.py <game folder>` summarises the last launches.
 
 A client already patched by an earlier WarcraftXL only needs the trampoline added; the patcher
 detects that and says `upgraded`. Without the trampoline the runtime still works, on its own
@@ -142,10 +184,12 @@ What a mod can reach **today**, by build:
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
-| `wxl.object` (world objects) | yes | yes |
+| `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers, each watch its mod's and its changes raised to that mod only, the handler taken back with the last watch | the same |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
-| `wxl.storage` | yes: exists, size, read, open/read_at/close, mount_archive | the same |
+| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens its files from, by a path it reads from the disk as it is, each its mod's and taken out when the mod is disabled or unloaded; redirect and unredirect, a table of names the open gate answers on every thread before `FileOpen`, each its mod's and taken back when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
+| `wxl.profile` | yes: zones, plots, messages and frame sets on the Tracy profiler's timeline, beside the runtime's own zones for every event and mod handler (`WXL_PROFILE`) | the same, and zones in the client's main loop |
+| `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY`, `STORAGE`, `GRAPHICS`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
@@ -154,13 +198,15 @@ What a mod can reach **today**, by build:
 
 The client runs one Lua state at a time and rebuilds it at every change of interface: the login
 glue and the game each get a fresh context, and both are created and destroyed more than once in
-a session (log in, log out, log in again, ReloadUI). `ScriptVmReady` is raised from
-`FrameScript.Initialize` with `context` set to `WXL_SCRIPT_CONTEXT_GAME` when
-`CGGameUI::m_loggingIn` or `CGGameUI::m_initialized` is set at that moment and to
-`WXL_SCRIPT_CONTEXT_GLUE` otherwise; `ScriptVmClosing` is raised from `FrameScript.Destroy`
-naming the same context. Two contexts the client creates and flushes before any interface loads
--- the one `InitializeClient` makes at process start, and the one `CGGameUI::ShutdownGame` makes
-on logout -- are announced as glue.
+a session (log in, log out, log in again, ReloadUI). A context is noted when
+`FrameScript.Initialize` makes it, as `WXL_SCRIPT_CONTEXT_GAME` when `CGGameUI::m_loggingIn` or
+`CGGameUI::m_initialized` is set at that moment and `WXL_SCRIPT_CONTEXT_GLUE` otherwise, and
+announced with `ScriptVmReady` at its first `FrameScript.CreateEvents`: the interface installing
+its event table, after the client registered its own functions and before its frames load.
+`ScriptVmClosing` is raised from `FrameScript.Destroy` naming the same context. Two contexts the
+client creates and flushes before any interface loads -- the one `InitializeClient` makes at
+process start, and the one `CGGameUI::ShutdownGame` makes on logout -- install no event table, and
+raise neither event: one glue screen is one `ScriptVmReady`.
 
 **Nothing registered survives a context.** The Lua state is closed with it, which takes every
 global and every event listener. The service forgets what it was told at `ScriptVmClosing` and
@@ -184,6 +230,11 @@ subscriptions are dropped (the rest of the dispatch in progress included), its r
 and its unload are skipped, the script functions it registered are taken back, and its binary is
 left mapped rather than unloaded. One that faults in `wxl_mod_query` or `wxl_mod_load` is refused
 instead. The client goes on.
+
+A C++ exception is not a fault and never reaches the guard: the SDK's C++ layer catches it inside
+the mod and logs it (the SDK's `docs/building-a-mod.md`, "What a throw costs"). One that leaves a
+stage or the unload of a `WXL_MOD` mod makes the mod call `wxl_host.disable` with what it threw,
+and the runtime disables it exactly as above.
 
 What the guard does not do: it does not unwind the faulting frames (destructors do not run,
 locks stay held), it does not withdraw the services the mod published (another mod may hold the
@@ -223,27 +274,31 @@ source. Everything else observes.
 | `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
 | `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` (regparm: EDI) | `Update` before |
 | `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: ESI, EAX, ECX) | `ObjectCreate` after |
+| `ObjectMgr.GetUpdateObject` | `GetUpdateObject(uint64_t guid, int32_t* reenabled)`, the lookup every update of an object goes through | `ObjectCreate` after, with a new handle, for an object the client brought back from its lazy-cleanup set (it never passes `InitObject` again) |
 | `ObjectMgr.ObjDelete` | `ObjDelete(void* object)` (regparm: EAX) | `ObjectDestroy` before |
 | `ObjectMgr.DestroyRemovedObject` | `DestroyRemovedObject(void* object)` (regparm: ESI) | `ObjectDestroy` before, for an object still tracked |
+| `ObjectMgr.InitializeShared` | `ClntObjMgrInitializeShared()`, as the client enters a world | after: sets the mirror handler of every watched field on its kind, which raises `ObjectFieldChanged` when an update changes it |
+| `ObjectMgr.DestroyShared` | `ClntObjMgrDestroyShared()`, as the client leaves it and drops every kind's mirror handlers | nothing; notes the handlers gone until the next `InitializeShared` |
 | `Unit.OnDeath` | `CGUnit_C::OnDeath()` | `UnitDeath` after |
 | `Unit.OnAuraAdded`, `Unit.OnAuraRemoved` | `CGUnit_C::OnAuraAdded/OnAuraRemoved(uint32_t index, uint8_t a3, void* aura, int32_t spell_id)` | `UnitAuraChanged` after |
 | `Player.UpdateInventoryComponent` | `CGPlayer_C::UpdateInventoryComponent(int32_t slot, const void* old_item)` | `EquipmentChanged` after, when the item id moved |
 | `GameUI.SendTarget`, `GameUI.ClearTarget` | `CGGameUI::SendTarget(uint64_t guid)`, `CGGameUI::ClearTarget(uint64_t guid, int32_t a2)` | `TargetChanged` after, once per change of `m_lockedTarget` |
 | `MapArea.PrepareChunk` | `CMapArea::PrepareChunk(int32_t chunk_x, int32_t chunk_y)` | `TerrainChunkBuild` before |
-| `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | `ScriptVmReady` after, with the context CGGameUI's state implies and the new `lua_State*` |
-| `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `Initialize` announced |
-| `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | nothing: after, the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
+| `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | nothing: after, notes the new context and which one CGGameUI's state implies |
+| `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `CreateEvents` announced; nothing for a context never announced |
+| `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | `ScriptVmReady` after, the first time in a context, with the new `lua_State*`; the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
 | `NetClient.ProcessMessage` (gated) | `NetClient::ProcessMessage(uint32_t time_received, CDataStore* message, int32_t)` | `MessageReceived` at the gate; suppressing it hides the message from the client entirely, which is how a mod serves an opcode the client does not know |
 | `NetClient.Send` (gated) | `NetClient::Send(CDataStore* message)` | `MessageSent` at the gate; suppressing it stops the message being sent |
 | `NetClient.HandleConnect` | `NetClient::HandleConnect()` | `Connected` after, once the client holds itself connected |
 | `NetClient.HandleDisconnect` | `NetClient::HandleDisconnect()` | `Disconnected` before, while the connection is still the one being lost |
 | `Input.WindowProc` (gated) | `OsWindowProc(void* window, uint32_t message, uintptr_t wparam, intptr_t lparam)` | `Input` at the gate; writing `handled` answers 0 and the client's own procedure never sees the message |
-| `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate; a path written into `redirect` is what the client opens instead. `FileOpened` is not raised: it carries the result, and this function has a dozen returns |
+| `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate, `redirect` holding what a mod's `wxl.storage` redirect answers; a path written into `redirect` is what the client opens instead, then a folder of the search path that wins the name |
+| `Storage.OpenEx` | the same `SFile::OpenEx`, observed: on x86 a second link of the same chain, nearer the function than the gate | `FileOpened` after, at every return, with the name opened, whether a file came back and its size; nothing is read while nobody listens |
 | `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
 | `ConsoleDevice.Initialize` | `ConsoleDeviceInitialize(const char* title, bool, bool)` | nothing, but its return is `WXL_STAGE_GRAPHICS`: the device is made after the first database is read and before the script context exists, which is the order the stages promise |
 | `Scrn.OnPaint` | `OnPaint(const void* data, void* param)`, the paint handler | `FrameBegin` before, only when the device has a context and the window can be seen -- the test the paint makes itself |
-| `Gx.ScenePresent` | `GxScenePresent()` | `FrameEnd` before, for the frame `Scrn.OnPaint` opened and only for it: the loading screen presents frames of its own, which raise nothing. The last draw list is flushed after it |
+| `Gx.ScenePresent` | `GxScenePresent()` | `FrameEnd` before, for the frame `Scrn.OnPaint` opened and only for it: the loading screen presents frames of its own, which raise nothing. The last draw list is flushed after it. About once a second while a mod watches the address space, `MemoryPressure` before, when its largest free block just fell under the threshold |
 | `SimpleTop.OnLayerRender` | `CSimpleTop::OnLayerRender()` | `UiRenderEnd` after: every stratum of the interface is drawn, the world inside it |
 | `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
 | `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
@@ -253,7 +308,7 @@ source. Everything else observes.
 | `Spell.SpellFailed` | `Spell_C_SpellFailed(PendingSpellCast* cast, const SpellRec* spell, int32_t reason, int32_t misc1, int32_t misc2, bool reset_cooldown)` | `SpellCastFailed` before: the local player's cast refused by the server or by the client's own checks |
 | `Spell.CastSpell` (gated) | `Spell_C_CastSpell(CGUnit_C* caster, int32_t spell_id, const CGItem_C* item, uint64_t target, PendingSpellCast* cast, bool confirmed)` | `SpellCastRequest` at the gate; refusing it answers false and nothing is sent |
 | `Item.UseItem` (gated) | `CGItem_C::UseItem(const uint64_t* target, int32_t confirmed)` | `ItemUseRequest` at the gate; refusing it answers 0 and the item's spell is never asked for |
-| `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%` |
+| `FrameScript.vSignalEvent` | `vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args)` | `UiEvent` before, when a mod listens: the event's name, its format, and its arguments rendered as text, one entry per `%`; `ChatAddonMessage` before `CHAT_MSG_ADDON` fired for an addon message of the server |
 | `FrameScript.HandleError` | `FrameScript_HandleError(lua_State* state)`, the error handler of every protected call | `ScriptError` before, with the error value as the VM left it |
 | `Spell.Packet_MSG_CHANNEL_START` | `Packet_MSG_CHANNEL_START(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelStart` before, for a channel of some length |
 | `Spell.Packet_MSG_CHANNEL_UPDATE` | `Packet_MSG_CHANNEL_UPDATE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellChannelUpdate` before, or `SpellChannelStop` when no time is left, with the channel's spell as the client holds it on the unit |
@@ -263,10 +318,45 @@ source. Everything else observes.
 | `Spell.Packet_Group_31` | `Packet_Group_31(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_COOLDOWN_EVENT`, `SMSG_CLEAR_COOLDOWN` and `SMSG_MODIFY_COOLDOWN` | `SpellCooldownChanged` before, by the opcode |
 | `Spell.CancelSpell` | `Spell_C_CancelSpell(PendingSpellCast* cast, bool stop_recast, bool notify_server, int32_t reason)`, where every cancel of the player's own cast ends | `SpellCastCancel` before, with the cast's caster, spell and count, the reason, and whether the server may be told |
 | `Combat.Packet_Group_29` | `Packet_Group_29(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_ATTACKSTART`, `SMSG_ATTACKSTOP`, `SMSG_ATTACKERSTATEUPDATE` and `SMSG_ENVIRONMENTALDAMAGELOG` | `CombatAttackStart`, `CombatAttackStop`, `CombatDamage` or `CombatMiss` before, by the opcode and whether the round landed |
-| `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)`, where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
-| `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` before |
-| `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` | `CombatHeal` before |
-| `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage` or `CombatHeal` before, per damage or heal entry, up to where the client stops |
+| `Combat.HandleSpellLogMiss` | `CombatLog::HandleSpellLogMiss(CDataStore* msg, int32_t time_offset)` (regparm: EDI), where `SMSG_SPELLLOGMISS` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatMiss` before, once per target |
+| `Combat.HandleSpellNonMeleeDamageLog` | `CombatLog::HandleSpellNonMeleeDamageLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatDamage` before |
+| `Combat.HandleSpellHealLog` | `CombatLog::HandleSpellHealLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX) | `CombatHeal` before |
+| `Combat.HandlePeriodicAuraLog` | `CombatLog::HandlePeriodicAuraLog(CDataStore* msg, int32_t time_offset)` | `CombatDamage`, `CombatHeal` or `CombatEnergize` before, per entry, up to where the client stops |
+| `Combat.HandleSpellLogEnergizeLog` | `CombatLog::HandleSpellLogEnergizeLog(CDataStore* msg, int32_t time_offset)` (regparm: EAX), where `SMSG_SPELLENERGIZELOG` ends on its own or inside `SMSG_COMBAT_LOG_MULTIPLE` | `CombatEnergize` before |
+| `GameUI.NewZoneFeedback` | `CGGameUI::NewZoneFeedback(int32_t area_id, int32_t subzone_id, int32_t wmo_group_id, const char* zone_text, const char* subzone_text, const char* real_zone_text, int32_t inside)`, the one place the client learns the player's zone | `ZoneChanged` before, when the ids or the texts differ from what was last announced |
+| `GameUI.HandleObjectTrackChange` | `CGGameUI::HandleObjectTrackChange(uint64_t guid, uint64_t prev_guid)` | `MouseoverChanged` before, once per change of the object under the mouse |
+| `GameUI.HandleTerrainClick`, `GameUI.HandleSpriteClick` | `CGGameUI::HandleTerrainClick(const CTerrainClickEvent*)`, `CGGameUI::HandleSpriteClick(const CSpriteClickEvent*)`, the two ends of a click the world frame resolved | `WorldClick` before: the hit point and the game object for the terrain, the object and its position for a model |
+| `ConsoleVar.InternalSet` | `CVar::InternalSet(const char* value, bool set_value, bool set_reset, bool set_default, bool set_needs_save)`, where every set of a console variable ends | `CVarChanged` before, when the call will change the value |
+| `Unit.SendMovementUpdate` | `CGUnit_C::SendMovementUpdate(uint32_t time, uint32_t msg_id, float value, uint32_t index, uint64_t transport, uint8_t seat)` (the six-argument overload, at 0x0071F0C0), where every movement message of the local player is built and sent | `PlayerMoveStart` before for a start, a jump, an ascent or a descent, `PlayerMoveStop` for a stop or a landing |
+| `Player.OnUpdateMoney` | `OnUpdateMoney(uint64_t guid, uint32_t offset, uint32_t count, const void* value, void* param)`, the mirror handler of `PLAYER_FIELD_COINAGE` | `PlayerMoneyChanged` before, with the previous value the mirror hands over and the one the field holds |
+| `Player.Packet_Group_9` | `Packet_Group_9(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_LEVEL_UP_INFO` among the local player's other messages | `PlayerLevelUp` before, for that opcode |
+| `Chat.Packet_SMSG_LOG_XPGAIN` | `Packet_SMSG_LOG_XPGAIN(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `PlayerXpGain` before |
+| `Glue.UpdateCurrentScreen` | `CGlueMgr::UpdateCurrentScreen(const char* screen)`, which every glue screen change goes through | `GlueScreenChanged` before, with the screen being left |
+| `RealmConnection.HandleAuthResponse` | `RealmConnection::HandleAuthResponse(uint32_t msg_id, uint32_t time, CDataStore* msg)` | `GlueAuthResult` before |
+| `RealmConnection.HandleCharEnum` | `RealmConnection::HandleCharEnum(uint32_t msg_id, uint32_t time, CDataStore* msg)` | `GlueCharacterList` before, then `GlueCharacter` per entry; none of them for a list cut short |
+| `RealmConnection.RequestCharacterLogin` | `RealmConnection::RequestCharacterLogin(uint64_t guid, int32_t a2)`, the one request to enter the world | `GlueEnterWorld` before |
+| `Login.RealmListResult` | `Login::RealmListResult(CDataStore* msg)`, the realm list as the Grunt logon link validated it or as the Battle.net login built it, read in the layout the login's server type names; on the logon connection's thread | `GlueRealmList` before, then `GlueRealm` per entry |
+| `Chat.ChatMessageReceived` | `CGChat::ChatMessageReceived(CDataStore* msg, bool is_gm)`, where `SMSG_MESSAGECHAT` and `SMSG_GM_MESSAGECHAT` both end, and where the client drops what it will not show | nothing itself: Before reads the message, After forgets it |
+| `Chat.AddChatMessage` | `CGChat::AddChatMessage(const char* text, int32_t type, ...)`, every line added to the chat | nothing itself: Before tells which received message the call adds, the one `ChatMessageReceived` read or one the client held, by the text it is handed |
+| `Chat.QueueChatText` | `CGChat::QueueChatText(...)`, where the client holds a line until it knows a name or the world has loaded | nothing itself: After keeps the message for the held copy |
+| `Chat.DestroyPendingChat` | `PENDINGCHAT::~PENDINGCHAT()`, a held line freed, added again or given up on | nothing itself: Before forgets what was kept for it |
+| `Chat.RecordChat` | `CGChat::RecordChat(const char* text, int32_t type, ...)`, the commit of a line past every filter, right before the chat frames get it | `ChatMessage` before, for a line of a received message: its final type, the name it shows, its line id, its text as shown |
+| `Chat.Script_SendChatMessage`, `Chat.Script_SendAddonMessage` (gated) | `Script_SendChatMessage(lua_State*)`, `Script_SendAddonMessage(lua_State*)`, the script functions every message from the interface goes through | `ChatSend` at the gate, with the script's arguments; suppressing it answers no result and nothing is sent |
+| `Storage.OpenArchive` | `SFile::OpenArchive(const char* path, int32_t priority, uint32_t flags, SArchive** archive)`, every archive the client mounts | `ArchiveMounted` after, for an archive it opened, with its priority, its table sizes and what they hold |
+| `Storage.CloseArchive` | `SFile::CloseArchive(SArchive* archive)` | `ArchiveUnmounted` before, while the archive is still whole |
+| `ClientDb.Initialize` | `ClientDBInitialize()`, which loads every client database the client keeps | `ClientDbLoaded` after, once per database it left loaded, in the order the client declares them |
+| `Texture.Create` | `TextureCreate(const char* file_name, CGxTexFlags, CStatus*, uint32_t flags)` (the file-name overload, at 0x004B9760), every texture asked for by name | `TextureLoad` before, cached or not; the x64 client skips the call while nobody listens |
+| `M2Shared.LoadSucceededCallback` | `CM2Shared::LoadSucceededCallback(void* param)`, the end of a model file's read, before `FinishLoading` parses it | `ModelLoad` before, with the path and the bytes; bytes a handler answers are copied into a buffer of the client's allocator and parsed instead |
+| `MapObj.Load` | `CMapObj::Load()`, which walks a map object's root once it is read | `MapObjectLoad` before, with the path and the root's bytes |
+| `Map.AllocDoodadDef` | `CMap::AllocDoodadDef()` | nothing itself: after, notes the def it handed out, which tells a placement from a def found in the map's hash |
+| `Map.CreateDoodadDef`, `Map.CreateDoodadDefAt`, `Map.CreateDoodadDefInMapObj` | the three `CMap::CreateDoodadDef` overloads: a tile's doodad, one the game places at a position, one of a map object's doodad set | `DoodadSpawn` after, for a def the call allocated, with the model's path and the position |
+| `ObjectMgr.FillInPartialObjectData` | `FillInPartialObjectData(CGObject_C*, WOWGUID, CDataStore*, bool, bool)`, where an update block's fields are written | nothing itself: after, notes a tracked object, once per packet |
+| `ObjectMgr.Packet_SMSG_UPDATE_OBJECT` | `Packet_SMSG_UPDATE_OBJECT(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the compressed form's too | `ObjectUpdate` after, once per object the packet's field writes noted and still tracked, in the packet's order |
+| `Storm.SMemAlloc` | `SMemAlloc(size_t bytes, const char* filename, int32_t line, uint32_t flags)`, Storm's allocator, `new` included | nothing: after, the block is counted under its file while a mod has started `wxl.footprint`'s accounting |
+| `Storm.SMemFree` | `SMemFree(void* ptr, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts |
+| `Storm.SMemReAlloc` | `SMemReAlloc(void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts; after, what the call left comes back, under the file that moved it |
+| `Storm.SErrDisplayError` | `SErrDisplayError(uint32_t errorcode, const char* filename, int32_t linenumber, const char* description, int32_t recoverable, uint32_t exitcode, uint32_t unknown)`, Storm's error display: every fatal error, assertion and the exception filter's dialog | nothing: before, the error goes to `WarcraftXL.log`, flushed; a fatal one with its stack, the running mod, the last events and the session's end line |
+| `Os.ValidateFunctionPointer` (gated) | `OsValidateFunctionPointer(const void* ptr)`, the check of every C function the client's Lua calls, Lua hook, console command handler and CVar callback | nothing: the gate takes the call for a pointer in the runtime's image or a binary the mod host loaded; any other goes on to the client's check, fatal outside its `.text` |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:
@@ -301,14 +391,17 @@ src/binding/                     the binding realised: memory reads (x86), the c
 src/seams/                       the seam bodies, one file per domain (both); the x86 detours and thunks
 src/objects/                     wxl.object over the binding
 src/services/                    wxl.script, wxl.storage, wxl.data (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
+src/profile/                     the Tracy profiler and wxl.profile (both)
 src/hook/                        the detour engine and the named points        (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 tests/seam_harness.cpp           every seam body against a fake client; --bench times the hot paths
 mods/                            the mods above                                (x86)
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
+deps/tracy/                      Tracy's client 0.14.1, BSD-3-Clause, unmodified
 tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
+tools/fields/                    regenerate the SDK's update-field table from the decompiled client
 ```
 
 ## 🔧 Troubleshooting
@@ -327,9 +420,10 @@ tools/offsets/, tools/layouts/   regenerate the tables from the decompiled clien
 
 ## 📄 License
 
-GPLv3. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
-MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file.
+MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file. Tracy's client,
+under `deps/tracy/`, is BSD-3-Clause and keeps its own license file.
 
 <div align="center">
 

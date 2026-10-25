@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The ClientDb domain: a seam on the function that loads the client databases.
+
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including clientdb.def"
+#endif
+
+// Loads every client database the client keeps for its whole life, then the tables built from
+// them (game tables, resistances, terrain flags, lights). One caller, the client's start
+// (WowClientInit, 0x00404130), before the glue screens. A free function with no argument and no
+// result (`ret`): cdecl. After raises ClientDbLoaded for each database it left loaded, in the
+// order the client declares them.
+WXL_SEAM_AFTER(ClientDb, Initialize, "ClientDBInitialize", void, cdecl, ())
+WXL_SEAM_RAISES(ClientDb, Initialize, ClientDbLoaded)

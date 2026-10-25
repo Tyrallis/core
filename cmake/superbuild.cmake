@@ -1,7 +1,7 @@
 # The superbuild role of CMakeLists.txt: one child project per architecture, each configured from
 # the same source directory with WXL_CORE_ARCH set and the matching Visual Studio platform, each
 # installing its `core` component into one dist/ folder. Same shape as the SDK's wxl_add_mod.
-# Copyright (C) 2026 WarcraftXL. GPLv3 (see source headers).
+# Copyright (c) 2026 WarcraftXL. MIT (see LICENSE).
 
 set(WXL_CORE_TARGETS "win-x86;win-x64" CACHE STRING "Architectures to build (win-x86;win-x64).")
 set(WXL_CORE_DIST "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Where every architecture's output is collected.")
@@ -60,7 +60,7 @@ endfunction()
 
 # Settings the children must see as this tree saw them.
 set(forward)
-foreach(var WXL_SDK_DIR WXL_CORE_MODS CMAKE_BUILD_TYPE)
+foreach(var WXL_SDK_DIR WXL_CORE_MODS WXL_CORE_LUA WXL_PROFILE CMAKE_BUILD_TYPE)
     if(DEFINED ${var})
         list(APPEND forward "-D${var}=${${var}}")
     endif()
@@ -89,6 +89,18 @@ foreach(arch IN LISTS _WXL_CORE_KNOWN_ARCHS)
         set(platform_args CMAKE_GENERATOR_PLATFORM "${platform}")
     endif()
 
+    # A prebuilt LuaJIT for wxl.lua is per architecture: WXL_LUAJIT_LIBRARY_X86 and
+    # WXL_LUAJIT_INCLUDE_DIR_X86 (or _X64), or the plain names when one architecture is built.
+    string(TOUPPER "${dir}" dir_upper)
+    set(luajit_args)
+    foreach(part LIBRARY INCLUDE_DIR)
+        if(DEFINED WXL_LUAJIT_${part}_${dir_upper})
+            list(APPEND luajit_args "-DWXL_LUAJIT_${part}=${WXL_LUAJIT_${part}_${dir_upper}}")
+        elseif(DEFINED WXL_LUAJIT_${part} AND arch_count EQUAL 1)
+            list(APPEND luajit_args "-DWXL_LUAJIT_${part}=${WXL_LUAJIT_${part}}")
+        endif()
+    endforeach()
+
     # BUILD_ALWAYS hands every build to the child, whose own dependency tracking decides whether
     # anything is recompiled; the configure step runs once and the child reconfigures itself when
     # its CMakeLists.txt changes. The install step takes the `core` component only: the mods'
@@ -104,6 +116,7 @@ foreach(arch IN LISTS _WXL_CORE_KNOWN_ARCHS)
             "-DWXL_CORE_ARCH:STRING=${arch}"
             "-DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>"
             ${forward}
+            ${luajit_args}
         INSTALL_COMMAND "${CMAKE_COMMAND}" --install <BINARY_DIR> --config $<CONFIG> --component core
         BUILD_ALWAYS ON
         BUILD_BYPRODUCTS "${WXL_CORE_DIST}/bin/${dir}/WarcraftXL.dll")

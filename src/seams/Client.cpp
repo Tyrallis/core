@@ -1,13 +1,15 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 WarcraftXL
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
 //
 // The Client seam: what the runtime does as the client takes itself apart.
 
 #include "wxl/seams/seams.h"
 
 #include "common/Log.hpp"
+#include "objects/Objects.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Core.hpp"
+#include "runtime/Session.hpp"
 #include "runtime/Stages.hpp"
 #include "services/DataService.hpp"
 #include "services/StorageService.hpp"
@@ -32,8 +34,15 @@ namespace wxl::seam::Client::Destroy
         wxl::core::attachment::ReleaseAll();
         wxl::core::services::storage::CloseEverything();
         wxl::core::services::data::Clear();
+        for (wxl::host::ModHost::ModToken token = 1; token <= host->Loaded().size(); ++token)
+        {
+            wxl::core::objects::Service().DropWatches(token);
+            wxl::core::services::storage::RemoveSearchPathsOf(token);
+            wxl::core::services::storage::RemoveRedirectsOf(token);
+        }
 
         host->UnloadAll();
         WLOG_INFO(wxl::core::kTag, "mods unloaded; the client is on its own from here");
+        wxl::core::session::End("clean exit, the client closed");
     }
 }

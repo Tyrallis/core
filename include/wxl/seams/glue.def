@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Glue domain: a seam on CGlueMgr, the login screens' manager.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including glue.def"
+#endif
+
+// Makes a screen the current one: hides the character selection or creation being left,
+// copies the name into CGlueMgr::m_currentScreen, and registers the idle handler of the
+// screen coming up. Reached from the glue's own Lua (SetCurrentScreen), which every screen
+// change goes through: CGlueMgr::SetScreen only fires SET_GLUE_SCREEN to the interface, which
+// calls back here. A static member with external linkage, the argument on the stack: cdecl.
+// Before raises GlueScreenChanged with the screen
+// coming up and the one being left.
+WXL_SEAM_BEFORE(Glue, UpdateCurrentScreen, "CGlueMgr::UpdateCurrentScreen", void, cdecl, (const char* screen))
+WXL_SEAM_RAISES(Glue, UpdateCurrentScreen, GlueScreenChanged)
