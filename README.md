@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.14-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.15-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -186,7 +186,7 @@ What a mod can reach **today**, by build:
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
 | `wxl.object` (world objects) | yes, with every descriptor field by index: read, write in the client, watch through the client's mirror handlers, each watch its mod's and its changes raised to that mod only, the handler taken back with the last watch | the same |
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
-| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens as its own loose files, each its mod's and taken out when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
+| `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens its files from, by a path it reads from the disk as it is, each its mod's and taken out when the mod is disabled or unloaded; redirect and unredirect, a table of names the open gate answers on every thread before `FileOpen`, each its mod's and taken back when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.profile` | yes: zones, plots, messages and frame sets on the Tracy profiler's timeline, beside the runtime's own zones for every event and mod handler (`WXL_PROFILE`) | the same, and zones in the client's main loop |
 | `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
@@ -198,13 +198,15 @@ What a mod can reach **today**, by build:
 
 The client runs one Lua state at a time and rebuilds it at every change of interface: the login
 glue and the game each get a fresh context, and both are created and destroyed more than once in
-a session (log in, log out, log in again, ReloadUI). `ScriptVmReady` is raised from
-`FrameScript.Initialize` with `context` set to `WXL_SCRIPT_CONTEXT_GAME` when
-`CGGameUI::m_loggingIn` or `CGGameUI::m_initialized` is set at that moment and to
-`WXL_SCRIPT_CONTEXT_GLUE` otherwise; `ScriptVmClosing` is raised from `FrameScript.Destroy`
-naming the same context. Two contexts the client creates and flushes before any interface loads
--- the one `InitializeClient` makes at process start, and the one `CGGameUI::ShutdownGame` makes
-on logout -- are announced as glue.
+a session (log in, log out, log in again, ReloadUI). A context is noted when
+`FrameScript.Initialize` makes it, as `WXL_SCRIPT_CONTEXT_GAME` when `CGGameUI::m_loggingIn` or
+`CGGameUI::m_initialized` is set at that moment and `WXL_SCRIPT_CONTEXT_GLUE` otherwise, and
+announced with `ScriptVmReady` at its first `FrameScript.CreateEvents`: the interface installing
+its event table, after the client registered its own functions and before its frames load.
+`ScriptVmClosing` is raised from `FrameScript.Destroy` naming the same context. Two contexts the
+client creates and flushes before any interface loads -- the one `InitializeClient` makes at
+process start, and the one `CGGameUI::ShutdownGame` makes on logout -- install no event table, and
+raise neither event: one glue screen is one `ScriptVmReady`.
 
 **Nothing registered survives a context.** The Lua state is closed with it, which takes every
 global and every event listener. The service forgets what it was told at `ScriptVmClosing` and
@@ -282,15 +284,15 @@ source. Everything else observes.
 | `Player.UpdateInventoryComponent` | `CGPlayer_C::UpdateInventoryComponent(int32_t slot, const void* old_item)` | `EquipmentChanged` after, when the item id moved |
 | `GameUI.SendTarget`, `GameUI.ClearTarget` | `CGGameUI::SendTarget(uint64_t guid)`, `CGGameUI::ClearTarget(uint64_t guid, int32_t a2)` | `TargetChanged` after, once per change of `m_lockedTarget` |
 | `MapArea.PrepareChunk` | `CMapArea::PrepareChunk(int32_t chunk_x, int32_t chunk_y)` | `TerrainChunkBuild` before |
-| `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | `ScriptVmReady` after, with the context CGGameUI's state implies and the new `lua_State*` |
-| `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `Initialize` announced |
-| `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | nothing: after, the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
+| `FrameScript.Initialize` | `FrameScript_Initialize(int32_t profile)` | nothing: after, notes the new context and which one CGGameUI's state implies |
+| `FrameScript.Destroy` | `FrameScript_Destroy()` | `ScriptVmClosing` before, naming the context `CreateEvents` announced; nothing for a context never announced |
+| `FrameScript.CreateEvents` | `FrameScript_CreateEvents(const char** names, uint32_t count)` | `ScriptVmReady` after, the first time in a context, with the new `lua_State*`; the installed table is handed to `wxl.script`, which reissues it with the declared events appended |
 | `NetClient.ProcessMessage` (gated) | `NetClient::ProcessMessage(uint32_t time_received, CDataStore* message, int32_t)` | `MessageReceived` at the gate; suppressing it hides the message from the client entirely, which is how a mod serves an opcode the client does not know |
 | `NetClient.Send` (gated) | `NetClient::Send(CDataStore* message)` | `MessageSent` at the gate; suppressing it stops the message being sent |
 | `NetClient.HandleConnect` | `NetClient::HandleConnect()` | `Connected` after, once the client holds itself connected |
 | `NetClient.HandleDisconnect` | `NetClient::HandleDisconnect()` | `Disconnected` before, while the connection is still the one being lost |
 | `Input.WindowProc` (gated) | `OsWindowProc(void* window, uint32_t message, uintptr_t wparam, intptr_t lparam)` | `Input` at the gate; writing `handled` answers 0 and the client's own procedure never sees the message |
-| `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate; a path written into `redirect` is what the client opens instead |
+| `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate, `redirect` holding what a mod's `wxl.storage` redirect answers; a path written into `redirect` is what the client opens instead, then a folder of the search path that wins the name |
 | `Storage.OpenEx` | the same `SFile::OpenEx`, observed: on x86 a second link of the same chain, nearer the function than the gate | `FileOpened` after, at every return, with the name opened, whether a file came back and its size; nothing is read while nobody listens |
 | `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
