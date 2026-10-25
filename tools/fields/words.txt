@@ -1,0 +1,67 @@
+# How the words of the client's field names are spelled in the code names of
+# sdk/include/wxl/update_fields.def, for the words the client runs together.
+#
+# A code name is the client's name with the kind's prefix dropped and each word, as the
+# underscores split it, capitalised: UNIT_FIELD_LEVEL is Level. A client word that holds several
+# words -- MAXHEALTH, DISPLAYID -- would read Maxhealth and Displayid; a line here spells it
+# instead, the way the object getters name the same value (unit_max_health is MaxHealth):
+#
+#   <CLIENT WORD> <Spelling>
+#
+# A word ending in digits is looked up without them, and they are kept: MAXPOWER1 is MaxPower1.
+# generate_update_fields.py reads this file and fails on a word no field uses, on a spelling that
+# is not an identifier, and on two fields of a kind that would share a name.
+
+# Item
+GIFTCREATOR                 GiftCreator
+MAXDURABILITY               MaxDurability
+
+# Unit
+CHARMEDBY                   CharmedBy
+SUMMONEDBY                  SummonedBy
+CREATEDBY                   CreatedBy
+MAXHEALTH                   MaxHealth
+MAXPOWER                    MaxPower
+FACTIONTEMPLATE             FactionTemplate
+AURASTATE                   AuraState
+BASEATTACKTIME              BaseAttackTime
+RANGEDATTACKTIME            RangedAttackTime
+BOUNDINGRADIUS              BoundingRadius
+COMBATREACH                 CombatReach
+DISPLAYID                   DisplayId
+NATIVEDISPLAYID             NativeDisplayId
+MOUNTDISPLAYID              MountDisplayId
+MINDAMAGE                   MinDamage
+MAXDAMAGE                   MaxDamage
+MINOFFHANDDAMAGE            MinOffhandDamage
+MAXOFFHANDDAMAGE            MaxOffhandDamage
+PETNUMBER                   PetNumber
+PETEXPERIENCE               PetExperience
+PETNEXTLEVELEXP             PetNextLevelExp
+EMOTESTATE                  EmoteState
+POSSTAT                     PosStat
+NEGSTAT                     NegStat
+RESISTANCEBUFFMODSPOSITIVE  ResistanceBuffModsPositive
+RESISTANCEBUFFMODSNEGATIVE  ResistanceBuffModsNegative
+MINRANGEDDAMAGE             MinRangedDamage
+MAXRANGEDDAMAGE             MaxRangedDamage
+MAXHEALTHMODIFIER           MaxHealthModifier
+HOVERHEIGHT                 HoverHeight
+
+# Player
+GUILDID                     GuildId
+GUILDRANK                   GuildRank
+ENTRYID                     EntryId
+BANKBAG                     BankBag
+VENDORBUYBACK               VendorBuyback
+CURRENCYTOKEN               CurrencyToken
+FARSIGHT                    FarSight
+# The client's own spelling of PLAYER_FIELD_LIFETIME_HONORBALE_KILLS; the code name reads as meant.
+HONORBALE                   Honorable
+
+# GameObject
+PARENTROTATION              ParentRotation
+
+# DynamicObject
+SPELLID                     SpellId
+CASTTIME                    CastTime

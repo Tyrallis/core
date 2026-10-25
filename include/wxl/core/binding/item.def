@@ -12,7 +12,7 @@
 WXL_BINDING_FIELD_VIA(item_owner, uint64_t, CGItem_C, m_item, CGItemData, m_itemFieldOwner, 0)
 WXL_BINDING_FIELD_VIA(item_contained_in, uint64_t, CGItem_C, m_item, CGItemData, m_itemFieldContained, 0)
 WXL_BINDING_FIELD_VIA(item_creator, uint64_t, CGItem_C, m_item, CGItemData, m_itemFieldCreator, 0)
-WXL_BINDING_FIELD_VIA(item_stack_count, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldStackCount, 0)
+WXL_BINDING_FIELD_VIA(item_stack_count, int32_t, CGItem_C, m_item, CGItemData, m_itemFieldStackCount, 0)
 WXL_BINDING_FIELD_VIA(item_duration, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldDuration, 0)
 WXL_BINDING_FIELD_VIA(item_flags, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldFlags, 0)
 WXL_BINDING_FIELD_VIA(item_durability, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldDurability, 0)

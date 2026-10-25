@@ -10,7 +10,7 @@
 #error "define WXL_BINDING(name, ret, params, args, absent) before including unit.def"
 #endif
 
-WXL_BINDING_FIELD_VIA(unit_health, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldHealth, 0)
+WXL_BINDING_FIELD_VIA(unit_health, int32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldHealth, 0)
 WXL_BINDING_FIELD_VIA(unit_max_health, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldMaxhealth, 0)
 WXL_BINDING_FIELD_VIA(unit_level, uint32_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldLevel, 0)
 WXL_BINDING_FIELD_VIA(unit_target, uint64_t, CGUnit_C, m_unit, CGUnitData, m_unitFieldTarget, 0)

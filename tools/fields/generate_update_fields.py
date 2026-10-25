@@ -28,6 +28,10 @@ Everything comes from the fork, and each fact is read twice:
                                        dwords the client copies before an update, which are the
                                        only ones a mirror handler may be set on
 
+The code names (MaxHealth for UNIT_FIELD_MAXHEALTH) are the client's names with the kind's prefix
+dropped and the words capitalised; the words the client runs together are spelled by
+words.txt, beside this script, which a regeneration keeps.
+
 With --binary, every one of those tables is also read out of a stock Wow.exe 12340 at the
 address its STATIC tag gives, and compared record by record.
 
@@ -112,9 +116,10 @@ HEADER = """\
 //       the client keeps for the active player only.
 //
 //   WXL_UPDATE_FIELD(kind, NAME, Name, index, size, value, flags, watch)
-//       one field: the kind that owns it, the client's name (UNIT_FIELD_HEALTH), a name for
-//       code (Health: the kind's prefix dropped, the words joined), its first dword, its size
-//       in dwords, and:
+//       one field: the kind that owns it, the client's name (UNIT_FIELD_MAXHEALTH), a name for
+//       code (MaxHealth: the kind's prefix dropped, the words joined, each spelled as
+//       core/tools/fields/words.txt writes the ones the client runs together), its first
+//       dword, its size in dwords, and:
 //
 //       value   what each element holds: u32 i32 f32 one dword; guid an object's guid in two
 //               dwords, low first; u64 a 64-bit value in two dwords (a mask of titles); bytes
@@ -345,7 +350,34 @@ def leaves(client, name, hint, layouts, classes, base=0, path=''):
 
 # --- the table ------------------------------------------------------------------------------
 
-def ident(name, prefixes):
+def read_words(path):
+    """words.txt: the client words the code names spell as several, CLIENT WORD -> Spelling."""
+    words = {}
+    for number_, line in enumerate(read(path).split('\n'), 1):
+        line = line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not re.match(r'^[A-Z]+$', parts[0]):
+            raise Problem('%s:%d: a line is a client word in capitals and its spelling' % (path, number_))
+        if not re.match(r'^[A-Z][A-Za-z]*$', parts[1]):
+            raise Problem('%s:%d: %r is not a spelling a code name can take' % (path, number_, parts[1]))
+        if parts[0] in words:
+            raise Problem('%s:%d: %s is spelled twice' % (path, number_, parts[0]))
+        words[parts[0]] = parts[1]
+    return words
+
+
+def spell(part, words, used):
+    """One word of a client name as a code name writes it: words.txt's spelling, or capitalised."""
+    letters = part.rstrip('0123456789')
+    if letters in words:
+        used.add(letters)
+        return words[letters] + part[len(letters):]
+    return part[0].upper() + part[1:].lower()
+
+
+def ident(name, prefixes, words, used):
     for prefix in prefixes:
         if name.startswith(prefix) and len(name) > len(prefix):
             name = name[len(prefix):]
@@ -355,7 +387,7 @@ def ident(name, prefixes):
     for i, part in enumerate(parts):
         if part.isdigit() and i and parts[i - 1].isdigit():
             out += '_'
-        out += part[0].upper() + part[1:].lower()
+        out += spell(part, words, used)
     return out
 
 
@@ -403,7 +435,8 @@ def mirrored(client, kind_spec, descriptor_names):
     return lists
 
 
-def build(client, clang_cl, xwin):
+def build(client, clang_cl, xwin, words):
+    used = set()
     mirror_cpp = os.path.join(client, 'WoW/Source/ObjectMgrClient/Mirror.cpp')
     arrays = descriptor_arrays(mirror_cpp)
     counts_address, counts, active_end, others_end = dword_counts(client)
@@ -496,7 +529,7 @@ def build(client, clang_cl, xwin):
             watch = classes_seen.pop() if len(classes_seen) == 1 else 'some'
             fields.append([kind, name, None, first + off, count, value, flags, watch, prefixes])
             names_by_kind.setdefault(kind, []).append(len(fields) - 1)
-            idents[name] = ident(name, prefixes)
+            idents[name] = ident(name, prefixes, words, used)
         if cursor != end - first:
             raise Problem('%s: the descriptors cover %d dwords, the block holds %d'
                           % (kind, cursor, end - first))
@@ -510,7 +543,7 @@ def build(client, clang_cl, xwin):
             if len(owners) > 1:
                 for owner in owners:
                     shorter = [p for p in prefixes if owner.startswith(p)]
-                    idents[owner] = ident(owner, [kind.upper() + '_'] if shorter else [])
+                    idents[owner] = ident(owner, [kind.upper() + '_'] if shorter else [], words, used)
         final = list(idents.values())
         if len(set(final)) != len(final):
             raise Problem('%s: two fields share a code name: %s'
@@ -520,6 +553,9 @@ def build(client, clang_cl, xwin):
             if not re.match(r'^[A-Z][A-Za-z0-9_]*$', fields[i][2]):
                 raise Problem('%s %s: the code name %r is not an identifier'
                               % (kind, fields[i][1], fields[i][2]))
+    unused = sorted(set(words) - used)
+    if unused:
+        raise Problem('words.txt spells %s, which no field name holds; remove the line' % ', '.join(unused))
     return kinds, fields, watches, evidence
 
 
@@ -625,7 +661,8 @@ def main():
               'name one with --clang-cl', file=sys.stderr)
         return 2
     try:
-        kinds, fields, watches, evidence = build(args.client, args.clang_cl, args.xwin)
+        words = read_words(os.path.join(HERE, 'words.txt'))
+        kinds, fields, watches, evidence = build(args.client, args.clang_cl, args.xwin, words)
         text = render(kinds, fields, watches)
         binary = check_binary(args.binary, evidence) if args.binary else None
     except Problem as problem:

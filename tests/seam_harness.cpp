@@ -76,7 +76,7 @@ namespace
         uint32_t typeId = 0;
         uint32_t entry  = 0;
         wxl_vec3 position{};
-        uint32_t health = 0;
+        int32_t  health = 0;
         int32_t  visibleItems[19]{};
         uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
         uint32_t channelSpellId = 0; ///< the channel it shows
@@ -148,7 +148,7 @@ namespace
     }
     uint32_t WXL_CALL FakeTypeId(const void* object) { return Obj(object)->typeId; }
     uint32_t WXL_CALL FakeEntry(const void* object) { return Obj(object)->entry; }
-    uint32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
+    int32_t WXL_CALL FakeHealth(const void* object) { return Obj(object)->health; }
     uint32_t WXL_CALL FakeCastingSpellId(const void* object) { return Obj(object)->castingSpellId; }
     uint32_t WXL_CALL FakeChannelSpellId(const void* object) { return Obj(object)->channelSpellId; }
 
@@ -953,7 +953,7 @@ namespace
         const wxl_object_api* api = wxl::core::objects::Api();
         Check(api->valid(args.object) == WXL_TRUE, "the handle resolves through wxl.object");
         Check(api->guid(args.object) == boar.guid, "and reads the guid");
-        uint32_t health = 0;
+        int32_t health = 0;
         Check(api->unit_health(args.object, &health) == WXL_OK && health == 90,
               "a unit read goes through the binding to the client's object");
         wxl_vec3 position{};
@@ -1044,7 +1044,7 @@ namespace
         Check(api->valid(args.object) == WXL_TRUE && api->valid(first) == WXL_FALSE,
               "the new handle resolves and the old one stays stale");
         Check(api->from_guid(wolf.guid) == args.object, "the guid resolves to the new handle");
-        uint32_t health = 0;
+        int32_t health = 0;
         Check(api->unit_health(args.object, &health) == WXL_OK && health == 70,
               "and reads reach the revived object");
 
