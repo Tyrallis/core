@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.15-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.16-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -181,6 +181,7 @@ What a mod can reach **today**, by build:
 
 | | x86 | x64 |
 |---|---|---|
+| `wxl.point` (engine points) | yes: each point of `include/wxl/points/points.txt` with an x86 body, a SafetyHook detour armed at its first handler and removed at its last, its first bytes checked by Zydis; Before, Replace and After | yes: each point, a `WXL_POINT_<n>` line at the head of its function in the fork, one byte tested while unattached; the `// INLINED` ones too |
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
@@ -386,18 +387,24 @@ include/wxl/core/init.h          the 64-bit entry point, for the client to inclu
 include/wxl/core/binding/        the client binding: the facts read out of the client, one .def per domain
 include/wxl/seams/               the seam table (one .def per domain) and seams.h, their entry points
 include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
+include/wxl/points/              points.txt, the list of wxl.point, and x86.def generated from it
+include/wxl/core/points.h        how the recompiled client runs a point (x64)
 src/runtime/                     host bring-up, stages, frames, the per-architecture attachment
 src/binding/                     the binding realised: memory reads (x86), the client's accessors (x64)
 src/seams/                       the seam bodies, one file per domain (both); the x86 detours and thunks
 src/objects/                     wxl.object over the binding
 src/services/                    wxl.script, wxl.storage, wxl.data (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
 src/profile/                     the Tracy profiler and wxl.profile (both)
+src/points/                      wxl.point: handlers and dispatch (both), the detours (x86), the client's bytes (x64)
 src/hook/                        the detour engine and the named points        (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 tests/seam_harness.cpp           every seam body against a fake client; --bench times the hot paths
 mods/                            the mods above                                (x86)
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
+deps/safetyhook/                 SafetyHook v0.7.0, BSL-1.0, its sources       (x86)
+deps/zydis/                      Zydis v4.1.0 and Zycore, MIT, the decoder     (x86)
+tools/points/                    generate_points.py, insert_points.py, their self-test
 deps/tracy/                      Tracy's client 0.14.1, BSD-3-Clause, unmodified
 tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
@@ -416,6 +423,8 @@ tools/fields/                    regenerate the SDK's update-field table from th
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
 | `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
 | `the client and this runtime were built from different binding tables` (x64) | the client and `WarcraftXL.dll` come from different trees; the line names the first row of `binding.def` that differs. Rebuild both from one tree |
+| `<point>: <side> on <point> refused: ...` (tag `point`) | the line says why: the point is not on this runtime (`x64 only: ...`), it is observe only, the mod was built against another signature of it (rebuild it), or on x86 its first bytes cannot take a detour |
+| `WarcraftXLPoints: ... different point tables` (x64) | the client and `WarcraftXL.dll` come from different point lists; rebuild both from one tree. No point can be attached until then |
 | `the client handed no <row> accessor; what reads it answers absent` (x64) | the client was built against an older `init.h` than this runtime; the row of `binding.def` it names answers its absent value (map `-1`, no position, ...) until the client passes one |
 
 ## 📄 License
@@ -423,7 +432,9 @@ tools/fields/                    regenerate the SDK's update-field table from th
 MIT. See [LICENSE](LICENSE).
 
 MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file. Tracy's client,
-under `deps/tracy/`, is BSD-3-Clause and keeps its own license file.
+under `deps/tracy/`, is BSD-3-Clause and keeps its own license file. SafetyHook, under
+`deps/safetyhook/`, is BSL-1.0, and Zydis with Zycore, under `deps/zydis/`, are MIT; each keeps its
+own license file.
 
 <div align="center">
 
