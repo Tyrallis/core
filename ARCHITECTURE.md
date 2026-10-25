@@ -191,6 +191,45 @@ while a viewer watches and accounting runs, it also plots `storm bytes`, `storm 
 frames of every kind of zone, which checks the profiler end to end on one architecture without a
 client; `--bench` measures a zone with no viewer.
 
+### The log and the crash report
+
+The log is one file per launch, `Logs\WarcraftXL.log` next to the executable, written by
+`src/common/Log.cpp` straight to the OS (no user-space buffer; warnings and errors flushed to the
+disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32 and ntdll only):
+
+- **Settings.** `WarcraftXL.ini` next to the executable (`src/runtime/Settings.cpp`), section
+  `[log]`: `level`, `keep` (earlier launches kept, 30 by default) and `level.<tag>` for one tag's
+  own level. `WXL_LOG_LEVEL` wins over the file's `level`. The log's gate is the lowest of all
+  levels, which the host's `log_minimum` takes; the file sink then filters by tag.
+- **Files.** `log::OpenSession` renames the previous `WarcraftXL.log` after its first line's
+  `launch YYYY-MM-DD HH:MM:SS` (or its last write) to `WarcraftXL-<time>.log` and prunes the oldest
+  past `keep`; a file held by another process sends the lines to `WarcraftXL-pid<pid>.log`.
+- **Header**, tag `session`, written whatever the levels: the launch time, the runtime and abi, the
+  commits of core, sdk and client (`cmake/build_ids.cmake`, run at every build into
+  `generated/wxl_build_ids.h`; the client's when core is built inside the client's tree), the
+  executable with its size, PE stamp, large-address-aware flag and, on x86, the FNV-1a of its
+  `.text` against the stock 12340's, Windows (`RtlGetVersion`), Wine and its host
+  (`wine_get_version`, `wine_get_build_id`, `wine_get_host_version`) and a few of its environment
+  variables, the CPU, the memory and the address space, the command line, the settings and what
+  happened to the previous log. `session::ReportMods` follows `LoadAll`: every folder, loaded
+  (version, manifest abi, built abi, binary) or not (why).
+- **End.** `session end: <how>, after <uptime>`, once: at `Client.Destroy` after the unload, at
+  `DLL_PROCESS_DETACH` otherwise, or after a crash report. A launch whose log lacks it was killed.
+- **Crash report** (`src/runtime/Crash.cpp`, tag `crash`). An unhandled-exception filter, put
+  in front at `DllMain` and taken back at every stage (the client sets Storm's in `CommonMain`,
+  which then runs after the report): the code and address as `module+offset`
+  (`wxl::host::DescribeFault`, `DescribeAddress`), the thread, uptime and stage, the registers,
+  the stack (x64 by the unwind tables; x86 by frame pointers, then a scan of the stack for
+  addresses in module code when the chain is short), the mod whose code the thread was in, and
+  the last 16 events raised to a handler (`ModHost::Recent`, a lock-free ring of 32 written only
+  when the event dispatches). A fault inside a mod's handler or entry point never gets there: the
+  guard catches it and the host logs one line with the mod, the handler and the fault.
+
+`tools/read_logs.py <client folder>` reads the last launches back: header, mods, stages, the end
+or the crash, warnings and errors grouped by wording, the marks of the `wxl.probe` example
+(`sdk/examples/probe/`, `/mark <text>`) and what happened between them, the events seen and never
+seen, and the newest files of the client's `Errors\`.
+
 ## Rules that hold everywhere
 
 - **The boundary is C.** No C++ type, vtable or exception crosses between a mod and a runtime. Every
@@ -227,7 +266,7 @@ client; `--bench` measures a zone with no viewer.
 
 | Command | What it proves |
 |---|---|
-| `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks |
+| `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks; the log's files, levels and settings (`wxl-core-log-tests`) |
 | `ctest` in `sdk/build` | the contract, the field table against the args structs, the mod host, the shared `wxl.object`, `wxl.lua` against the host and its editor definitions against the tables, and that the docs quote the examples as they are |
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
 | `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |

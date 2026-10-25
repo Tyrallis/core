@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.12-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.13-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -155,7 +155,9 @@ The SDK's suites run the same way; its README says how to give them LuaJIT.
 4. Copy the mods you want into `Mods/`, each as its own folder with a `mod.json` and
    `bin/x86/<name>.dll`, and `build/dist/Mods/wxl.lua/` with them for Lua mods, which are folders
    with an `init.lua`.
-5. Launch. The log is `Logs/WarcraftXL.log`, beside the executable.
+5. Launch. The log is `Logs/WarcraftXL.log`, beside the executable; earlier launches are kept
+   beside it, and `WarcraftXL.ini` sets its level (the SDK's `docs/the-log.md`).
+   `python3 tools/read_logs.py <game folder>` summarises the last launches.
 
 A client already patched by an earlier WarcraftXL only needs the trampoline added; the patcher
 detects that and says `upgraded`. Without the trampoline the runtime still works, on its own
