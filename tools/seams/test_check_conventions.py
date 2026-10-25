@@ -816,6 +816,47 @@ GROUND_TRUTH = {
     "Point.CGWorldFrame_RenderWorld":  ("0x004FAF90", "cdecl", [], 1),
     "Point.vFrameScript_SignalEvent":  ("0x0081AC90", "cdecl", [], 3),
     "Point.NetClient_ProcessMessage":  ("0x00631FE0", "thiscall", ["ecx"], 3),
+    # The gameplay rows, read by hand. The packet handlers are reached only through NetClient's
+    # handler table, which pushes four and cleans 0x10 at 0x0063202C; each reads its message at
+    # [ebp+0x14] and ends in bare `ret`s. UNINVITE, DESTROYED and READY_CHECK_FINISHED read
+    # nothing and are witnessed there. The mirror handlers are called by CallMirrorFunctions
+    # (six dwords pushed, 0x18 cleaned at 0x004D5254, their witness) and their own code shows
+    # only what each reads: the guid (two dwords), the offset (three), the value (five). The aura log statics: OnAuraUpdate pushes six (0x0072FAB3, add esp,0x18) and four
+    # (0x0072FB34, add esp,0x10). CGLootInfo::SetObject reads [ebp+8..0x10], ClearSlot a byte
+    # at [ebp+8]; UpdateActivePlayer reads nothing and UpdateGhostStatus starts `mov esi,ecx`
+    # (0x006DF717), both ending in bare `ret`s.
+    "Combat.UnitCombatLogAuraDose":    ("0x00752860", "cdecl", [], 6),
+    "Combat.UnitCombatLogAuraRefreshed": ("0x00752BA0", "cdecl", [], 4),
+    "Unit.MountDisplayIDUpdateHandler": ("0x007419C0", "cdecl", [], 2),
+    "Loot.SetObject":                  ("0x005896B0", "cdecl", [], 3),
+    "Loot.ClearSlot":                  ("0x00589920", "cdecl", [], 1),
+    "Player.PH_LOOT_OPCODES":          ("0x006D84F0", "cdecl", [], 4),
+    "Player.OnUpdateQuest":            ("0x006DF370", "cdecl", [], 5),
+    "Player.Packet_Group_12":          ("0x006D7F10", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_INVITE": ("0x006DF1A0", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_LIST":   ("0x006D8870", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_UNINVITE": ("0x006CBE10", "cdecl", [], 0),
+    "Player.Packet_SMSG_GROUP_DESTROYED": ("0x006CBE40", "cdecl", [], 0),
+    "Player.Packet_SMSG_RESURRECT_REQUEST": ("0x006DBD00", "cdecl", [], 4),
+    "Player.Packet_SMSG_EMOTE":        ("0x006CFE70", "cdecl", [], 4),
+    "Player.UpdateGhostStatus":        ("0x006DF710", "thiscall", ["ecx"], 0),
+    "GameUI.UpdateActivePlayer":       ("0x00520F70", "cdecl", [], 0),
+    "Chat.OnTextEmote":                ("0x00504070", "cdecl", [], 4),
+    "Item.OnUpdateDurability":         ("0x00707AE0", "cdecl", [], 5),
+    "Item.OnUpdateStackCount":         ("0x00707720", "cdecl", [], 2),
+    "Container.InvUpdateHandler":      ("0x005D9B40", "cdecl", [], 3),
+    "Container.UpdateInvContents":     ("0x005D9790", "cdecl", [], 5),
+    "Container.UpdateContainerContents": ("0x005D9600", "cdecl", [], 5),
+    "Raid.Packet_MSG_RAID_READY_CHECK": ("0x00574D50", "cdecl", [], 4),
+    "Raid.Packet_MSG_RAID_READY_CHECK_CONFIRM": ("0x005744F0", "cdecl", [], 4),
+    "Raid.Packet_MSG_RAID_READY_CHECK_FINISHED": ("0x00572560", "cdecl", [], 0),
+    "Duel.Packet_SMSG_DUEL_REQUESTED": ("0x005CFCD0", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_COUNTDOWN": ("0x005CFA50", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_WINNER":    ("0x005CFB20", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_COMPLETE":  ("0x005CFA90", "cdecl", [], 4),
+    "Trade.Packet_SMSG_TRADE_STATUS":  ("0x007044A0", "cdecl", [], 4),
+    "Reputation.Packet_SMSG_SET_FACTION_STANDING": ("0x005D20A0", "cdecl", [], 4),
+    "Achievement.Packet_SMSG_ACHIEVEMENT_EARNED": ("0x005B3020", "cdecl", [], 4),
 }
 
 
