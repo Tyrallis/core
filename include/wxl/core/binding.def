@@ -88,6 +88,7 @@
 #include "wxl/core/binding/memory.def"
 #include "wxl/core/binding/asset.def"
 #include "wxl/core/binding/gameplay.def"
+#include "wxl/core/binding/action.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

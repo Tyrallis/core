@@ -742,6 +742,12 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   m_auras                                 -                                            # binding unit_aura_slot: the aura slots, inline or grown
   m_auras.m_count                         -                                            # binding unit_aura_slot: 0xFFFFFFFF once the slots grew out of line
   m_auras.m_dynamic.m_data                -                                            # binding unit_aura_slot: the grown slots
+  m_castStartTime                         -                                            # binding unit_cast_start
+  m_castEndTime                           -                                            # binding unit_cast_end
+  m_channelStartTime                      -                                            # binding unit_channel_start
+  m_channelEndTime                        -                                            # binding unit_channel_end
+  m_mountDisplayId                        -                                            # binding unit_mount_model: what IsMounted reads
+  m_clientFlags                           -                                            # binding unit_client_flags
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData
@@ -1270,6 +1276,25 @@ type CSpriteClickEvent WoW/Source/Ui/GameUI.h CSpriteClickEvent
 type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
   sizeof                                  -
   m_flags                                 -                                            # binding unit_movement_flags
+  m_walkSpeed                             -                                            # binding unit_speed: the first of nine floats
+  m_pitchRate                             -                                            # binding unit_speed: the last of them
+
+# An item's record in the item cache, as CGItem_C::GetStats answers it (binding/item.def).
+type ItemStats_C WoW/Source/Object/ItemStats.h ItemStats_C
+  sizeof                                  -
+  m_quality                               -                                            # binding item_stats_quality
+  m_itemLevel                             -                                            # binding item_stats_level
+  m_requiredLevel                         -                                            # binding item_stats_required_level
+  m_class                                 -                                            # binding item_stats_class
+  m_subClass                              -                                            # binding item_stats_subclass
+  m_inventoryType                         -                                            # binding item_stats_inventory_type
+  m_stackable                             -                                            # binding item_stats_stackable
+  m_sellPrice                             -                                            # binding item_stats_sell_price
+
+# A raid member, as CGRaidInfo::m_members points at them (binding/action.def).
+type CGRaidMember WoW/Source/Ui/RaidInfo.h CGRaidMember
+  sizeof                                  -
+  m_guid                                  -                                            # binding raid_member_guid
 
 # =============================================================================================
 # The chat's held lines (binding/chat.def)

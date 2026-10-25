@@ -34,18 +34,18 @@ namespace wxl::core::objects
         bool UnwatchElement(wxl_object_type kind, uint32_t first, uint32_t dwords, bool local) const override;
         void Report(const char* line) const override;
 
-#define WXL_OBJECT_FIELD(kinds, member, Method, type)     \
-    bool Method(void* object, type& out) const override \
-    {                                                   \
-        out = binding::member(object);                  \
-        return true;                                    \
-    }
-#define WXL_OBJECT_READ(kinds, member, Method, type) \
-    bool Method(void* object, type& out) const override;
-#define WXL_OBJECT_READ_AT(kinds, member, Method, type) \
-    bool Method(void* object, uint32_t index, type& out) const override;
+        // A field row is the binding fact of its name, read as is; a client or cache row is
+        // written in Reads.cpp; a shared row is the shared runtime's own.
+#define WXL_OBJECT_READ(kinds, member, Method, type, source, Cxx, cxx, doc)       \
+    WXL_OBJECT_FIELDS(source, bool Method(void* object, type& out) const override \
+                              {                                                   \
+                                  out = binding::member(object);                  \
+                                  return true;                                    \
+                              })                                                  \
+    WXL_OBJECT_WRITTEN(source, bool Method(void* object, type& out) const override;)
+#define WXL_OBJECT_READ_AT(kinds, member, Method, type, source, Cxx, cxx, Arg, arg, doc) \
+    WXL_OBJECT_WRITTEN(source, bool Method(void* object, Arg value, type& out) const override;)
 #include "wxl/runtime/object_reads.def"
-#undef WXL_OBJECT_FIELD
 #undef WXL_OBJECT_READ
 #undef WXL_OBJECT_READ_AT
     };

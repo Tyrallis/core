@@ -5,6 +5,7 @@
 
 #include "binding/Binding.hpp"
 #include "binding/BindingX86.hpp"
+#include "binding/CallX86.hpp"
 
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
@@ -676,6 +677,171 @@ namespace wxl::core::binding
         case WXL_OBJECT_CONTAINER: return CallName(WXL_SITE("CGItem_C::GetObjectName", 0), object);
         default: return nullptr;
         }
+    }
+
+    // --- unit.def, item.def: what the client works out of an object ---------------------------
+    //
+    // Each a call into the client, at the address its OFFSET tag gives, by the convention its
+    // code has (checked in Wow.exe, below each). The object manager is the main thread's.
+
+    using x86::CallFree;
+    using x86::CallMember;
+
+    wxl_bool unit_speed(const void* object, uint32_t index, float* out)
+    {
+        // CMovementShared: m_walkSpeed (+0x90) to m_pitchRate (+0xB0), nine floats in a row.
+        static_assert(WXL_FIELD("CMovementShared", "m_pitchRate") - WXL_FIELD("CMovementShared", "m_walkSpeed") ==
+                          8 * sizeof(float),
+                      "the movement block's nine speeds follow each other");
+        const void* movement = IsClient() ? Via(object, WXL_FIELD("CGUnit_C", "m_movement")) : nullptr;
+        if (!movement || !out || index > 8) return WXL_FALSE;
+        *out = Read<float>(movement, WXL_FIELD("CMovementShared", "m_walkSpeed") + index * sizeof(float));
+        return WXL_TRUE;
+    }
+
+    int32_t unit_reaction(const void* object, const void* other)
+    {
+        // The (const CGUnit_C*) overload at 0x007251C0: __thiscall, `ret 4` (0x007254DB).
+        if (!IsClient() || !OnMainThread() || !object || !other) return -1;
+        return CallMember<int32_t>(WXL_SITE_AT("CGUnit_C::UnitReaction", 0x007251C0, 0), object, other);
+    }
+
+    int32_t unit_creature_type(const void* object)
+    {
+        // __thiscall, no argument, `ret`.
+        if (!IsClient() || !object) return 0;
+        return CallMember<int32_t>(WXL_SITE("CGUnit_C::GetCreatureType", 0), object);
+    }
+
+    uint32_t unit_creature_family(const void* object)
+    {
+        if (!IsClient() || !object) return 0;
+        return CallMember<uint32_t>(WXL_SITE("CGUnit_C::GetCreatureFamily", 0), object);
+    }
+
+    uint32_t unit_classification(const void* object)
+    {
+        if (!IsClient() || !object) return 0;
+        return CallMember<uint32_t>(WXL_SITE("CGUnit_C::GetCreatureClassification", 0), object);
+    }
+
+    wxl_bool unit_knows_spell(const void* object, uint32_t spell)
+    {
+        // __thiscall, `ret 4` (0x00726127); the answer is AL alone (`setne al`).
+        if (!IsClient() || !OnMainThread() || !object) return WXL_FALSE;
+        return CallMember<bool>(WXL_SITE("CGUnit_C::IsSpellKnown", 0), object, spell) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    uint32_t unit_aura_count(const void* object)
+    {
+        if (!IsClient() || !object) return 0;
+        return CallMember<uint32_t>(WXL_SITE("CGUnit_C::GetAuraCount", 0), object);
+    }
+
+    const void* unit_aura_at(const void* object, uint32_t index)
+    {
+        // __thiscall, `ret 4` (0x00556E45); null past the count.
+        if (!IsClient() || !object) return nullptr;
+        return CallMember<const void*>(WXL_SITE("CGUnit_C::GetAura", 0), object, index);
+    }
+
+    const void* item_stats(const void* object)
+    {
+        // __thiscall, no argument: g_itemDBCache.GetRecord(entry, no guid, no callback).
+        if (!IsClient() || !OnMainThread() || !object) return nullptr;
+        return CallMember<const void*>(WXL_SITE("CGItem_C::GetStats", 0), object);
+    }
+
+    // --- action.def: the clock, the group, what the player can do ------------------------------
+
+    uint64_t party_member_guid(uint32_t index)
+    {
+        if (!IsClient() || index >= 4) return 0;
+        return reinterpret_cast<const uint64_t*>(WXL_STATIC("CGPartyInfo::m_members"))[index];
+    }
+
+    uint32_t raid_member_count(void)
+    {
+        return IsClient() ? *reinterpret_cast<const uint32_t*>(WXL_STATIC("CGRaidInfo::m_numMembers")) : 0;
+    }
+
+    uint64_t raid_member_guid(uint32_t index)
+    {
+        if (!IsClient() || index >= 40) return 0;
+        const void* member = reinterpret_cast<const void* const*>(WXL_STATIC("CGRaidInfo::m_members"))[index];
+        return member ? Read<uint64_t>(member, WXL_FIELD("CGRaidMember", "m_guid")) : 0;
+    }
+
+    wxl_bool action_target(uint64_t guid)
+    {
+        // cdecl (WOWGUID by value: two dwords), the caller pops 8 (0x00525A25).
+        if (!IsClient() || !OnMainThread()) return WXL_FALSE;
+        CallFree<void>(WXL_SITE("CGGameUI::Target", 0), guid);
+        return WXL_TRUE;
+    }
+
+    wxl_bool action_interact(uint64_t guid)
+    {
+        // cdecl (WOWGUID by value), int answer: 0 when the manager does not hold the object.
+        if (!IsClient() || !OnMainThread()) return WXL_FALSE;
+        return CallFree<int32_t>(WXL_SITE("CGGameUI::OnSpriteRightClick", 0), guid) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool action_cast_spell(uint32_t spell, uint64_t target)
+    {
+        // Spell_C::CastSpell(spellId, item, WOWGUID target, confirmed): cdecl, five dwords
+        // (0x0080DA40 hands them on to Spell_C_CastSpell). Its bool answer is AL.
+        if (!IsClient() || !OnMainThread()) return WXL_FALSE;
+        return CallFree<bool>(WXL_SITE("Spell_C::CastSpell", 0), spell, static_cast<const void*>(nullptr), target,
+                              int32_t(0))
+                   ? WXL_TRUE
+                   : WXL_FALSE;
+    }
+
+    wxl_bool action_stop_casting(void)
+    {
+        // Spell_C_IsActivePlayerCasting and Spell_C_StopCasting take nothing and touch no register
+        // a caller keeps (0x007FFDE0, 0x00809A80); Spell_C_CancelAutoRepeat(bool) is cdecl.
+        if (!IsClient() || !OnMainThread()) return WXL_FALSE;
+        if (CallFree<int32_t>(WXL_SITE("Spell_C_IsActivePlayerCasting", 0)) & 0xFF)
+        {
+            CallFree<void>(WXL_SITE("Spell_C_StopCasting", 0));
+            return WXL_TRUE;
+        }
+        if (!CallFree<int32_t>(WXL_SITE("Spell_C_GetAutoRepeatingSpell", 0))) return WXL_FALSE;
+        CallFree<void>(WXL_SITE("Spell_C_CancelAutoRepeat", 0), int32_t(1));
+        return WXL_TRUE;
+    }
+
+    wxl_bool action_use_item(const void* item, uint64_t target)
+    {
+        // CGItem_C::UseItem(WOWGUID* target, int confirmed): __thiscall, `ret 8`; its answer
+        // is AL (Wow.exe returns a byte).
+        if (!IsClient() || !OnMainThread() || !item) return WXL_FALSE;
+        uint64_t on = target;
+        return CallMember<bool>(WXL_SITE("CGItem_C::UseItem", 0), item, &on, int32_t(0)) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    wxl_bool action_follow(const void* mover, uint64_t guid)
+    {
+        // CGUnit_C::SetTrackingTarget(const WOWGUID&, int type): __thiscall, `ret 8`; bool in AL.
+        if (!IsClient() || !OnMainThread() || !mover) return WXL_FALSE;
+        constexpr int32_t kTrackFollow = 3; // TRACKTYPE_FOLLOW
+        const uint64_t    target       = guid;
+        return CallMember<bool>(WXL_SITE("CGUnit_C::SetTrackingTarget", 0), mover, &target, kTrackFollow) ? WXL_TRUE
+                                                                                                         : WXL_FALSE;
+    }
+
+    wxl_bool action_move_to(const void* player, wxl_vec3 point)
+    {
+        // CGPlayer_C::ClickToMove(int type, const WOWGUID*, const C3Vector*, float facing):
+        // __thiscall, `ret 0x10`; bool in AL.
+        if (!IsClient() || !OnMainThread() || !player) return WXL_FALSE;
+        constexpr int32_t kTrackMove = 4; // TRACKTYPE_MOVE
+        const uint64_t    none       = 0;
+        return CallMember<bool>(WXL_SITE("CGPlayer_C::ClickToMove", 0), player, kTrackMove, &none, &point, 0.0f)
+                   ? WXL_TRUE
+                   : WXL_FALSE;
     }
 
     // --- Memory ---------------------------------------------------------------------------

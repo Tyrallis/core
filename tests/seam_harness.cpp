@@ -14,6 +14,7 @@
 #include "runtime/Stages.hpp"
 #include "seams/Gameplay.hpp"
 #include "seams/Table.hpp"
+#include "services/ActionService.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
@@ -33,6 +34,7 @@
 #include "wxl/services/storage.h"
 
 #if defined(_M_IX86)
+    #include "binding/CallX86.hpp"
     #include "seams/Detour.hpp"
     #include "hook/Engine.hpp"
     #include "hook/Safety.hpp"
@@ -99,6 +101,23 @@ namespace
         int32_t  visibleItems[19]{};
         uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
         uint32_t channelSpellId = 0; ///< the channel it shows
+        uint32_t castEnd        = 0; ///< when the cast ends, on the fake clock
+        uint32_t channelEnd     = 0;
+        int32_t  mountModel     = 0;
+        uint32_t clientFlags    = 0;
+        int32_t  reaction       = 3; ///< towards anyone
+        int32_t  creatureType   = 0;
+        uint32_t family         = 0;
+        uint32_t rank           = 0;
+        uint32_t knownSpell     = 0;
+        float    speeds[9]{};
+        struct Stats
+        {
+            uint32_t quality, level, requiredLevel, itemClass, subclass, inventoryType;
+            int32_t  stackable;
+            uint32_t sellPrice;
+        };
+        const Stats* stats = nullptr; ///< the item cache's record, null until cached
         uint32_t movementFlags  = 0; ///< the movement block's flags
         float    facing         = 0.0f;
         uint32_t money          = 0; ///< the local block's coinage
@@ -884,6 +903,104 @@ namespace
     }
 
     /// Every other row stays null, which is what a client that hands nothing over looks like.
+    // --- the typed reads and the actions (unit.def, item.def, action.def) ---------------------
+
+    uint64_t g_party[4]{};
+    uint64_t g_raid[40]{};
+    uint32_t g_raidCount = 0;
+
+    /// What the fake client was asked to do, as "target 0x..." lines.
+    std::vector<std::string> g_actions;
+    bool                     g_refuseActions = false;
+
+    void Did(const char* what, uint64_t a = 0, uint64_t b = 0)
+    {
+        char line[96];
+        snprintf(line, sizeof line, "%s %llx %llx", what, static_cast<unsigned long long>(a),
+                 static_cast<unsigned long long>(b));
+        g_actions.emplace_back(line);
+    }
+
+    uint32_t WXL_CALL FakeCastStart(const void*) { return 0; }
+    uint32_t WXL_CALL FakeCastEnd(const void* o) { return Obj(o)->castEnd; }
+    uint32_t WXL_CALL FakeChannelStart(const void*) { return 0; }
+    uint32_t WXL_CALL FakeChannelEnd(const void* o) { return Obj(o)->channelEnd; }
+    int32_t WXL_CALL FakeMountModel(const void* o) { return Obj(o)->mountModel; }
+    uint32_t WXL_CALL FakeClientFlags(const void* o) { return Obj(o)->clientFlags; }
+    wxl_bool WXL_CALL FakeSpeed(const void* o, uint32_t i, float* out)
+    {
+        if (i > 8) return WXL_FALSE;
+        *out = Obj(o)->speeds[i];
+        return WXL_TRUE;
+    }
+    int32_t WXL_CALL FakeReaction(const void* o, const void*) { return Obj(o)->reaction; }
+    int32_t WXL_CALL FakeCreatureType(const void* o) { return Obj(o)->creatureType; }
+    uint32_t WXL_CALL FakeFamily(const void* o) { return Obj(o)->family; }
+    uint32_t WXL_CALL FakeRank(const void* o) { return Obj(o)->rank; }
+    wxl_bool WXL_CALL FakeKnows(const void* o, uint32_t spell) { return Obj(o)->knownSpell == spell ? WXL_TRUE : WXL_FALSE; }
+    /// The auras of the units the typed reads give some: the unit, its slots.
+    std::map<const void*, std::vector<FakeAura>> g_unitAuras;
+
+    uint32_t WXL_CALL FakeAuraCount(const void* o)
+    {
+        const auto found = g_unitAuras.find(o);
+        return found == g_unitAuras.end() ? 0u : static_cast<uint32_t>(found->second.size());
+    }
+    const void* WXL_CALL FakeAuraAt(const void* o, uint32_t i)
+    {
+        const auto found = g_unitAuras.find(o);
+        return found != g_unitAuras.end() && i < found->second.size() ? &found->second[i] : nullptr;
+    }
+    const void* WXL_CALL FakeItemStats(const void* o) { return Obj(o)->stats; }
+    using FakeStats = FakeObject::Stats;
+    const FakeStats* StatsOf(const void* s) { return static_cast<const FakeStats*>(s); }
+    uint32_t WXL_CALL FakeStatQuality(const void* s) { return StatsOf(s)->quality; }
+    uint32_t WXL_CALL FakeStatLevel(const void* s) { return StatsOf(s)->level; }
+    uint32_t WXL_CALL FakeStatRequired(const void* s) { return StatsOf(s)->requiredLevel; }
+    uint32_t WXL_CALL FakeStatClass(const void* s) { return StatsOf(s)->itemClass; }
+    uint32_t WXL_CALL FakeStatSubclass(const void* s) { return StatsOf(s)->subclass; }
+    uint32_t WXL_CALL FakeStatInventory(const void* s) { return StatsOf(s)->inventoryType; }
+    int32_t WXL_CALL FakeStatStack(const void* s) { return StatsOf(s)->stackable; }
+    uint32_t WXL_CALL FakeStatSell(const void* s) { return StatsOf(s)->sellPrice; }
+    uint64_t WXL_CALL FakePartyGuid(uint32_t i) { return i < 4 ? g_party[i] : 0; }
+    uint32_t WXL_CALL FakeRaidCount(void) { return g_raidCount; }
+    uint64_t WXL_CALL FakeRaidGuid(uint32_t i) { return i < 40 ? g_raid[i] : 0; }
+    wxl_bool WXL_CALL FakeActTarget(uint64_t guid)
+    {
+        Did("target", guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActInteract(uint64_t guid)
+    {
+        Did("interact", guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActCast(uint32_t spell, uint64_t target)
+    {
+        Did("cast", spell, target);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActStop(void)
+    {
+        Did("stop");
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActUse(const void* item, uint64_t target)
+    {
+        Did("use", Obj(item)->guid, target);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActFollow(const void* mover, uint64_t guid)
+    {
+        Did("follow", Obj(mover)->guid, guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActMove(const void* player, wxl_vec3 point)
+    {
+        Did("move", Obj(player)->guid, static_cast<uint64_t>(point.x));
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+
     wxl_core_init FakeInit()
     {
         wxl_core_init init{};
@@ -946,6 +1063,46 @@ namespace
         init.object_facing          = &FakeFacing;
         init.unit_movement_flags    = &FakeMovementFlags;
         init.player_money           = &FakeMoney;
+        init.unit_cast_start        = &FakeCastStart;
+        init.unit_cast_end          = &FakeCastEnd;
+        init.unit_channel_start     = &FakeChannelStart;
+        init.unit_channel_end       = &FakeChannelEnd;
+        init.unit_mount_model       = &FakeMountModel;
+        init.unit_client_flags      = &FakeClientFlags;
+        init.unit_speed             = &FakeSpeed;
+        init.unit_reaction          = &FakeReaction;
+        init.unit_creature_type     = &FakeCreatureType;
+        init.unit_creature_family   = &FakeFamily;
+        init.unit_classification    = &FakeRank;
+        init.unit_knows_spell       = &FakeKnows;
+        init.unit_aura_count        = &FakeAuraCount;
+        init.unit_aura_at           = &FakeAuraAt;
+        init.aura_caster            = &FakeAuraCaster;
+        init.aura_spell_id          = &FakeAuraSpell;
+        init.aura_flags             = &FakeAuraFlags;
+        init.aura_level             = &FakeAuraLevel;
+        init.aura_stacks            = &FakeAuraStacks;
+        init.aura_duration          = &FakeAuraDuration;
+        init.aura_end_time          = &FakeAuraEnd;
+        init.item_stats             = &FakeItemStats;
+        init.item_stats_quality     = &FakeStatQuality;
+        init.item_stats_level       = &FakeStatLevel;
+        init.item_stats_required_level = &FakeStatRequired;
+        init.item_stats_class       = &FakeStatClass;
+        init.item_stats_subclass    = &FakeStatSubclass;
+        init.item_stats_inventory_type = &FakeStatInventory;
+        init.item_stats_stackable   = &FakeStatStack;
+        init.item_stats_sell_price  = &FakeStatSell;
+        init.party_member_guid      = &FakePartyGuid;
+        init.raid_member_count      = &FakeRaidCount;
+        init.raid_member_guid       = &FakeRaidGuid;
+        init.action_target          = &FakeActTarget;
+        init.action_interact        = &FakeActInteract;
+        init.action_cast_spell      = &FakeActCast;
+        init.action_stop_casting    = &FakeActStop;
+        init.action_use_item        = &FakeActUse;
+        init.action_follow          = &FakeActFollow;
+        init.action_move_to         = &FakeActMove;
         init.terrain_click_guid     = &FakeTerrainGuid;
         init.terrain_click_x        = &FakeTerrainX;
         init.terrain_click_y        = &FakeTerrainY;
@@ -977,13 +1134,6 @@ namespace
         init.map_obj_path           = &FakeMapObjPath;
         init.map_obj_bytes          = &FakeMapObjBytes;
         init.doodad_position        = &FakeDoodadPosition;
-        init.aura_caster            = &FakeAuraCaster;
-        init.aura_spell_id          = &FakeAuraSpell;
-        init.aura_flags             = &FakeAuraFlags;
-        init.aura_level             = &FakeAuraLevel;
-        init.aura_stacks            = &FakeAuraStacks;
-        init.aura_duration          = &FakeAuraDuration;
-        init.aura_end_time          = &FakeAuraEnd;
         init.unit_aura_slot         = &FakeAuraSlot;
         init.os_time_ms             = &FakeTimeMs;
         init.loot_object_guid       = &FakeLootGuid;
@@ -1677,6 +1827,162 @@ namespace
               "clearing the slot raises EquipmentChanged with an item id of 0");
 
         wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+    }
+
+    /// The typed reads (abi 0.1.17) a runtime answers itself, through wxl.object over the
+    /// binding: the client's own functions and members, as the fake client hands them over.
+    void CheckTypedReads()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject me;
+        me.guid   = 0x0000000000000042ull;
+        me.typeId = WXL_OBJECT_PLAYER;
+        FakeObject wolf;
+        wolf.guid         = 0xF130000000000789ull;
+        wolf.typeId       = WXL_OBJECT_UNIT;
+        wolf.reaction     = 1;
+        wolf.creatureType = 1;
+        wolf.family       = 1;
+        wolf.rank         = 2;
+        wolf.mountModel   = 0;
+        wolf.speeds[1]    = 7.0f;
+        wolf.castingSpellId = 133;
+        wolf.castEnd        = 1500;
+        g_unitAuras[&wolf]  = {FakeAura{0x42, 1459, 0x10, 80, 0, 1800000, 1801000},
+                               FakeAura{0x42, 9484, 0x80, 80, 3, 0, 0}};
+        FakeObject stone;
+        stone.guid   = 0x4000000000000123ull;
+        stone.typeId = WXL_OBJECT_ITEM;
+
+        g_localPlayer = &me;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&stone, nullptr, 100u);
+        const wxl_handle player = wxl::core::objects::HandleOf(&me);
+        const wxl_handle unit   = wxl::core::objects::HandleOf(&wolf);
+        const wxl_handle item   = wxl::core::objects::HandleOf(&stone);
+
+        uint32_t value = 0;
+        wxl_bool yes   = WXL_FALSE;
+        Check(api->unit_reaction(unit, &value) == WXL_OK && value == WXL_REACTION_HOSTILE,
+              "unit_reaction asks the client's UnitReaction towards the active player");
+        Check(api->unit_reaction_to(unit, player, &value) == WXL_OK && value == WXL_REACTION_HOSTILE &&
+                  api->unit_reaction_to(unit, item, &value) == WXL_E_INVALID,
+              "unit_reaction_to another unit, refused for an item");
+        Check(api->unit_creature_type(unit, &value) == WXL_OK && value == WXL_CREATURE_BEAST &&
+                  api->unit_creature_family(unit, &value) == WXL_OK && value == 1 &&
+                  api->unit_classification(unit, &value) == WXL_OK && value == WXL_CLASSIFICATION_RARE_ELITE,
+              "the creature's type, family and rank are the client's");
+        float speed = 0.0f;
+        Check(api->unit_speed(unit, WXL_MOVE_RUN, &speed) == WXL_OK && speed == 7.0f &&
+                  api->unit_speed(unit, 9, &speed) == WXL_E_INVALID,
+              "a speed by wxl_move_type, invalid past the ninth");
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_FALSE, "no mount model, not mounted");
+        wolf.mountModel = 14334;
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_TRUE, "a mount model, mounted");
+        wolf.clientFlags = 0x10000000u;
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_FALSE,
+              "unless the client flags the mount as going, as IsMounted reads it");
+        wolf.clientFlags = 0x200000u;
+        Check(api->unit_is_swimming(unit, &yes) == WXL_OK && yes == WXL_TRUE, "swimming is the client's flag");
+        g_timeMs = 1000;
+        Check(api->unit_is_casting(unit, &yes) == WXL_OK && yes == WXL_TRUE, "a cast whose end is to come is a cast");
+        g_timeMs = 1500;
+        Check(api->unit_is_casting(unit, &yes) == WXL_OK && yes == WXL_FALSE, "and none once its end has passed");
+        Check(api->unit_aura_count(unit, &value) == WXL_OK && value == 2, "the client's aura count");
+        wxl_aura aura{};
+        aura.struct_size = sizeof aura;
+        Check(api->unit_aura(unit, 1, &aura) == WXL_OK && aura.spell_id == 9484 && aura.stacks == 3 &&
+                  aura.flags == 0x80 && aura.caster == 0x42 && aura.level == 80,
+              "an aura's spell, stacks, flags, caster and level");
+        Check(api->unit_aura(unit, 0, &aura) == WXL_OK && aura.duration == 1800000 && aura.expiration == 1801000,
+              "its duration and expiration");
+        Check(api->unit_aura(unit, 2, &aura) == WXL_E_INVALID, "a slot past the count is invalid");
+        Check(api->unit_has_aura(unit, 1459, &yes) == WXL_OK && yes == WXL_TRUE &&
+                  api->unit_has_aura(unit, 1, &yes) == WXL_OK && yes == WXL_FALSE,
+              "has_aura, through the shared runtime, over the client's auras");
+        me.knownSpell = 133;
+        Check(api->unit_knows_spell(player, 133, &yes) == WXL_OK && yes == WXL_TRUE &&
+                  api->unit_knows_spell(player, 134, &yes) == WXL_OK && yes == WXL_FALSE,
+              "knows_spell asks the client's spell book");
+
+        Check(api->item_quality(item, &value) == WXL_E_FAILED, "an item the cache lacks answers failed");
+        const FakeStats hearth{1, 1, 0, 15, 0, 0, 1, 0};
+        stone.stats = &hearth;
+        Check(api->item_quality(item, &value) == WXL_OK && value == WXL_QUALITY_COMMON &&
+                  api->item_class(item, &value) == WXL_OK && value == 15 &&
+                  api->item_max_stack(item, &value) == WXL_OK && value == 1,
+              "and the cache's record once the client has it");
+
+        g_party[1] = 0x77;
+        g_raidCount = 0;
+        wxl_guid guid = 0;
+        Check(api->player_party_size(player, &value) == WXL_OK && value == 1 &&
+                  api->player_party_member_guid(player, 1, &guid) == WXL_OK && guid == 0x77 &&
+                  api->player_party_member_guid(player, 4, &guid) == WXL_E_INVALID,
+              "the party: its size and its members' guids by slot");
+        Check(api->player_party_size(unit, &value) == WXL_E_INVALID, "the group is the active player's alone");
+        g_party[1] = 0;
+
+        g_unitAuras.clear();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&stone);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
+    }
+
+    /// wxl.action over the binding: the thread, the world and the object checked first, then
+    /// the client asked.
+    void CheckActions()
+    {
+        const wxl_action_api& act = wxl::core::services::ActionApi();
+
+        FakeObject me;
+        me.guid   = 0x42;
+        me.typeId = WXL_OBJECT_PLAYER;
+        FakeObject wolf;
+        wolf.guid   = 0x789;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        FakeObject stone;
+        stone.guid   = 0x123;
+        stone.typeId = WXL_OBJECT_ITEM;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&stone, nullptr, 100u);
+        const wxl_handle unit = wxl::core::objects::HandleOf(&wolf);
+        const wxl_handle item = wxl::core::objects::HandleOf(&stone);
+
+        g_actions.clear();
+        Check(act.target(unit) == WXL_E_UNSUPPORTED && g_actions.empty(), "out of the world nothing is asked");
+        g_localPlayer = &me;
+        Check(act.target(unit) == WXL_OK && act.clear_target() == WXL_OK && act.interact(unit) == WXL_OK &&
+                  act.cast_spell(133, unit) == WXL_OK && act.cast_spell(133, WXL_HANDLE_NONE) == WXL_OK &&
+                  act.stop_casting() == WXL_OK && act.use_item(item, unit) == WXL_OK && act.follow(unit) == WXL_OK &&
+                  act.move_to(wxl_vec3{12.0f, 0.0f, 0.0f}) == WXL_OK,
+              "every action reaches the client");
+        const std::vector<std::string> expected = {"target 789 0", "target 0 0",    "interact 789 0",
+                                                   "cast 85 789",  "cast 85 0",     "stop 0 0",
+                                                   "use 123 789",  "follow 42 789", "move 42 c"};
+        Check(g_actions == expected, "with the guids and the spell, none for the current target");
+        Check(act.assist(unit) == WXL_E_FAILED, "assisting a unit that targets nothing fails");
+        Check(act.use_item(unit, WXL_HANDLE_NONE) == WXL_E_INVALID && act.follow(item) == WXL_E_INVALID,
+              "an object of the wrong kind is invalid");
+        Check(act.cast_spell(0, WXL_HANDLE_NONE) == WXL_E_INVALID, "a spell id of 0 is invalid");
+        Check(act.target(0xDEAD) == WXL_E_NOT_FOUND, "a stale handle is gone");
+        g_refuseActions = true;
+        Check(act.interact(unit) == WXL_E_FAILED, "what the client refuses answers failed");
+        g_refuseActions = false;
+
+        g_actions.clear();
+        wxl_result fromThread = WXL_OK;
+        std::thread([&] { fromThread = act.target(unit); }).join();
+        Check(fromThread == WXL_E_INVALID && g_actions.empty(), "off the main thread an action is refused");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&stone);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
     }
 
     /// GameUI: the target is announced once per change, with the previous and current handles,
@@ -5067,6 +5373,70 @@ namespace
         return slot;
     }
 
+    /// The x86 binding's calls into the client (binding/CallX86.hpp), against stand-ins with the
+    /// conventions Wow.exe gives the functions it calls: __thiscall members popping their
+    /// arguments, a bool answered in AL, a WOWGUID by value as two stack slots, cdecl free
+    /// functions. Each stand-in is reached through an address read back through a volatile
+    /// slot, as the client's are, so the optimiser cannot see the convention it is declared with.
+    struct ClientStandIn
+    {
+        int32_t base = 70;
+
+        __declspec(noinline) int32_t __thiscall Reaction(const void* other)
+        {
+            return other == this ? 4 : base / 10;
+        }
+
+        __declspec(noinline) bool __thiscall Knows(uint32_t spell) { return spell == 133; }
+
+        __declspec(noinline) bool __thiscall Move(int32_t type, const uint64_t* guid, const wxl_vec3* point,
+                                                  float facing)
+        {
+            return type == 4 && *guid == 0 && point->z == 3.0f && facing == 0.5f;
+        }
+    };
+
+    uint64_t g_castGuid  = 0;
+    uint32_t g_castSpell = 0;
+
+    __declspec(noinline) bool __cdecl CastStandIn(uint32_t spell, const void* item, uint64_t target, int32_t confirmed)
+    {
+        g_castSpell = spell;
+        g_castGuid  = target;
+        return item == nullptr && confirmed == 0;
+    }
+
+    template <class M>
+    std::uintptr_t AddressOf(M member)
+    {
+        return reinterpret_cast<std::uintptr_t>(Opaque(*reinterpret_cast<void**>(&member)));
+    }
+
+    void CheckCallX86()
+    {
+        using wxl::core::binding::x86::CallFree;
+        using wxl::core::binding::x86::CallMember;
+
+        ClientStandIn unit;
+        volatile uint32_t canary = 0xC0FFEE;
+        Check(CallMember<int32_t>(AddressOf(&ClientStandIn::Reaction), &unit, static_cast<const void*>(nullptr)) == 7 &&
+                  CallMember<int32_t>(AddressOf(&ClientStandIn::Reaction), &unit, static_cast<const void*>(&unit)) == 4,
+              "CallMember passes this in ECX and an argument the callee pops");
+        Check(CallMember<bool>(AddressOf(&ClientStandIn::Knows), &unit, uint32_t(133)) &&
+                  !CallMember<bool>(AddressOf(&ClientStandIn::Knows), &unit, uint32_t(134)),
+              "a bool answer is read from AL");
+        const uint64_t none = 0;
+        const wxl_vec3 point{1.0f, 2.0f, 3.0f};
+        Check(CallMember<bool>(AddressOf(&ClientStandIn::Move), &unit, int32_t(4), &none, &point, 0.5f),
+              "four stack arguments, a float among them, reach a __thiscall callee");
+        const auto cast = reinterpret_cast<std::uintptr_t>(Opaque(&CastStandIn));
+        Check(CallFree<bool>(cast, uint32_t(133), static_cast<const void*>(nullptr), uint64_t(0xF130000000000789ull),
+                             int32_t(0)) &&
+                  g_castSpell == 133 && g_castGuid == 0xF130000000000789ull,
+              "a cdecl call passes a 64-bit guid as two slots, low first");
+        Check(canary == 0xC0FFEE, "and the stack is the caller's again after each");
+    }
+
     using ShimSeam = wxl::core::seams::DetourOf<wxl::seam::detail::conv_thiscall,
                                                 int32_t(void*, int32_t, int32_t)>;
     using ShimLink = ShimSeam::Link<&ShimBefore, &ShimAfter>;
@@ -7627,6 +7997,8 @@ int main(int argc, char** argv)
     CheckUnit();
     CheckPlayer();
     CheckGameUI();
+    CheckTypedReads();
+    CheckActions();
     CheckMapArea();
     CheckListening();
     CheckAssets();
@@ -7673,6 +8045,7 @@ int main(int argc, char** argv)
 #endif
 #if defined(_M_IX86)
     CheckThiscallShim();
+    CheckCallX86();
     CheckOneSidedShim();
     CheckThiscallGate();
     CheckGetUpdateObjectDetour();

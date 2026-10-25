@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Action domain of the client binding: the client's clock, the player's group, and what the
+// player can do, through the functions the client runs for a click, a key or a slash command.
+// Every row reads or drives the object manager or the game interface: main thread only.
+
+#ifndef WXL_BINDING
+#error "define WXL_BINDING(name, ret, params, args, absent) before including action.def"
+#endif
+
+// The other members of the player's party by slot, 0 to 3: CGPartyInfo::m_members; 0 for an
+// empty slot or past the fourth.
+WXL_BINDING(party_member_guid, uint64_t, (uint32_t index), (index), 0)
+
+// The raid: CGRaidInfo::m_numMembers, and the guid of the CGRaidMember in a slot of
+// CGRaidInfo::m_members, 0 to 39; 0 for an empty slot or past the fortieth.
+WXL_BINDING(raid_member_count, uint32_t, (void), (), 0)
+WXL_BINDING(raid_member_guid, uint64_t, (uint32_t index), (index), 0)
+
+// Targets an object, or clears the target for 0: CGGameUI::Target. False with no client.
+WXL_BINDING(action_target, wxl_bool, (uint64_t guid), (guid), WXL_FALSE)
+
+// Right-clicks an object: CGGameUI::OnSpriteRightClick, which targets it and calls its own
+// OnRightClick. False when the client does not hold it.
+WXL_BINDING(action_interact, wxl_bool, (uint64_t guid), (guid), WXL_FALSE)
+
+// Casts a spell at a guid, 0 for the current target: Spell_C::CastSpell(spell, no item, target,
+// not confirmed), the call the client's CastSpellByID makes. False when the client refused it.
+WXL_BINDING(action_cast_spell, wxl_bool, (uint32_t spell, uint64_t target), (spell, target), WXL_FALSE)
+
+// Stops the active player's cast: Spell_C_StopCasting when Spell_C_IsActivePlayerCasting, else
+// the repeating spell through Spell_C_CancelAutoRepeat, as the client's SpellStopCasting does.
+// False when there was neither.
+WXL_BINDING(action_stop_casting, wxl_bool, (void), (), WXL_FALSE)
+
+// Uses an item (a CGItem_C), on a guid or 0: CGItem_C::UseItem(target, not confirmed). False
+// when the client refused it.
+WXL_BINDING(action_use_item, wxl_bool, (const void* item, uint64_t target), (item, target), WXL_FALSE)
+
+// Has the unit the player moves follow a guid: CGUnit_C::SetTrackingTarget(guid,
+// TRACKTYPE_FOLLOW), as the client's FollowUnit does. False for a unit it will not follow.
+WXL_BINDING(action_follow, wxl_bool, (const void* mover, uint64_t guid), (mover, guid), WXL_FALSE)
+
+// Walks the active player to a point: CGPlayer_C::ClickToMove(TRACKTYPE_MOVE, no guid, the
+// point, facing 0). False for a point it will not walk to.
+WXL_BINDING(action_move_to, wxl_bool, (const void* player, wxl_vec3 point), (player, point), WXL_FALSE)
