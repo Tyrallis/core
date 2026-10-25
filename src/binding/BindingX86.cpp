@@ -266,6 +266,13 @@ namespace wxl::core::binding
         return IsClient() ? *reinterpret_cast<const int32_t*>(kMapId) : -1;
     }
 
+    wxl_bool world_position(wxl_vec3* out)
+    {
+        if (!IsClient() || !out || map_id() < 0) return WXL_FALSE;
+        *out = *reinterpret_cast<const wxl_vec3*>(WXL_STATIC("World::s_currentWorldPos"));
+        return WXL_TRUE;
+    }
+
     const void* local_player_object(void)
     {
         if (!IsClient() || !OnMainThread()) return nullptr;
@@ -355,6 +362,11 @@ namespace wxl::core::binding
     uint8_t ui_logging_in(void)
     {
         return IsClient() ? *reinterpret_cast<const uint8_t*>(WXL_STATIC("CGGameUI::m_loggingIn")) : 0;
+    }
+
+    uint8_t ui_reloading(void)
+    {
+        return IsClient() ? *reinterpret_cast<const uint8_t*>(WXL_STATIC("CGGameUI::m_currentlyReloadingUI")) : 0;
     }
 
     // --- glue.def: the login screens' state -------------------------------------------------

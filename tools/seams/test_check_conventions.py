@@ -628,6 +628,10 @@ def local_cases(temp, report):
 # point: (address, convention, registers, stack dwords)
 GROUND_TRUTH = {
     "World.Preload":                   ("0x00781500", "cdecl", [], 2),
+    # CGGameUI::EnterWorld and LeaveWorld open with `push ebp; mov ebp,esp`, read no argument
+    # and no register before the m_inWorld test (0x00528019, 0x00528C39), and end in bare `ret`s.
+    "World.EnterWorld":                ("0x00528010", "cdecl", [], 0),
+    "World.LeaveWorld":                ("0x00528C30", "cdecl", [], 0),
     "Event.DispatchUpdate":            ("0x0047DB70", "regparm", ["edi"], 2),
     "ObjectMgr.InitObject":            ("0x004D3FF0", "regparm", ["esi", "eax", "ecx"], 0),
     "ObjectMgr.ObjDelete":             ("0x004D6FC0", "regparm", ["eax"], 0),

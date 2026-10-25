@@ -328,6 +328,17 @@ namespace
     void* WXL_CALL FakeScriptState(void) { return g_vm.live ? &g_vm : nullptr; }
     int32_t WXL_CALL FakeUiInitialized(void) { return g_uiInitialized; }
     uint8_t WXL_CALL FakeUiLoggingIn(void) { return g_uiLoggingIn; }
+    uint8_t g_uiReloading = 0;
+    uint8_t WXL_CALL FakeUiReloading(void) { return g_uiReloading; }
+
+    /// World::s_currentWorldPos, answered while a map is loaded.
+    wxl_vec3 g_worldPosition{};
+    wxl_bool WXL_CALL FakeWorldPosition(wxl_vec3* out)
+    {
+        if (g_mapId < 0) return WXL_FALSE;
+        *out = g_worldPosition;
+        return WXL_TRUE;
+    }
 
     wxl_bool WXL_CALL FakeGlobalIsSet(void* state, const char* name)
     {
@@ -1495,6 +1506,8 @@ namespace
         init.map_area_tile_y        = &FakeTileY;
         init.ui_initialized         = &FakeUiInitialized;
         init.ui_logging_in          = &FakeUiLoggingIn;
+        init.ui_reloading           = &FakeUiReloading;
+        init.world_position         = &FakeWorldPosition;
         init.script_state           = &FakeScriptState;
         init.script_global_is_set   = &FakeGlobalIsSet;
         init.script_set_global_closure = &FakeSetGlobalClosure;
@@ -1864,46 +1877,100 @@ namespace
               "Update carries the seam's elapsed_sec as its delta");
     }
 
-    /// World.Preload: the pair raises WorldEnter on the way in and WorldLeave only once a world
-    /// has been entered, and neither when the loading screen is not being shown.
-    void CheckWorldPreload()
+    /// The World seams: CGGameUI::EnterWorld and LeaveWorld raise WorldEnter and WorldLeave once
+    /// per entry and exit (login, a teleport to another map, logout), never for a /reload; a
+    /// same-map teleport's World::Preload with the loading screen raises the pair while the
+    /// player is in the world, and nothing otherwise.
+    void CheckWorld()
     {
-        const wxl_vec3 where{ 1.0f, 2.0f, 3.0f };
+        FakeObject me;
+        me.guid     = 0x0000000000000042ull;
+        me.typeId   = WXL_OBJECT_PLAYER;
+        me.position = { 5.0f, 6.0f, 7.0f };
+        const wxl_vec3 there{ 1.0f, 2.0f, 3.0f };
+        auto same = [](const wxl_vec3& a, const wxl_vec3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
+
+        // Before any login: no preload enters a world.
         g_mapId = 571;
-
-        // A preload with no loading screen is a far-sight, cinematic or game-object preload.
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 0);
-        wxl::seam::World::Preload::After(&where, 0);
-        Check(g_received.empty(), "World.Preload raises nothing when show_loading is clear");
+        wxl::seam::World::Preload::Before(&there, 0);
+        wxl::seam::World::Preload::After(&there, 0);
+        wxl::seam::World::Preload::Before(&there, 1);
+        wxl::seam::World::Preload::After(&there, 1);
+        Check(g_received.empty(), "World.Preload raises nothing before the player is in the world");
 
-        // The first real preload enters a world; there is no world to leave yet.
+        // Login: the active player's object arrives and the interface enters the world.
+        g_localPlayer = &me;
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 1);
-        wxl::seam::World::Preload::After(&where, 1);
-        Check(Only(WXL_EV_WorldLeave) == nullptr, "the first world entry raises no WorldLeave");
-
+        wxl::seam::World::EnterWorld::After();
         const Received* entered = Only(WXL_EV_WorldEnter);
-        Check(entered != nullptr, "World.Preload raises WorldEnter once a world is loaded");
+        Check(entered != nullptr && Only(WXL_EV_WorldLeave) == nullptr,
+              "World.EnterWorld raises WorldEnter at login, and no WorldLeave");
         if (entered)
-        {
-            const wxl_world_args args = entered->As<wxl_world_args>();
-            Check(args.map_id == 571u, "WorldEnter carries the map the binding reports");
-            Check(args.position.x == 1.0f && args.position.y == 2.0f && args.position.z == 3.0f,
-                  "WorldEnter carries the position the seam was called with");
-        }
-
-        // The next one leaves the world just entered, naming it, and enters the new one.
-        g_mapId = 0;
+            Check(entered->As<wxl_world_args>().map_id == 571u && same(entered->As<wxl_world_args>().position, me.position),
+                  "WorldEnter carries the loaded map and the player's position");
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 1);
+        wxl::seam::World::EnterWorld::After();
+        Check(g_received.empty(), "an entry already announced is not raised again");
+
+        // /reload: the interface leaves and enters the world again, the player never left.
+        g_uiReloading = 1;
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        wxl::seam::World::EnterWorld::After();
+        g_uiReloading = 0;
+        Check(g_received.empty(), "a /reload raises neither WorldLeave nor WorldEnter");
+
+        // A teleport far across the same map: the loading screen of World::Preload.
+        g_worldPosition = me.position;
+        g_received.clear();
+        wxl::seam::World::Preload::Before(&there, 0);
+        wxl::seam::World::Preload::After(&there, 0);
+        Check(g_received.empty(), "World.Preload raises nothing when show_loading is clear");
+        wxl::seam::World::Preload::Before(&there, 1);
         const Received* left = Only(WXL_EV_WorldLeave);
-        Check(left != nullptr, "the next world entry raises WorldLeave first");
+        Check(left != nullptr && Only(WXL_EV_WorldEnter) == nullptr,
+              "a same-map teleport's preload raises WorldLeave first");
         if (left)
-            Check(left->As<wxl_world_args>().map_id == 571u,
-                  "WorldLeave names the map being left, not the one arriving");
-        wxl::seam::World::Preload::After(&where, 1);
-        Check(Only(WXL_EV_WorldEnter) != nullptr, "and WorldEnter after it");
+            Check(left->As<wxl_world_args>().map_id == 571u && same(left->As<wxl_world_args>().position, me.position),
+                  "WorldLeave names the map and the place being left, not the destination");
+        g_received.clear();
+        wxl::seam::World::Preload::After(&there, 1);
+        entered = Only(WXL_EV_WorldEnter);
+        Check(entered != nullptr, "and WorldEnter after it");
+        if (entered)
+            Check(entered->As<wxl_world_args>().map_id == 571u && same(entered->As<wxl_world_args>().position, there),
+                  "WorldEnter carries the position the preload loaded around");
+
+        // A teleport to another map: the old player object goes while its map is loaded.
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        left = Only(WXL_EV_WorldLeave);
+        Check(left != nullptr && left->As<wxl_world_args>().map_id == 571u,
+              "World.LeaveWorld raises WorldLeave with the map entered");
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        wxl::seam::World::Preload::Before(&there, 1);
+        wxl::seam::World::Preload::After(&there, 1);
+        Check(g_received.empty(), "out of the world, neither a leave nor a preload raises anything");
+        g_mapId = 0;
+        wxl::seam::World::EnterWorld::After();
+        entered = Only(WXL_EV_WorldEnter);
+        Check(entered != nullptr && entered->As<wxl_world_args>().map_id == 0u,
+              "the new map's entry raises WorldEnter with its id");
+
+        // Logout: the player leaves; the next login enters again.
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        left = Only(WXL_EV_WorldLeave);
+        Check(left != nullptr && left->As<wxl_world_args>().map_id == 0u, "a logout raises WorldLeave");
+        g_received.clear();
+        wxl::seam::World::EnterWorld::After();
+        Check(Only(WXL_EV_WorldEnter) != nullptr, "and the relog WorldEnter");
+        wxl::seam::World::LeaveWorld::Before();
+
+        g_localPlayer   = nullptr;
+        g_worldPosition = {};
     }
 
     /// ObjectMgr: InitObject's After tracks and announces; ObjDelete's Before announces and
@@ -4176,6 +4243,34 @@ namespace
             TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms);
             Check(g_walked.size() == 1 && g_walked[0] == "MyAddOn\\",
                   "a listing of the add-ons folder tells a provider's add-on as a folder of the disk");
+
+            // The client then asks each entry's info by its path (OsFileList keeps the folders,
+            // which the add-on list reads), and may ask whether it exists.
+            const auto info = [](const char* path, fsk::FileInfo& out) {
+                fsk::FileParms asked{};
+                asked.verb = offsetof(fsk::Filesystem, verbs.getfileinfo);
+                std::string named(path);
+                asked.path = named.data();
+                asked.info = &asked.info2;
+                const bool answered = TopVerb(asked.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &asked);
+                if (answered) out = *asked.info;
+                return answered;
+            };
+            fsk::FileInfo got{};
+            Check(info("C:\\Game\\Interface\\AddOns\\MyAddOn", got) && got.existence == 2 && (got.attributes & 0x40),
+                  "the info of a provider's listed folder says a folder");
+            Check(info("C:\\Game\\Interface\\AddOns\\myaddon\\MYADDON.toc", got) && got.existence == 1 &&
+                      !(got.attributes & 0x40) && got.regular_file,
+                  "and of a file it lists, a file, whatever the case");
+            Check(!info("C:\\Game\\Interface\\AddOns\\Other", got) && !info("D:\\Elsewhere\\MyAddOn", got),
+                  "a name no provider lists, or outside the client's folder, is the disk's answer");
+            fsk::FileParms exists{};
+            exists.verb        = offsetof(fsk::Filesystem, verbs.exists);
+            std::string folder = "Interface\\AddOns\\MyAddOn";
+            exists.path        = folder.data();
+            exists.info        = &exists.info2;
+            Check(TopVerb(exists.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &exists) && exists.info->existence == 2,
+                  "a provider's listed folder exists, asked by a path relative to the client's folder");
             std::vector<wxl_str> names(8);
             const uint32_t       count = api.find(Str("Interface\\AddOns\\*.toc"), names.data(), 8);
             Check(count == 1 && std::string(names[0].data, names[0].size) == "Interface\\AddOns\\MyAddOn\\MyAddOn.toc",
@@ -9526,7 +9621,7 @@ int main(int argc, char** argv)
     CheckEveryRaisedEventIsSubscribable();
     CheckEveryRowDeclaresItsAbi();
     CheckEventDispatchUpdate();
-    CheckWorldPreload();
+    CheckWorld();
     CheckObjectMgr();
     CheckRevivedObjects();
     CheckFields();

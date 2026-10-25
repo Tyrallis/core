@@ -276,7 +276,9 @@ source. Everything else observes.
 
 | Point | Function | Raises |
 |---|---|---|
-| `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
+| `World.EnterWorld` | `CGGameUI::EnterWorld()`, the player in the world (PLAYER_ENTERING_WORLD): after a login and a teleport to another map | `WorldEnter` after, with the map and the player's position, once per entry; not for a `/reload` |
+| `World.LeaveWorld` | `CGGameUI::LeaveWorld()`, the player out of it (PLAYER_LEAVING_WORLD): a logout, a teleport to another map while the old map is loaded | `WorldLeave` before, with the map entered and where the world was loaded around; not for a `/reload` |
+| `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)`, the loading screen of a teleport far across the same map | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set and the player is in the world: the far-sight, cinematic and game-object preloads reach the same function with it clear |
 | `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` (regparm: EDI) | `Update` before |
 | `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: ESI, EAX, ECX) | `ObjectCreate` after |
 | `ObjectMgr.GetUpdateObject` | `GetUpdateObject(uint64_t guid, int32_t* reenabled)`, the lookup every update of an object goes through | `ObjectCreate` after, with a new handle, for an object the client brought back from its lazy-cleanup set (it never passes `InitObject` again) |
@@ -370,7 +372,7 @@ source. Everything else observes.
 | `BLPFile.Open` | `CBLPFile::Open(name, flags)`, a texture file read whole by name | nothing itself: notes the name for `BLPFile.Source` |
 | `BLPFile.Source` | `CBLPFile::Source(const void* data)`, a texture file's bytes taken to decode | `TextureDecode` before, with the name its caller noted and what the BLP2 header says |
 | `Gx.IShaderLoad` | `CGxDevice::IShaderLoad(shaders, target, path, name, permutations)`, a shader program loaded by name | `ShaderLoad` before, with the stage, the folder, the name and the permutations |
-| `Sound.CreateWaveData` | `SE2::CreateWaveData(...)`, the sound data a sound plays from, made from a file | `SoundFileLoad` before, with the file, whether it streams and the channel's priority |
+| `Sound.CreateWaveData` | `SE2::CreateWaveData(...)`, the sound data a sound plays from, made from a file | `SoundFileLoad` before, with the file, whether it streams and the channel's priority; never while the game's sound is off (`Sound_EnableAllSound` 0), when the client loads no sound |
 | `Map.AllocDoodadDef` | `CMap::AllocDoodadDef()` | nothing itself: after, notes the def it handed out, which tells a placement from a def found in the map's hash |
 | `Map.CreateDoodadDef`, `Map.CreateDoodadDefAt`, `Map.CreateDoodadDefInMapObj` | the three `CMap::CreateDoodadDef` overloads: a tile's doodad, one the game places at a position, one of a map object's doodad set | `DoodadSpawn` after, for a def the call allocated, with the model's path and the position |
 | `ObjectMgr.FillInPartialObjectData` | `FillInPartialObjectData(CGObject_C*, WOWGUID, CDataStore*, bool, bool)`, where an update block's fields are written | nothing itself: after, notes a tracked object, once per packet |

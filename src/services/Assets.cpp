@@ -563,6 +563,18 @@ namespace
         return true;
     }
 
+    bool ProvidedEntry(const char* path, bool& folder);
+
+    /// The info of an entry a provider lists and the disk has not: a folder or a file
+    /// whose length is known once it is open.
+    void ProvidedInfo(fsk::FileInfo& info, bool folder)
+    {
+        info              = fsk::FileInfo{};
+        info.attributes   = folder ? 0x40 : 0x20;
+        info.existence    = folder ? 2 : 1;
+        info.regular_file = !folder;
+    }
+
     bool GetFileInfoVerb(fsk::Filesystem* fs, fsk::FileParms* parms)
     {
         if (!parms) return Original(g_original.getfileinfo, fs, parms);
@@ -589,7 +601,15 @@ namespace
             parms->info = info;
             return true;
         }
-        return Original(g_original.getfileinfo, fs, parms);
+        if (Original(g_original.getfileinfo, fs, parms)) return true;
+        // Not on the disk: an entry a provider lists in its folder (the client lists a folder and
+        // then asks each entry's info, as the add-on list does).
+        bool folder = false;
+        if (parms->stream || !parms->path || !ProvidedEntry(parms->path, folder)) return false;
+        fsk::FileInfo* info = parms->info ? parms->info : &parms->info2;
+        ProvidedInfo(*info, folder);
+        parms->info = info;
+        return true;
     }
 
     bool ExistsVerb(fsk::Filesystem* fs, fsk::FileParms* parms)
@@ -603,7 +623,15 @@ namespace
             parms->info->existence = ours && (!id || (source && !source->gone.load())) ? 1 : 0;
             return true;
         }
-        return Original(g_original.exists, fs, parms);
+        const bool result = Original(g_original.exists, fs, parms);
+        bool       folder = false;
+        if (parms && parms->path && parms->info && (!result || parms->info->existence == 0) &&
+            ProvidedEntry(parms->path, folder))
+        {
+            parms->info->existence = folder ? 2 : 1;
+            return true;
+        }
+        return result;
     }
 
     /// A verb that writes or changes a file: the layer's files are read only.
@@ -645,9 +673,17 @@ namespace
         return more;
     }
 
-    /// The folder a disk path is, relative to the client's folder; false when it is outside.
+    /// The folder a disk path is, relative to the client's folder; false when it is outside. A
+    /// relative path is the client's folder's already (its working folder).
     bool RelativeFolder(const char* path, std::string& out)
     {
+        if (!path || !*path) return false;
+        if (path[0] != '\\' && path[0] != '/' && path[1] != ':')
+        {
+            out = Backslashed(path);
+            while (!out.empty() && out.back() == '\\') out.pop_back();
+            return out.find("..") == std::string::npos;
+        }
         const char* base = wxl::core::binding::storage_base_path();
         std::string folder;
         if (base && *base)
@@ -705,6 +741,26 @@ namespace
         const std::shared_ptr<const Sources> list = Providers();
         if (!list) return false;
         return std::any_of(list->begin(), list->end(), [](const SourcePtr& s) { return s->provider.list != nullptr; });
+    }
+
+    /// Whether a disk path under the client's folder is an entry some provider lists in its
+    /// folder, and whether it is a folder.
+    bool ProvidedEntry(const char* path, bool& folder)
+    {
+        if (!path || g_sourceCount.load(std::memory_order_acquire) == 0 || !AnyLister()) return false;
+        std::string relative;
+        if (!RelativeFolder(path, relative) || relative.empty()) return false;
+        const size_t      cut    = relative.find_last_of('\\');
+        const std::string parent = cut == std::string::npos ? std::string() : relative.substr(0, cut);
+        const std::string name   = Key(cut == std::string::npos ? relative : relative.substr(cut + 1));
+        if (name.empty()) return false;
+        for (const Entry& entry : ProvidersList(parent))
+        {
+            if (Key(entry.name) != name) continue;
+            folder = entry.folder;
+            return true;
+        }
+        return false;
     }
 
     bool DirWalkVerb(fsk::Filesystem* fs, fsk::FileParms* parms)
