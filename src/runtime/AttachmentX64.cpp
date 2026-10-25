@@ -11,6 +11,7 @@
 #include "runtime/Core.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
+#include "profile/Profile.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
@@ -55,6 +56,9 @@ namespace wxl::core::attachment
             { WXL_STORAGE_SERVICE, WXL_STORAGE_SERVICE_VERSION, &services::StorageApi() },
             { WXL_DATA_SERVICE, WXL_DATA_SERVICE_VERSION, &services::DataApi() },
             { WXL_FOOTPRINT_SERVICE, WXL_FOOTPRINT_SERVICE_VERSION, &services::FootprintApi() },
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+            { WXL_PROFILE_SERVICE, WXL_PROFILE_SERVICE_VERSION, &profile::Api() },
+#endif
         };
     }
 

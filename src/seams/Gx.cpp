@@ -6,6 +6,7 @@
 #include "wxl/seams/seams.h"
 
 #include "binding/Binding.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Frame.hpp"
 #include "services/FootprintService.hpp"
@@ -30,6 +31,9 @@ namespace wxl::seam::Gx::ScenePresent
 {
     void WXL_CALL Before()
     {
+        // Every present ends a frame on the profiler's timeline, the loading screen's included.
+        wxl::core::profile::Present();
+
         // Only the frame Scrn.OnPaint opened ends here. The loading screen presents frames of
         // its own, and a paint with nothing to draw into presents anyway; neither opened one.
         wxl::host::ModHost* host = wxl::core::Host();

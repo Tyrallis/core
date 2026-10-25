@@ -813,6 +813,15 @@ namespace wxl::core::services
 
         bool Running() { return g_on.load(std::memory_order_relaxed); }
 
+        bool Totals(uint64_t* bytes, uint64_t* count, uint64_t* tables)
+        {
+            if (!Running()) return false;
+            *bytes  = g_totalBytes.load(std::memory_order_relaxed);
+            *count  = g_totalCount.load(std::memory_order_relaxed);
+            *tables = g_mapBytes.load(std::memory_order_relaxed);
+            return true;
+        }
+
         bool BlockSize(const void* block, uint64_t* size)
         {
             Entry held{};

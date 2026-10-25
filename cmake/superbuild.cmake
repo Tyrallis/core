@@ -60,7 +60,7 @@ endfunction()
 
 # Settings the children must see as this tree saw them.
 set(forward)
-foreach(var WXL_SDK_DIR WXL_CORE_MODS WXL_CORE_LUA CMAKE_BUILD_TYPE)
+foreach(var WXL_SDK_DIR WXL_CORE_MODS WXL_CORE_LUA WXL_PROFILE CMAKE_BUILD_TYPE)
     if(DEFINED ${var})
         list(APPEND forward "-D${var}=${${var}}")
     endif()

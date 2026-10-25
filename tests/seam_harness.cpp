@@ -5,6 +5,7 @@
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
@@ -19,6 +20,7 @@
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
+#include "wxl/core/profile.h"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -5612,6 +5614,95 @@ namespace
 }
 
 
+// --- The profiler, before it starts -----------------------------------------------------------
+// What can be checked without a viewer: locations are kept and shared, nothing opens a zone
+// before the profiler is up, and the service and the host's zones answer nothing then. The
+// profiler is started only by --bench, which then measures a zone with no viewer connected.
+
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+void CheckProfile()
+{
+    printf("\nprofile:\n");
+    namespace profile = wxl::core::profile;
+    const void* a = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 12, 0);
+    const void* b = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 12, 0);
+    const void* c = profile::Location("Journal::Flush", "Flush", "Journal.cpp", 13, 0);
+    Check(a && a == b && a != c, "the same five values answer the same location, another line another one");
+    Check(!profile::Location("", "f", "file", 1, 0), "an empty name has no location");
+    const auto* site = static_cast<const wxl_core_zone_site*>(a);
+    Check(std::string(site->name) == "Journal::Flush" && std::string(site->file) == "Journal.cpp" && site->line == 12,
+          "a location is laid out as the client's zone sites are, its strings kept");
+    Check(!profile::Started() && profile::Begin(a) == 0 && WarcraftXLZoneBegin(site) == 0,
+          "no zone opens before the profiler is up");
+    profile::End(0);
+    WarcraftXLZoneEnd(0);
+
+    const wxl_profile_api& api = profile::Api();
+    Check(api.struct_size == sizeof(wxl_profile_api) && api.connected && api.location && api.zone_begin &&
+              api.zone_end && api.zone_text && api.plot && api.message && api.frame_mark,
+          "wxl.profile fills every member");
+    const uintptr_t location = api.location(wxl_str{"Tick", 4}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+    Check(location != 0 && api.zone_begin(location) == 0 && api.connected() == WXL_FALSE,
+          "the service answers a location, and no zone while nobody is connected");
+    api.zone_end(0);
+    api.plot(wxl_str{"lines", 5}, 1.0);
+    api.message(wxl_str{"hello", 5});
+    api.frame_mark(wxl_str{"mod", 3});
+    profile::Present();
+    Check(!profile::Connected(), "a present before the profiler is up does nothing");
+}
+#endif
+
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+// --profile-live: the profiler started and waited on for up to a minute, so that a viewer (or
+// Tracy's capture tool) can connect; then a hundred frames of the host's zones, a mod's zone, a
+// client zone, a plot and a message, each frame ended by a present. What a viewer then shows is
+// the runtime's profiler end to end, on this architecture, without a client.
+void ProfileLive()
+{
+    namespace profile = wxl::core::profile;
+    profile::Start();
+    printf("\nprofile-live: waiting up to 60 s for a viewer on port 8086\n");
+    for (int i = 0; i < 6000 && !profile::Connected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!profile::Connected())
+    {
+        printf("profile-live: no viewer came\n");
+        ++g_failures;
+        return;
+    }
+    wxl::host::Profiler hooks;
+    hooks.location = [](void*, std::string_view name, std::string_view function, uint32_t color) {
+        return profile::Location(name, function, "", 0, color);
+    };
+    hooks.begin = [](void*, const void* location) { return profile::Begin(location); };
+    hooks.end   = [](void*, uint64_t zone) { profile::End(zone); };
+    wxl::host::EventBus bus({WXL_EV_Update}, nullptr);
+    bus.SetProfiler(&hooks, [](void*, uint32_t) { return std::string("harness"); }, nullptr);
+    bus.Subscribe(WXL_EV_Update, [](void*, const void*) { std::this_thread::sleep_for(std::chrono::microseconds(200)); },
+                  nullptr, 0, 1);
+    bus.SetProfiling(true);
+    const wxl_profile_api& api      = profile::Api();
+    const uintptr_t        location = api.location(wxl_str{"Harness.Work", 12}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+    static const wxl_core_zone_site kSite{"Harness.Client", "ProfileLive", __FILE__, __LINE__, 0};
+    wxl_update_args args{};
+    for (int frame = 0; frame < 100; ++frame)
+    {
+        const uint64_t client = WarcraftXLZoneBegin(&kSite);
+        bus.Emit(WXL_EV_Update, &args);
+        const uintptr_t zone = api.zone_begin(location);
+        api.zone_text(zone, wxl_str{"frame", 5});
+        std::this_thread::sleep_for(std::chrono::microseconds(300));
+        api.zone_end(zone);
+        WarcraftXLZoneEnd(client);
+        api.plot(wxl_str{"frame", 5}, frame);
+        if (frame % 25 == 0) api.message(wxl_str{"quarter", 7});
+        profile::Present();
+    }
+    printf("profile-live: 100 frames sent\n");
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+}
+#endif
+
 // --- A measurement, not a check ---------------------------------------------------------------
 // Two paths carry work at a rate nothing else here does: the file-open gate, which the client
 // reaches once per file it opens, and the event bus, which every seam goes through. These are
@@ -5657,6 +5748,44 @@ void Bench()
     time("event bus, one subscriber", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
     bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
     time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
+
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    {
+        // The profiler up and no viewer, as in a game nobody profiles: the host's zones behind
+        // their flag, which a present keeps off; then the flag forced on, every zone asked of a
+        // profiler that answers 0 -- the frame a viewer connects or leaves; then a mod's zone
+        // through wxl.profile and one of the client's own.
+        namespace profile = wxl::core::profile;
+        wxl::host::Profiler hooks;
+        hooks.location = [](void*, std::string_view name, std::string_view function, uint32_t color) {
+            return profile::Location(name, function, "", 0, color);
+        };
+        hooks.begin = [](void*, const void* location) { return profile::Begin(location); };
+        hooks.end   = [](void*, uint64_t zone) { profile::End(zone); };
+        wxl::host::EventBus traced({WXL_EV_Update}, nullptr);
+        traced.SetProfiler(&hooks, [](void*, uint32_t) { return std::string("bench"); }, nullptr);
+        traced.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0, 1);
+        time("event bus, one subscriber, profiler set", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+        traced.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0, 1);
+        time("event bus, two subscribers, profiler set", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+
+        profile::Start();
+        for (int i = 0; i < 500 && !profile::Started(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        printf("  (profiler %s, no viewer)\n", profile::Started() ? "up" : "NOT up");
+        time("event bus, two subscribers, profiler up", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+        time("event bus, two subscribers, no profiler", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
+        traced.SetProfiling(true);
+        time("event bus, two subscribers, zones asked", 200000, [&] { traced.Emit(WXL_EV_Update, &args); });
+
+        const wxl_profile_api& api      = profile::Api();
+        const uintptr_t        location = api.location(wxl_str{"Bench", 5}, wxl_str{"", 0}, wxl_str{"", 0}, 0, 0);
+        time("wxl.profile zone_begin + zone_end, no viewer", 200000, [&] { api.zone_end(api.zone_begin(location)); });
+        static const wxl_core_zone_site kSite{"Bench.Client", "Bench", __FILE__, __LINE__, 0};
+        time("client zone (WarcraftXLZoneBegin/End), no viewer", 200000,
+             [&] { WarcraftXLZoneEnd(WarcraftXLZoneBegin(&kSite)); });
+        time("present (frame mark, flag, plots), no viewer", 200000, [&] { profile::Present(); });
+    }
+#endif
 
     wxl::core::services::data::Clear();
 
@@ -5767,6 +5896,9 @@ int main(int argc, char** argv)
     CheckEnergize();
     CheckFootprint();
     CheckArchivesAndDatabases();
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    CheckProfile();
+#endif
 #if defined(_M_IX86)
     CheckThiscallShim();
     CheckOneSidedShim();
@@ -5782,6 +5914,10 @@ int main(int argc, char** argv)
     printf("\n%d failure(s)\n", g_failures);
     for (int i = 1; i < argc; ++i)
         if (strcmp(argv[i], "--bench") == 0) Bench();
+#if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
+    for (int i = 1; i < argc; ++i)
+        if (strcmp(argv[i], "--profile-live") == 0) ProfileLive();
+#endif
 
     g_host.reset();
     return g_failures ? 1 : 0;

@@ -27,6 +27,7 @@ set(WXL_CORE_ARCH "" CACHE STRING
     "Architecture of this build tree (win-x86 or win-x64). Set by the superbuild; empty builds every target.")
 option(WXL_CORE_MODS "Build the mods under mods/ (x86 only: both require wxl.patch)" ON)
 option(WXL_CORE_LUA "Build wxl.lua, the runtime of the Lua mods, from the SDK and ship it in Mods/" ON)
+option(WXL_PROFILE "Carry the Tracy profiler client, on demand, and publish wxl.profile; OFF leaves no trace of it" ON)
 
 set(WXL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sdk" CACHE PATH "Path to a checkout of WarcraftXL/sdk")
 if(NOT EXISTS "${WXL_SDK_DIR}/include/wxl/abi.h")
@@ -90,6 +91,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 # --- The SDK: the contract, the shared mod host and the shared runtime half of wxl.object -------
 set(WXL_SDK_TESTS OFF CACHE BOOL "" FORCE)
+# The host's dispatch and handler zones follow the runtime's choice.
+set(WXL_HOST_PROFILE ${WXL_PROFILE} CACHE BOOL "" FORCE)
 add_subdirectory("${WXL_SDK_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/sdk" EXCLUDE_FROM_ALL)
 
 # A single integer a mod can read out of wxl_runtime_info.version: major*10000 + minor*100 + patch.
@@ -182,6 +185,32 @@ set_property(TARGET wxl-core-seam-harness PROPERTY INTERPROCEDURAL_OPTIMIZATION_
 target_include_directories(wxl-core-seam-harness PRIVATE src include)
 target_link_libraries(wxl-core-seam-harness PRIVATE wxl::host wxl::runtime)
 target_compile_definitions(wxl-core-seam-harness PRIVATE ${WXL_CORE_DEFS} WXL_CORE_BUILD)
+
+# --- Tracy (BSD-3-Clause, deps/tracy, its own license file) -----------------------------------------
+# The client half of the profiler, compiled once into the DLL: mods reach it through wxl.profile,
+# the recompiled client through WarcraftXLZoneBegin/End, so no other binary carries a second one.
+# On demand: nothing is sent, and a zone costs a load, until a viewer connects. Started by the
+# runtime (profile::Start) rather than at load, which would run under the loader lock. No crash
+# handler: the mod host's guard owns faults. No system tracing, sampling or call stacks: they need
+# rights or symbol files a player does not have, and Proton serves none of them.
+if(WXL_PROFILE)
+    add_library(wxl-tracy STATIC deps/tracy/public/TracyClient.cpp)
+    target_include_directories(wxl-tracy SYSTEM PUBLIC deps/tracy/public)
+    target_compile_definitions(wxl-tracy PUBLIC
+        TRACY_ENABLE TRACY_ON_DEMAND TRACY_DELAYED_INIT TRACY_MANUAL_LIFETIME TRACY_NO_CRASH_HANDLER
+        TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING TRACY_NO_CONTEXT_SWITCH TRACY_NO_VSYNC_CAPTURE
+        TRACY_NO_CALLSTACK TRACY_NO_CODE_TRANSFER TRACY_NO_VERIFY TRACY_NO_FRAME_IMAGE
+        ${WXL_CORE_DEFS})
+    target_link_libraries(wxl-tracy PUBLIC ws2_32)
+
+    foreach(target wxl-core wxl-core-seam-harness)
+        target_sources(${target} PRIVATE src/profile/Profile.cpp)
+        target_link_libraries(${target} PRIVATE wxl-tracy)
+    endforeach()
+    # PUBLIC: the client's sources read it too, to compile their zones (wxl/core/profile.h).
+    target_compile_definitions(wxl-core PUBLIC WXL_CORE_PROFILE=1)
+    target_compile_definitions(wxl-core-seam-harness PRIVATE WXL_CORE_PROFILE=1)
+endif()
 
 enable_testing()
 add_test(NAME seams COMMAND wxl-core-seam-harness)

@@ -9,6 +9,7 @@
 
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
+#include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
@@ -152,6 +153,8 @@ namespace wxl::core
             }
 
             attachment::Prepare();
+            // First: it calibrates its clock on a thread of its own while the mods load.
+            profile::Start();
 
             wxl::host::HostConfig cfg;
             cfg.mods_directory  = std::filesystem::path(dir) / kModsRelative;
@@ -174,6 +177,7 @@ namespace wxl::core
 
             g_host = new wxl::host::ModHost(std::move(cfg));
             g_host->SetDisableHandler(&OnModDisabled, nullptr);
+            profile::Attach(*g_host);
             g_host->SetListenHandler(&OnListenChanged, nullptr);
 
             attachment::Install();

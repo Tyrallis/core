@@ -41,6 +41,10 @@ namespace wxl::core::services
         /// Whether accounting runs.
         bool Running();
 
+        /// Storm's live bytes and blocks, and what the accounting's own tables hold: three
+        /// relaxed loads, for a graph. False, and nothing written, while accounting is off.
+        bool Totals(uint64_t* bytes, uint64_t* count, uint64_t* tables);
+
         /// The bytes Storm handed out for @p block while accounting ran, or false when unknown.
         bool BlockSize(const void* block, uint64_t* size);
 
