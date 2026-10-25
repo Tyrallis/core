@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.19-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.20-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -63,6 +63,7 @@ How the pieces fit, and which files a new seam, fact or event touches:
 - [The mods it ships](#-the-mods-it-ships)
 - [Layout](#-layout)
 - [Troubleshooting](#-troubleshooting)
+- [Contributors](#-contributors)
 - [License](#-license)
 
 ## ⚡ Building
@@ -191,9 +192,9 @@ What a mod can reach **today**, by build:
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.profile` | yes: zones, plots, messages and frame sets on the Tracy profiler's timeline, beside the runtime's own zones for every event and mod handler (`WXL_PROFILE`) | the same, and zones in the client's main loop |
 | `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
-
-| `wxl.gx` (the D3D9 device, model batches) | no | yes: the device and the batches `M2.DrawBatch` hands over |
-| `wxl.m2file` (model files as the loader reads them) | no | yes: the file at `M2Shared.LoadSucceededCallback` and the three `M2` loader seams, memory an M2 array can reach, the shadow pass's bone animation |
+| `wxl.m2file` (parsed model files) | yes: arrays read and pointed as addresses, memory anywhere, the shadow pass's bone animation; the loader's stages as `ModelParsed`, `SkinProfileParsed`, `ModelSequenceLoad` | the same, arrays as offsets from themselves and memory within 1 GB of them |
+| `wxl.m2` (models) | yes: an object's model, `ItemDisplayInfo` rows, race prefixes, models made, hung (to follow the parent's bones or on one key bone too), shown, textured, kept on the interface's copies; `AppearanceChanged` | the same, through the binding |
+| `wxl.gx` (the D3D9 device) | yes: the device and a state invalidation; no `ModelBatchDrawn`, whose seam is x64 only | the same, and `ModelBatchDrawn` after every model batch |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY`, `STORAGE`, `GRAPHICS`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
@@ -308,10 +309,15 @@ source. Everything else observes.
 | `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
 | `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
 | `Gx.NotifyOnDeviceRestored` | `CGxDevice::NotifyOnDeviceRestored()` | `SwapchainRestored` before, with the size the device came back at |
-| `M2.DrawBatch` | `CM2SceneRender::DrawBatch()`, one plain batch of a model | nothing: after, the batch the device just drew is handed to the watchers of `wxl.gx`, with everything it was drawn with still bound |
-| `M2.Initialize` | `CM2Shared::Initialize()`, a parsed model made ready | nothing: before, the parsed model is handed to the watchers of `wxl.m2file`, ahead of its skin profile's choice and its textures |
-| `M2.InitializeSkinProfile` | `CM2Shared::InitializeSkinProfile()`, a parsed skin profile sized for drawing | nothing: before, the model and its skin profile are handed to the watchers of `wxl.m2file` |
-| `M2.FinishLoadingLowPrioritySequence` | `CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequence_index, uint8_t* buffer, uint32_t size)`, an external sequence file parsed against its model | nothing: before, the sequence's unparsed bytes are handed to the watchers of `wxl.m2file` |
+| `M2.DrawBatch` (x64 only) | `CM2SceneRender::DrawBatch()`, one plain batch of a model | `ModelBatchDrawn` after, with the numbers of the device's draw and everything it was drawn with still bound. The stock client keeps no record of its last draw: no detour there, and the event is not announced |
+| `M2.AnimateMT`, `M2.AnimateMTSimple` | `CM2Model::AnimateMT(...)` and `AnimateMTSimple(...)`, a model's bones posed for the frame, on the animate threads | nothing: after, a model `wxl.m2` hung to follow its parent's bones, or on one key bone, is posed from the parent's skeleton; one load while none is |
+| `M2Shared.Initialize` | `CM2Shared::Initialize()`, a parsed model made ready | `ModelParsed` before, ahead of its skin profile's choice and its textures |
+| `M2Shared.InitializeSkinProfile` | `CM2Shared::InitializeSkinProfile()`, a parsed skin profile sized for drawing | `SkinProfileParsed` before, with the model's header and the skin's |
+| `M2Shared.FinishLoadingLowPrioritySequence` | `CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequence_index, uint8_t* buffer, uint32_t size)`, an external sequence file parsed against its model | `ModelSequenceLoad` before, with the sequence's unparsed bytes |
+| `Component.AddItem` | `CCharacterComponent::AddItem(slot, display, visual)`, an item display put on a character appearance | `AppearanceChanged` (worn) after, once the client's own models for the slot hang on the body |
+| `Component.RemoveItem` | `CCharacterComponent::RemoveItem(slot)` | `AppearanceChanged` (removed) before, while the display is still on the slot |
+| `Component.FreeComponent` | `CCharacterComponent::FreeComponent(component)`, an appearance given back | `AppearanceChanged` (freed) before |
+| `Component.RemoveVisuals` | `CCharacterComponent::RemoveVisuals(model)`, which strips the attachments of the copies the interface draws | nothing: the models `wxl.m2` hung on the stripped points, and copies of them, are hung back after |
 | `Spell.Packet_Group_30` | `Packet_Group_30(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_SPELL_START` and `SMSG_SPELL_GO` | `SpellCastStart` or `SpellCastGo` before, by the opcode, read off the message before the client parses it: the caster, the object target, the cast time or the hit and miss counts |
 | `Spell.Packet_SMSG_SPELL_FAILURE` | `Packet_SMSG_SPELL_FAILURE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellCastInterrupted` before, for any caster in view, with the reason the server sent |
 | `Spell.SpellFailed` | `Spell_C_SpellFailed(PendingSpellCast* cast, const SpellRec* spell, int32_t reason, int32_t misc1, int32_t misc2, bool reset_cooldown)` | `SpellCastFailed` before: the local player's cast refused by the server or by the client's own checks |
@@ -355,7 +361,7 @@ source. Everything else observes.
 | `Storage.CloseArchive` | `SFile::CloseArchive(SArchive* archive)` | `ArchiveUnmounted` before, while the archive is still whole |
 | `ClientDb.Initialize` | `ClientDBInitialize()`, which loads every client database the client keeps | `ClientDbLoaded` after, once per database it left loaded, in the order the client declares them |
 | `Texture.Create` | `TextureCreate(const char* file_name, CGxTexFlags, CStatus*, uint32_t flags)` (the file-name overload, at 0x004B9760), every texture asked for by name | `TextureLoad` before, cached or not; the x64 client skips the call while nobody listens |
-| `M2Shared.LoadSucceededCallback` | `CM2Shared::LoadSucceededCallback(void* param)`, the end of a model file's read, before `FinishLoading` parses it | `ModelLoad` before, with the path and the bytes; bytes a handler answers are copied into a buffer of the client's allocator and parsed instead. Then the bytes the client is going to parse are handed to the watchers of `wxl.m2file`, which may rewrite and shorten them or refuse the file |
+| `M2Shared.LoadSucceededCallback` | `CM2Shared::LoadSucceededCallback(void* param)`, the end of a model file's read, before `FinishLoading` parses it | `ModelLoad` before, with the path and the bytes; bytes a handler answers are copied into a buffer of the client's allocator and parsed instead |
 | `MapObj.Load` | `CMapObj::Load()`, which walks a map object's root once it is read | `MapObjectLoad` before, with the path and the root's bytes |
 | `MapObj.CreateGroup` | `CMapObjGroup::Create()`, which walks a map object's group once its file is read | `MapObjectGroupLoad` before, with the root's name, the group's number and its bytes |
 | `MapArea.AsyncCallback` | `CMapArea::AsyncCallback(void* param)`, the end of a terrain tile's read, before its chunks are walked | `TerrainTileLoad` before, with the tile's name, its place on the grid and its bytes |
@@ -460,9 +466,15 @@ tools/fields/                    regenerate the SDK's update-field table from th
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
 | `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
 | `the client and this runtime were built from different binding tables` (x64) | the client and `WarcraftXL.dll` come from different trees; the line names the first row of `binding.def` that differs. Rebuild both from one tree |
+| `seam M2.DrawBatch not attached: x64 only: ...` (x86) | expected: the seam's body needs what only the recompiled client keeps; its event, `ModelBatchDrawn`, is not announced there and a subscription to it is refused |
 | `<point>: <side> on <point> refused: ...` (tag `point`) | the line says why: the point is not on this runtime (`x64 only: ...`), it is observe only, the mod was built against another signature of it (rebuild it), or on x86 its first bytes cannot take a detour |
 | `WarcraftXLPoints: ... different point tables` (x64) | the client and `WarcraftXL.dll` come from different point lists; rebuild both from one tree. No point can be attached until then |
 | `the client handed no <row> accessor; what reads it answers absent` (x64) | the client was built against an older `init.h` than this runtime; the row of `binding.def` it names answers its absent value (map `-1`, no position, ...) until the client passes one |
+
+## 🤝 Contributors
+
+Tyrallis brought the model services (`wxl.m2file`, `wxl.m2`, `wxl.gx`) and the character
+appearance and model seams they stand on (pull request #1 of sdk, core and client).
 
 ## 📄 License
 

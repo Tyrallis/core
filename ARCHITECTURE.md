@@ -80,7 +80,9 @@ of each table lists its shapes and columns.
 
 1. A row in `core/include/wxl/seams/<domain>.def` (a new domain is a new file, included from
    `seams.def`), and a `WXL_SEAM_RAISES` row per event its body raises. The shape is the sides
-   the body needs: `WXL_SEAM_BEFORE`, `WXL_SEAM_AFTER`, both with `WXL_SEAM`, or `WXL_SEAM_GATE`.
+   the body needs: `WXL_SEAM_BEFORE`, `WXL_SEAM_AFTER`, both with `WXL_SEAM`, or `WXL_SEAM_GATE`. A body that
+   needs what only the recompiled client has adds a `WXL_SEAM_X64_ONLY` row saying why: the x86
+   runtime attaches no detour for it and does not announce its events.
 2. Its body in `core/src/seams/<Domain>.cpp`: the entry points the shape declares.
 3. If its `conv` is `regparm`, a thunk in `core/src/seams/RegparmX86.cpp`.
 4. The calls in the fork, for the sides the row declares: `Before` at the top of the function,
