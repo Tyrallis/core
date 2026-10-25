@@ -1,0 +1,3 @@
+Zydis v4.1.0 (https://github.com/zyantific/zydis, commit 569320ad3c4856da13b9dbf1f0d9e20bda63870e), MIT (LICENSE),
+with Zycore (commit 74620eefd233bec20daeb66e78e744ff06e273b7), MIT (zycore/LICENSE). Kept: the decoder only
+(no encoder, no formatter), the version SafetyHook v0.7.0 is built against. Built by core's CMakeLists.txt.

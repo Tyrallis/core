@@ -9,6 +9,7 @@
 
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Code.hpp"
@@ -93,6 +94,8 @@ namespace
     void OnModDisabled(void*, wxl::host::ModHost::ModToken token, const char*)
     {
         wxl::core::services::script::OnModDisabled(token);
+        // Its point handlers: on x86 jumps into its code, on both calls into it.
+        wxl::core::points::ReleaseOf(token);
         // Its code is not trusted to run again, so neither is anything that jumps into it,
         // and nothing it was holding is going to be given back by it.
         wxl::core::attachment::Release(token);
@@ -179,6 +182,7 @@ namespace wxl::core
             g_host->SetListenHandler(&OnListenChanged, nullptr);
 
             attachment::Install();
+            points::Describe();
 
             g_host->LoadAll();
             stages::Restart();

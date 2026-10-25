@@ -8,6 +8,7 @@
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
 #include "runtime/Attachment.hpp"
+#include "points/Points.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Session.hpp"
 #include "runtime/Stages.hpp"
@@ -32,6 +33,7 @@ namespace wxl::seam::Client::Destroy
         // where a mod may still want its hooks and its files, and the unload, which frees the
         // code those hooks jump to.
         wxl::core::attachment::ReleaseAll();
+        wxl::core::points::ReleaseAll();
         wxl::core::services::storage::CloseEverything();
         wxl::core::services::data::Clear();
         for (wxl::host::ModHost::ModToken token = 1; token <= host->Loaded().size(); ++token)

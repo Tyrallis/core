@@ -1,0 +1,3 @@
+SafetyHook v0.7.0 (https://github.com/cursey/safetyhook, commit 19223663fb8a573253ffb2e82da87cc354bf5c16),
+Boost Software License 1.0 (LICENSE). Kept: include/ and the sources of the inline and mid-function
+hooks (allocator, inline_hook, mid_hook, os.windows, utility). Built by core's CMakeLists.txt as C++23.

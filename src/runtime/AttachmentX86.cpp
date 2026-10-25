@@ -9,6 +9,7 @@
 #include "common/Log.hpp"
 #include "hook/Engine.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "runtime/Core.hpp"
 #include "runtime/Image.hpp"
 #include "seams/AttachX86.hpp"
@@ -23,6 +24,7 @@
 
 #include "wxl/services/hook.h"
 #include "wxl/services/object.h"
+#include "wxl/services/point.h"
 #include "wxl/services/patch.h"
 #include "wxl/services/data.h"
 #include "wxl/services/script.h"
@@ -55,6 +57,7 @@ namespace wxl::core::attachment
             { WXL_STORAGE_SERVICE, WXL_STORAGE_SERVICE_VERSION, &services::StorageApi() },
             { WXL_DATA_SERVICE, WXL_DATA_SERVICE_VERSION, &services::DataApi() },
             { WXL_FOOTPRINT_SERVICE, WXL_FOOTPRINT_SERVICE_VERSION, &services::FootprintApi() },
+            { WXL_POINT_SERVICE, WXL_POINT_SERVICE_VERSION, &points::Api() },
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
             { WXL_PROFILE_SERVICE, WXL_PROFILE_SERVICE_VERSION, &profile::Api() },
 #endif

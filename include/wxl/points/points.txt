@@ -1,0 +1,39 @@
+# The engine functions a mod may attach to through wxl.point: Before, Replace or After.
+#
+# This file is the list; everything else is generated from it by core/tools/points/generate_points.py
+# (the contract's sdk/include/wxl/points.def, the x86 detours' include/wxl/points/x86.def, the
+# recompiled client's WarcraftXL/Points.gen.h) and inserted into the fork by insert_points.py. A
+# point is added by one line here and a regeneration; nothing is written by hand in core or the fork.
+#
+# One point per line, in the order of their ids (append only: a point is never moved or renamed):
+#
+#   address  name  policy  thread  stability  [# what a modder should know]
+#
+#   address    the function's address in Wow.exe 12340, as its OFFSET tag in the fork writes it; `-`
+#              for a function the fork tags // INLINED: the 2008 compiler copied it into its callers,
+#              so it exists on the recompiled client (x64) only.
+#   name       the fork's qualified name: the point's name for good, even if the fork renames it.
+#   policy     replace (Before, Replace and After) or observe (Before and After only).
+#   thread     main (the client's main thread; a Lua mod may attach) or any (C and C++ only).
+#   stability  stable (its signature never changes: a change makes a new point, name@2) or
+#              provisional (may change with a feature of the contract).
+#
+# An inlined copy of a point's function that the x86 detour cannot see is a site line:
+#
+#   site  name  address  arg...
+#
+#   address  where the copy starts in Wow.exe; a mid-function hook there runs the point's Before
+#            handlers, flagged WXL_POINT_CALL_INLINED (no Replace, no After: a copy has no call to
+#            replace and no single return).
+#   arg      where each argument lives at that address: a register (eax ecx edx ebx esi edi ebp) or
+#            a stack slot ([esp+8], [ebp-0x10]); a handler that writes one writes the copy's.
+#
+# `generate_points.py --coverage --binary Wow.orig.exe` compares the calls of each point in Wow.exe
+# with its call sites in the fork, which is how a missing site line is found.
+
+0x00607B00  CGCamera::UpdateCallback   replace  main  stable       # once per frame, from CGWorldFrame::OnWorldUpdate; param is the active CGCamera
+0x0081C390  CM2Cache::CreateShared     replace  main  stable       # every model asked for by file name, before the cache is searched; answers the shared model
+0x004FAF90  CGWorldFrame::RenderWorld  replace  main  stable       # the world pass of every frame, a render-batch callback; param is the CGWorldFrame; shares the seam WorldFrame.RenderWorld
+0x0081AC90  vFrameScript_SignalEvent   replace  main  stable       # every event the interface's Lua is told of, with its format and va_list; shares the seam FrameScript.vSignalEvent
+0x00631FE0  NetClient::ProcessMessage  replace  main  stable       # every world packet before its handler; shares the gate NetClient.ProcessMessage
+-           CM2Shared::FinishLoading   replace  main  provisional  # a model's bytes read and fixed up; inlined into CM2Shared::LoadSucceededCallback on x86

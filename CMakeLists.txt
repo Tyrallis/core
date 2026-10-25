@@ -163,6 +163,7 @@ set(WXL_CORE_SESSION_SOURCES
 
 add_library(wxl-core SHARED
     src/runtime/Core.cpp
+    src/points/Points.cpp
     ${WXL_CORE_SESSION_SOURCES}
     src/runtime/Stages.cpp
     src/runtime/Frame.cpp
@@ -195,6 +196,7 @@ target_compile_definitions(wxl-core PRIVATE
 # carry an architecture's entry point. Built for both, run by hand or by ctest.
 add_executable(wxl-core-seam-harness
     tests/seam_harness.cpp
+    src/points/Points.cpp
     ${WXL_CORE_SESSION_SOURCES}
     src/common/Log.cpp
     src/runtime/Stages.cpp
@@ -274,6 +276,30 @@ if(WXL_CORE_X86)
     target_include_directories(minhook PUBLIC deps/minhook/include)
     target_include_directories(minhook PRIVATE deps/minhook/src deps/minhook/src/hde)
 
+    # --- SafetyHook (BSL-1.0, deps/safetyhook) and Zydis (MIT, deps/zydis) -----------------------
+    # The detours of wxl.point: SafetyHook writes and removes them, armed while a point has
+    # handlers, and its mid-function hooks reach a point's inlined copies; Zydis, its decoder, also
+    # checks a function's first bytes before anything is written. Only the decoder of Zydis is kept.
+    # SafetyHook is C++23 (std::expected): it and the one file that includes it, src/hook/Safety.cpp,
+    # build here as their own library, behind the plain interface of src/hook/Safety.hpp.
+    file(GLOB WXL_ZYDIS_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/deps/zydis/src/*.c")
+    add_library(wxl-zydis STATIC ${WXL_ZYDIS_SOURCES} deps/zydis/zycore/src/Zycore.c)
+    target_include_directories(wxl-zydis PUBLIC deps/zydis/include deps/zydis/zycore/include
+                               PRIVATE deps/zydis/src)
+    target_compile_definitions(wxl-zydis PUBLIC ZYDIS_STATIC_BUILD ZYCORE_STATIC_BUILD
+                               ZYDIS_DISABLE_ENCODER ZYDIS_DISABLE_FORMATTER)
+    add_library(wxl-safetyhook STATIC
+        deps/safetyhook/src/allocator.cpp
+        deps/safetyhook/src/inline_hook.cpp
+        deps/safetyhook/src/mid_hook.cpp
+        deps/safetyhook/src/os.windows.cpp
+        deps/safetyhook/src/utility.cpp
+        src/hook/Safety.cpp)
+    set_target_properties(wxl-safetyhook PROPERTIES CXX_STANDARD 23)
+    target_include_directories(wxl-safetyhook PUBLIC deps/safetyhook/include PRIVATE src)
+    target_compile_definitions(wxl-safetyhook PRIVATE ${WXL_CORE_DEFS})
+    target_link_libraries(wxl-safetyhook PUBLIC wxl-zydis)
+
     # The stock client is a shipped binary: the DLL reaches it by an import and an entry
     # trampoline the patcher adds, detours at resolved addresses, and byte patches. Every file
     # here holds an address, reads the image's headers, or serves a service built on those.
@@ -286,11 +312,18 @@ if(WXL_CORE_X86)
         src/seams/RegparmX86.cpp
         src/hook/Engine.cpp
         src/hook/Points.cpp
+        src/points/PointsX86.cpp
         src/services/HookService.cpp
         src/services/PatchService.cpp)
-    target_link_libraries(wxl-core PRIVATE minhook)
-    # The harness drives the register thunks against stand-ins with the client's conventions.
-    target_sources(wxl-core-seam-harness PRIVATE src/seams/RegparmX86.cpp)
+    target_link_libraries(wxl-core PRIVATE minhook wxl-safetyhook)
+    # The harness drives the register thunks against stand-ins with the client's conventions, and
+    # arms points on stand-ins in its own image through the real hook engine.
+    target_sources(wxl-core-seam-harness PRIVATE
+        src/seams/RegparmX86.cpp
+        src/runtime/Image.cpp
+        src/hook/Engine.cpp
+        src/points/PointsX86.cpp)
+    target_link_libraries(wxl-core-seam-harness PRIVATE minhook wxl-safetyhook)
 
     # --- wxl-core-patcher.exe ----------------------------------------------------------------------
     add_executable(wxl-core-patcher
@@ -314,7 +347,10 @@ else()
     target_sources(wxl-core PRIVATE
         src/runtime/Init.cpp
         src/runtime/AttachmentX64.cpp
-        src/binding/BindingTable.cpp)
+        src/binding/BindingTable.cpp
+        src/points/PointsX64.cpp)
+    # The harness hands it a point table of its own, as the client does.
+    target_sources(wxl-core-seam-harness PRIVATE src/points/PointsX64.cpp)
 
     # The import library, for the client to link; the headers it needs are under include/.
     install(TARGETS wxl-core ARCHIVE DESTINATION "lib/${WXL_CORE_ARCH_DIR}" COMPONENT core)

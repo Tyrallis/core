@@ -145,6 +145,34 @@ def read_rows(seams_dir, problems):
     return rows
 
 
+POINT_ROW = re.compile(r"\bWXL_POINT_X86\s*\(")
+
+
+def read_point_rows(path, problems):
+    """Every WXL_POINT_X86 row of the generated point table, as a row named Point.<Ident>."""
+    if not path.is_file():
+        problems.append("the point table is missing: %s" % path)
+        return []
+    text = table.strip_cxx(path.read_text(encoding="utf-8", errors="replace"), keep_strings=True)
+    rows = []
+    for match in POINT_ROW.finditer(text):
+        open_at = match.end() - 1
+        close = table.balanced(text, open_at)
+        if close < 0:
+            continue
+        columns = table.split_top_level(text[open_at + 1:close - 1])
+        if len(columns) != 7:
+            problems.append("%s: a WXL_POINT_X86 row without its seven columns" % path.name)
+            continue
+        ident, name, address, _length, convention, returns, params = columns
+        origin = "%s:%d" % (path.name, text.count("\n", 0, match.start()) + 1)
+        inner = params.strip()[1:-1].strip()
+        decls = [] if not inner else table.split_top_level(inner)
+        rows.append(Row("Point", ident, "%s@%s" % (name.strip().strip('"'), address.strip()), returns,
+                        convention, decls, origin, False))
+    return rows
+
+
 # --- The offsets table ------------------------------------------------------------------------
 
 OFFSET_ROW = re.compile(r'WXL_OFFSET_FUNCTION\(\s*"([^"]*)"\s*,\s*(0x[0-9A-Fa-f]+)\s*,\s*'
@@ -1333,6 +1361,9 @@ def main(argv=None):
     parser.add_argument("--offsets", type=Path,
                         default=core / "include" / "wxl" / "offsets" / "generated",
                         help="the directory holding the generated functions.def")
+    parser.add_argument("--points", type=Path, default=None,
+                        help="the generated x86 point table, whose rows are checked like the seams'; "
+                             "default core's own, read when --seams is core's own too")
     parser.add_argument("--thunks", type=Path, default=core / "src" / "seams" / "RegparmX86.cpp",
                         help="the hand-written regparm thunks")
     parser.add_argument("--backend", choices=("local", "mcp"), default="local",
@@ -1361,6 +1392,11 @@ def main(argv=None):
 
     problems = []
     rows = read_rows(args.seams.resolve(), problems)
+    points = args.points
+    if points is None and args.seams.resolve() == (core / "include" / "wxl" / "seams").resolve():
+        points = core / "include" / "wxl" / "points" / "x86.def"
+    point_rows = read_point_rows(points.resolve(), problems) if points else []
+    rows += point_rows
     if not rows:
         print("check_conventions: no seam row was read from %s" % args.seams, file=sys.stderr)
         for problem in problems:
@@ -1429,9 +1465,9 @@ def main(argv=None):
         return 1
 
     if not args.json:
-        print("check_conventions: %d row(s) agree with Wow.exe 12340 (%d regparm thunk(s), %d "
+        print("check_conventions: %d row(s) agree with Wow.exe 12340 (%d of them points, %d regparm thunk(s), %d "
               "witness(es), %s, %d undetermined point(s), %.1fs)"
-              % (len(rows), len(thunks), sum(len(r.witnesses) for r in rows), binary.describe(),
+              % (len(rows), len(point_rows), len(thunks), sum(len(r.witnesses) for r in rows), binary.describe(),
                  notes, elapsed))
     return 0
 

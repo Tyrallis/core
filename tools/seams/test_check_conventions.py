@@ -806,6 +806,16 @@ GROUND_TRUTH = {
     # SMSG_COMPRESSED_UPDATE_OBJECT's handler pushes four and cleans 0x10 at 0x004D7597.
     "ObjectMgr.FillInPartialObjectData": ("0x004D53C0", "cdecl", [], 6),
     "ObjectMgr.Packet_SMSG_UPDATE_OBJECT": ("0x004D73A0", "cdecl", [], 4),
+    # The points of wxl.point (include/wxl/points/x86.def), read by hand: UpdateCallback is called
+    # once, at 0x004FA7BC, with two dwords pushed and none cleaned, and ends in a bare `ret`;
+    # CreateShared reads ECX at 0x0081C3A4 and returns `ret 8`; RenderWorld is a render-batch
+    # callback (its address pushed, never called directly) reading one dword, bare `ret`;
+    # vFrameScript_SignalEvent is called at 0x005326E8 with three pushed and twelve cleaned.
+    "Point.CGCamera_UpdateCallback":   ("0x00607B00", "cdecl", [], 2),
+    "Point.CM2Cache_CreateShared":     ("0x0081C390", "thiscall", ["ecx"], 2),
+    "Point.CGWorldFrame_RenderWorld":  ("0x004FAF90", "cdecl", [], 1),
+    "Point.vFrameScript_SignalEvent":  ("0x0081AC90", "cdecl", [], 3),
+    "Point.NetClient_ProcessMessage":  ("0x00631FE0", "thiscall", ["ecx"], 3),
 }
 
 

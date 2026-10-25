@@ -5,6 +5,7 @@
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Code.hpp"
@@ -22,13 +23,19 @@
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
+#include "wxl/core/points.h"
 #include "wxl/core/profile.h"
 #include "wxl/core/storm.hpp"
+#include "wxl/objects/map.hpp"
+#include "wxl/runtime/handles.hpp"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
 #if defined(_M_IX86)
     #include "seams/Detour.hpp"
+    #include "hook/Engine.hpp"
+    #include "hook/Safety.hpp"
+    #include "points/PointsX86.hpp"
     #include "seams/RegparmX86.hpp"
 #endif
 
@@ -5940,6 +5947,508 @@ void ProfileLive(bool any)
 }
 #endif
 
+// --- wxl.point: the table, the dispatch, and on x86 the detours SafetyHook writes -----------------
+
+namespace
+{
+    namespace pts = wxl::core::points;
+
+    const wxl_point_api& PointApi() { return pts::Api(); }
+
+    /// What the handlers saw, in the order they ran.
+    std::string g_pointTrace;
+
+    struct Pair
+    {
+        void* data;
+        void* param;
+    };
+
+    /// A stand-in original of CGCamera::UpdateCallback's generic shape: answers data + param.
+    int g_originalRuns = 0;
+    void WXL_CALL FakeCameraOriginal(void* const* args, void* result)
+    {
+        ++g_originalRuns;
+        const uintptr_t data  = reinterpret_cast<uintptr_t>(*static_cast<void**>(args[0]));
+        const uintptr_t param = reinterpret_cast<uintptr_t>(*static_cast<void**>(args[1]));
+        *static_cast<int32_t*>(result) = static_cast<int32_t>(data + param);
+        g_pointTrace += "O";
+    }
+
+    int32_t EnterCamera(uintptr_t data, uintptr_t param)
+    {
+        void*       a     = reinterpret_cast<void*>(data);
+        void*       b     = reinterpret_cast<void*>(param);
+        void* const args[] = {&a, &b};
+        int32_t     result = -1;
+        pts::Enter(pts::kCGCamera_UpdateCallback, args, &result, &FakeCameraOriginal);
+        return result;
+    }
+
+    void WXL_CALL PointBefore(wxl_point_call* call, void*)
+    {
+        g_pointTrace += "B";
+        *static_cast<void**>(call->args[0]) = reinterpret_cast<void*>(uintptr_t{100}); // data = 100
+    }
+
+    void WXL_CALL PointReplaceCalls(wxl_point_call* call, void* user)
+    {
+        g_pointTrace += static_cast<const char*>(user);
+        PointApi().call_original(call);
+        *static_cast<int32_t*>(call->result) += 1;
+    }
+
+    void WXL_CALL PointReplaceAnswers(wxl_point_call* call, void*)
+    {
+        g_pointTrace += "R";
+        *static_cast<int32_t*>(call->result) = 7;
+    }
+
+    void WXL_CALL PointAfter(wxl_point_call* call, void* user)
+    {
+        g_pointTrace += static_cast<const char*>(user);
+        *static_cast<int32_t*>(call->result) *= 2;
+    }
+
+    void WXL_CALL PointFaultsFirst(wxl_point_call*, void*)
+    {
+        g_pointTrace += "F";
+        *static_cast<volatile int*>(nullptr) = 1;
+    }
+
+    uint32_t g_seenDepth = 0;
+    void WXL_CALL PointDepth(wxl_point_call* call, void*)
+    {
+        if (call->depth > g_seenDepth) g_seenDepth = call->depth;
+        if (call->depth == 1) EnterCamera(1, 2); // a nested call of the same point
+    }
+
+    void WXL_CALL PointCallsOriginalFromBefore(wxl_point_call* call, void*) { PointApi().call_original(call); }
+
+    uint32_t Attach(uint32_t index, uint32_t side, wxl_point_fn fn, void* user, int32_t priority = 0, uint32_t hash = 0)
+    {
+        return PointApi().attach(index + 1, side, fn, user, priority, hash);
+    }
+
+#if !defined(_M_IX86)
+    volatile uint8_t g_fakeArmed[pts::kCount] = {};
+#else
+    /// Puts each x86 point on a stand-in of its shape in this image, and the camera's site on an
+    /// inlined copy of it.
+    void PlaceStandIns();
+#endif
+
+    /// Every point of the table through the dispatch, as its realisation calls it: its arguments
+    /// by address, its answer's slot, Before, Replace and After once each.
+    int g_everyOriginal = 0;
+    void WXL_CALL EveryOriginal(void* const*, void* result)
+    {
+        ++g_everyOriginal;
+        if (result) memset(result, 0, 8);
+    }
+    int g_everySides = 0;
+    void WXL_CALL EveryHandler(wxl_point_call* call, void*)
+    {
+        g_everySides += 1 << (call->side * 4);
+        if (call->side == WXL_POINT_REPLACE) PointApi().call_original(call);
+    }
+
+    void CheckEveryPoint()
+    {
+        const wxl_point_api& api = PointApi();
+        int dispatched = 0, here = 0;
+        for (uint32_t index = 0; index < pts::kCount; ++index)
+        {
+            const char* why = "";
+            if (!pts::Has(index, &why)) continue;
+            ++here;
+            uint32_t ids[3];
+            for (uint32_t side = 0; side < 3; ++side)
+                ids[side] = Attach(index, side, &EveryHandler, nullptr, 0, pts::RowOf(index).layout_hash);
+            uint64_t    values[8] = {};
+            void*       args[8];
+            for (int i = 0; i < 8; ++i) args[i] = &values[i];
+            uint64_t    result = 0;
+            g_everyOriginal = g_everySides = 0;
+            pts::Enter(index, args, pts::RowOf(index).returns ? &result : nullptr, &EveryOriginal);
+            if (ids[0] && ids[1] && ids[2] && g_everyOriginal == 1 && g_everySides == 0x111) ++dispatched;
+            for (uint32_t id : ids) api.detach(id);
+        }
+        Check(here > 0 && dispatched == here, "every point this runtime has runs its Before, Replace (calling "
+                                              "the original once) and After");
+    }
+
+    void CheckPointTable()
+    {
+        const wxl_point_api& api = PointApi();
+        std::vector<wxl_point_info> infos(api.list(nullptr, 0));
+        for (wxl_point_info& info : infos) info.struct_size = sizeof info;
+        api.list(infos.data(), static_cast<uint32_t>(infos.size()));
+        Check(infos.size() == pts::kCount && pts::kCount >= 6, "list names every point of wxl/points.def");
+        const wxl_point_info& camera = infos[pts::kCGCamera_UpdateCallback];
+        Check(std::string_view(camera.name.data, camera.name.size) == "CGCamera::UpdateCallback" &&
+                  std::string_view(camera.signature.data, camera.signature.size) == "i32(ptr,ptr)" &&
+                  camera.arg_count == 2 && (camera.flags & WXL_POINT_STABLE) && (camera.flags & WXL_POINT_REPLACEABLE) &&
+                  (camera.flags & WXL_POINT_ON_X86) && (camera.flags & WXL_POINT_ON_X64),
+              "the camera point: its name, lowered signature, two arguments, stable, replaceable, on both runtimes");
+        const wxl_point_info& finish = infos[pts::kCM2Shared_FinishLoading];
+        Check(!(finish.flags & WXL_POINT_ON_X86) && (finish.flags & WXL_POINT_ON_X64) && !(finish.flags & WXL_POINT_STABLE),
+              "CM2Shared::FinishLoading is provisional and on the recompiled client only");
+
+        uint32_t id = 0;
+        Check(api.find("No::SuchPoint", &id) == WXL_E_NOT_FOUND, "find: a name the table does not hold is not_found");
+#if defined(_M_IX86)
+        Check(api.find("CM2Shared::FinishLoading", &id) == WXL_E_UNSUPPORTED &&
+                  std::string_view(finish.absent.data, finish.absent.size).find("x64 only") == 0,
+              "find: an inlined function is unsupported on x86, and list says `x64 only` and why");
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_E_UNSUPPORTED,
+              "find: outside Wow.exe 12340 no x86 point is there (the harness is not the client)");
+        PlaceStandIns();
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_OK, "find: placed on stand-ins, the x86 points are there");
+#else
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_E_UNSUPPORTED,
+              "find: before the client hands its table, no x64 point is there");
+        std::vector<std::string> rows;
+        std::vector<const char*> pointers;
+        for (uint32_t i = 0; i < pts::kCount; ++i)
+            rows.push_back(std::string(pts::RowOf(i).name) + ": " + pts::RowOf(i).lowered);
+        for (const std::string& row : rows) pointers.push_back(row.c_str());
+        std::vector<const char*> wrong = pointers;
+        wrong[1] = "CM2Cache::CreateShared: ptr(ptr)";
+        wxl_core_points table{sizeof(wxl_core_points), pts::kCount, wrong.data(), g_fakeArmed};
+        Check(WarcraftXLPoints(&table) == WXL_E_INVALID, "a client table of another signature is refused");
+        table.rows = pointers.data();
+        Check(WarcraftXLPoints(&table) == WXL_OK, "the client's own table is taken");
+        Check(api.find("CM2Shared::FinishLoading", &id) == WXL_OK && id == pts::kCM2Shared_FinishLoading + 1,
+              "find: the inlined function is a point of the recompiled client");
+#endif
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_OK && id == pts::kCGCamera_UpdateCallback + 1,
+              "find: the camera point's id is its row's position, from 1");
+    }
+
+    void CheckPointDispatch()
+    {
+        const wxl_point_api& api   = PointApi();
+        const uint32_t       index = pts::kCGCamera_UpdateCallback;
+
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        Check(EnterCamera(3, 4) == 7 && g_originalRuns == 1 && g_pointTrace == "O",
+              "with nothing attached a point is its original alone");
+
+        Check(Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("x"), 0,
+                     pts::RowOf(index).layout_hash ^ 1) == WXL_POINT_ATTACHMENT_NONE,
+              "a handler built against another layout of the point is refused");
+        Check(Attach(index, 7, &PointBefore, nullptr) == WXL_POINT_ATTACHMENT_NONE, "an unknown side is refused");
+        Check(api.attach(0, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, 0) == WXL_POINT_ATTACHMENT_NONE &&
+                  api.attach(pts::kCount + 1, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, 0) == WXL_POINT_ATTACHMENT_NONE,
+              "point ids outside the table are refused");
+
+        const uint32_t before = Attach(index, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, pts::RowOf(index).layout_hash);
+#if !defined(_M_IX86)
+        Check(g_fakeArmed[index] == 1, "the first handler sets the point's byte in the client");
+#endif
+        const uint32_t outer = Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("1"), -5);
+        const uint32_t inner = Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("2"), 5);
+        const uint32_t late  = Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("a"), 5);
+        const uint32_t early = Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("z"), -5);
+        Check(before && outer && inner && late && early, "Before, two Replaces and two Afters attach");
+
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        int32_t result = EnterCamera(3, 4);
+        Check(g_pointTrace == "B12Oaz", "Before, then the Replaces outermost first, the original, then the Afters "
+                                        "with the lower priority last (nearest the caller)");
+        Check(result == ((100 + 4) + 1 + 1) * 4, "Before rewrote an argument, each Replace and each After the answer");
+
+        api.detach(inner);
+        const uint32_t answers = Attach(index, WXL_POINT_REPLACE, &PointReplaceAnswers, nullptr, 10);
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        result = EnterCamera(3, 4);
+        Check(g_pointTrace == "B1Raz" && g_originalRuns == 0 && result == (7 + 1) * 4,
+              "a Replace that answers without calling the original takes the call: the function does not run");
+        api.detach(answers);
+        api.detach(outer);
+        api.detach(late);
+        api.detach(early);
+
+        // A faulting Replace before the original: the call goes on with the original, the handler stops.
+        const uint32_t faulty = Attach(index, WXL_POINT_REPLACE, &PointFaultsFirst, nullptr);
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        result = EnterCamera(3, 4);
+        Check(g_pointTrace == "BFO" && result == 104, "a Replace that faults before the original: the original runs and answers");
+        g_pointTrace.clear();
+        EnterCamera(3, 4);
+        Check(g_pointTrace == "BO", "and the faulting handler is not called again");
+        api.detach(faulty);
+
+        const uint32_t depth = Attach(index, WXL_POINT_BEFORE, &PointDepth, nullptr);
+        g_seenDepth = 0;
+        EnterCamera(1, 1);
+        Check(g_seenDepth == 2, "a call of the point inside its own handler is depth 2");
+        api.detach(depth);
+
+        const uint32_t misplaced = Attach(index, WXL_POINT_BEFORE, &PointCallsOriginalFromBefore, nullptr);
+        g_originalRuns = 0;
+        EnterCamera(1, 1);
+        Check(g_originalRuns == 1, "call_original outside a Replace does nothing: the original runs once");
+        api.detach(misplaced);
+
+        Check(api.detach(before) == WXL_OK && api.detach(before) == WXL_E_NOT_FOUND, "detach, then a second detach is not_found");
+#if !defined(_M_IX86)
+        Check(g_fakeArmed[index] == 0, "the last handler's detach clears the point's byte");
+#endif
+
+        // A mod's handlers go with it.
+        const uint32_t saved = g_host->SwapCurrentMod(42);
+        Attach(index, WXL_POINT_BEFORE, &PointBefore, nullptr);
+        Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("a"));
+        g_host->SwapCurrentMod(saved);
+        pts::ReleaseOf(42);
+        g_pointTrace.clear();
+        EnterCamera(3, 4);
+        Check(g_pointTrace == "O", "ReleaseOf takes a mod's handlers away");
+    }
+}
+
+#if defined(_M_IX86)
+namespace
+{
+    // Stand-ins of the points' shapes in this image, which the checks place the points on.
+    volatile int32_t g_sink = 0;
+
+    __declspec(noinline) int32_t __cdecl StandInCamera(void* data, void* param)
+    {
+        g_sink = g_sink + 1;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(data) + reinterpret_cast<uintptr_t>(param));
+    }
+
+    /// An inlined copy of the camera's function, as the 2008 compiler leaves one in a caller.
+    __declspec(noinline) int32_t __cdecl InlinedCamera(void* data, void* param)
+    {
+        g_sink = g_sink + 2;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(data) * 1000 + reinterpret_cast<uintptr_t>(param));
+    }
+
+    __declspec(noinline) void* __fastcall StandInShared(void* self, void*, void* name, uint32_t flags)
+    {
+        g_sink = g_sink + 3;
+        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(self) + reinterpret_cast<uintptr_t>(name) + flags);
+    }
+
+    std::string g_worldTrace;
+    __declspec(noinline) void __cdecl StandInWorld(void* param)
+    {
+        g_sink = g_sink + 4;
+        g_worldTrace += param ? "W" : "w";
+    }
+
+    __declspec(noinline) void __cdecl StandInSignal(uint32_t index, void* format, void* args)
+    {
+        g_sink = g_sink + static_cast<int32_t>(index) + (format ? 1 : 0) + (args ? 1 : 0);
+    }
+
+    __declspec(noinline) int32_t __fastcall StandInProcess(void* self, void*, uint32_t time, void* msg, int32_t unused)
+    {
+        g_sink = g_sink + 5;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(self) + time * 10 + reinterpret_cast<uintptr_t>(msg) + unused);
+    }
+
+    template <class Fn>
+    uintptr_t Address(Fn fn)
+    {
+        return reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(fn));
+    }
+
+    uint32_t g_espIn = 0, g_espOut = 0;
+    int32_t  g_pointAnswered = 0;
+
+    /// Calls NetClient::ProcessMessage as the client does at 0x006323F7: `this` in ECX, three
+    /// dwords pushed, the callee pops them; ESP recorded on both sides.
+    __declspec(noinline) void CallLikeHandleData(void* fn, void* self, uint32_t time, void* msg, int32_t unused)
+    {
+        __asm {
+            mov  dword ptr [g_espIn], esp
+            push unused
+            push msg
+            push time
+            mov  ecx, self
+            call fn
+            mov  dword ptr [g_pointAnswered], eax
+            mov  dword ptr [g_espOut], esp
+        }
+    }
+
+    std::string g_seamTrace;
+    using WorldFn = void(__cdecl*)(void*);
+    WorldFn g_seamOriginal = nullptr;
+    void __cdecl FakeSeamDetour(void* param)
+    {
+        g_seamTrace += "S";
+        g_seamOriginal(param);
+    }
+
+    uint32_t g_inlinedFlags = 0;
+    void WXL_CALL PointSeesInlined(wxl_point_call* call, void*)
+    {
+        g_inlinedFlags = call->flags;
+        *static_cast<void**>(call->args[0]) = reinterpret_cast<void*>(uintptr_t{9});
+    }
+
+    void WXL_CALL PointWorld(wxl_point_call*, void*) { g_seamTrace += "P"; }
+
+    void WXL_CALL PointProcess(wxl_point_call* call, void*)
+    {
+        *static_cast<uint32_t*>(call->args[1]) = 2; // time = 2
+        PointApi().call_original(call);
+        *static_cast<int32_t*>(call->result) += 1000;
+    }
+
+    int g_sides[3] = {};
+    void WXL_CALL CountSide(wxl_point_call* call, void*) { ++g_sides[call->side]; }
+    void WXL_CALL ReplaceThrough(wxl_point_call* call, void*)
+    {
+        ++g_sides[WXL_POINT_REPLACE];
+        PointApi().call_original(call);
+    }
+
+    /// Before, Replace and After on the two showcase shapes the checks above leave out: a
+    /// thiscall that answers a pointer (CM2Cache::CreateShared) and a cdecl of three that answers
+    /// nothing (vFrameScript_SignalEvent).
+    void CheckPointSides()
+    {
+        const wxl_point_api& api = PointApi();
+        for (uint32_t index : {static_cast<uint32_t>(pts::kCM2Cache_CreateShared), static_cast<uint32_t>(pts::kvFrameScript_SignalEvent)})
+        {
+            const uint32_t a = Attach(index, WXL_POINT_BEFORE, &CountSide, nullptr);
+            const uint32_t b = Attach(index, WXL_POINT_REPLACE, &ReplaceThrough, nullptr);
+            const uint32_t c = Attach(index, WXL_POINT_AFTER, &CountSide, nullptr);
+            g_sides[0] = g_sides[1] = g_sides[2] = 0;
+            const int32_t sinkBefore = g_sink;
+            if (index == pts::kCM2Cache_CreateShared)
+            {
+                using SharedFn = void*(__thiscall*)(void*, void*, uint32_t);
+                const SharedFn shared = Opaque(reinterpret_cast<SharedFn>(&StandInShared));
+                void* const    answer = shared(reinterpret_cast<void*>(uintptr_t{0x100}), reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+                Check(a && b && c && answer == reinterpret_cast<void*>(uintptr_t{0x123}) && g_sink == sinkBefore + 3,
+                      "x86: CM2Cache::CreateShared's thiscall detour answers the original's pointer through the chain");
+            }
+            else
+            {
+                using SignalFn = void(__cdecl*)(uint32_t, void*, void*);
+                Opaque(reinterpret_cast<SignalFn>(&StandInSignal))(4, const_cast<int32_t*>(&g_sink), nullptr);
+                Check(a && b && c && g_sink == sinkBefore + 5, "x86: vFrameScript_SignalEvent's detour runs the original once");
+            }
+            Check(g_sides[0] == 1 && g_sides[1] == 1 && g_sides[2] == 1, "x86: and its Before, Replace and After ran once each");
+            api.detach(a);
+            api.detach(b);
+            api.detach(c);
+        }
+    }
+
+    void CheckPointPrologues()
+    {
+        char why[256];
+        const uint8_t jumped[16] = {0xE9, 0, 0, 0, 0, 0x90, 0x90, 0x90};
+        Check(!wxl::hook::safety::CheckPrologue(jumped, 8, why, sizeof why) && strstr(why, "already a jump"),
+              "a function whose first instruction is a jump is refused: another tool detoured it");
+        printf("     %s\n", why);
+        const uint8_t tiny[16] = {0x33, 0xC0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+        Check(!wxl::hook::safety::CheckPrologue(tiny, 3, why, sizeof why) && strstr(why, "ends after 3"),
+              "a function that returns within five bytes is refused");
+        printf("     %s\n", why);
+        // push ebp; mov ebp, esp; nop; nop; nop; jmp short -7 (lands at +1)
+        const uint8_t looping[16] = {0x55, 0x89, 0xE5, 0x90, 0x90, 0x90, 0xEB, 0xF9, 0xC3};
+        Check(!wxl::hook::safety::CheckPrologue(looping, 9, why, sizeof why) && strstr(why, "lands at +1"),
+              "a function with a branch into its first five bytes is refused");
+        printf("     %s\n", why);
+        Check(wxl::hook::safety::CheckPrologue(reinterpret_cast<const void*>(&StandInCamera), 0, why, sizeof why),
+              "a compiled function's prologue passes");
+    }
+
+    void CheckPointDetours()
+    {
+        const wxl_point_api& api = PointApi();
+        using CameraFn           = int32_t(__cdecl*)(void*, void*);
+        const CameraFn camera    = Opaque(&StandInCamera);
+        const CameraFn inlined   = Opaque(&InlinedCamera);
+        uint8_t        bytes[8];
+        memcpy(bytes, reinterpret_cast<const void*>(&StandInCamera), sizeof bytes);
+
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 7 && !wxl::hook::Armed(reinterpret_cast<void*>(&StandInCamera)),
+              "x86: an unattached point is not detoured: the function runs as it is");
+
+        g_pointTrace.clear();
+        const uint32_t before = Attach(pts::kCGCamera_UpdateCallback, WXL_POINT_BEFORE, &PointBefore, nullptr);
+        const uint32_t seen   = Attach(pts::kCGCamera_UpdateCallback, WXL_POINT_BEFORE, &PointSeesInlined, nullptr, 10);
+        Check(before && seen && reinterpret_cast<const uint8_t*>(&StandInCamera)[0] == 0xE9,
+              "x86: the first handler arms the detour: SafetyHook's jump at the function's head");
+        g_pointTrace.clear();
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 9 + 4 && g_pointTrace == "B",
+              "x86: the detour runs the Before handlers, which rewrite what the function is given");
+        g_inlinedFlags = 0;
+        Check(inlined(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 9 * 1000 + 4 &&
+                  (g_inlinedFlags & WXL_POINT_CALL_INLINED),
+              "x86: a site (an inlined copy) runs the Before handlers, flagged inlined, and their rewrites reach the copy");
+
+        api.detach(before);
+        api.detach(seen);
+        Check(memcmp(bytes, reinterpret_cast<const void*>(&StandInCamera), sizeof bytes) == 0 &&
+                  !wxl::hook::Armed(reinterpret_cast<void*>(&StandInCamera)),
+              "x86: the last detach disarms it: the function's own bytes are back");
+        g_pointTrace.clear();
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 7 && g_pointTrace.empty() &&
+                  inlined(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 3004,
+              "x86: and nothing runs any more, at the function or at its site");
+
+        // thiscall, called as the client calls it.
+        const uint32_t process = Attach(pts::kNetClient_ProcessMessage, WXL_POINT_REPLACE, &PointProcess, nullptr);
+        void* const    self    = reinterpret_cast<void*>(uintptr_t{0x1000});
+        CallLikeHandleData(reinterpret_cast<void*>(&StandInProcess), self, 5, reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+        Check(process && g_pointAnswered == 0x1000 + 2 * 10 + 0x20 + 3 + 1000 && g_espIn == g_espOut,
+              "x86: a thiscall point called as the client calls it: `this` in ECX, the Replace rewrote an argument "
+              "and the answer, and the stack is as the caller left it");
+        api.detach(process);
+        CallLikeHandleData(reinterpret_cast<void*>(&StandInProcess), self, 5, reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+        Check(g_pointAnswered == 0x1000 + 50 + 0x20 + 3 && g_espIn == g_espOut, "x86: and as itself once detached");
+
+        // A point on a function a seam already detours: one chain, the point in front.
+        const wxl::hook::Id seam = wxl::hook::Attach("Harness.World", Address(&StandInWorld), &FakeSeamDetour,
+                                                     &g_seamOriginal);
+        const WorldFn world = Opaque(&StandInWorld);
+        const uint32_t point = Attach(pts::kCGWorldFrame_RenderWorld, WXL_POINT_BEFORE, &PointWorld, nullptr);
+        g_seamTrace.clear();
+        g_worldTrace.clear();
+        world(reinterpret_cast<void*>(1));
+        Check(seam && point && g_seamTrace == "PS" && g_worldTrace == "W",
+              "x86: a point joins a seam's chain on its function, in front of it, and the function still runs once");
+        api.detach(point);
+        g_seamTrace.clear();
+        world(reinterpret_cast<void*>(1));
+        Check(g_seamTrace == "S" && wxl::hook::Armed(reinterpret_cast<void*>(&StandInWorld)),
+              "x86: detaching the point leaves the seam's chain as it was");
+        wxl::hook::Detach(seam);
+    }
+}
+#endif
+
+#if defined(_M_IX86)
+namespace
+{
+    void PlaceStandIns()
+    {
+        pts::x86::Place(pts::kCGCamera_UpdateCallback, Address(&StandInCamera), 0);
+        pts::x86::Place(pts::kCM2Cache_CreateShared, Address(&StandInShared), 0);
+        pts::x86::Place(pts::kCGWorldFrame_RenderWorld, Address(&StandInWorld), 0);
+        pts::x86::Place(pts::kvFrameScript_SignalEvent, Address(&StandInSignal), 0);
+        pts::x86::Place(pts::kNetClient_ProcessMessage, Address(&StandInProcess), 0);
+        pts::x86::AddSite(pts::kCGCamera_UpdateCallback, Address(&InlinedCamera), "[esp+4],[esp+8]");
+    }
+}
+#endif
+
 // --- A measurement, not a check ---------------------------------------------------------------
 // Two paths carry work at a rate nothing else here does: the file-open gate, which the client
 // reaches once per file it opens, and the event bus, which every seam goes through. These are
@@ -6042,6 +6551,48 @@ void Bench()
     bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
     time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
+    {
+        // The lookups behind every object event (the runtime's handle table: an object to its
+        // handle, a guid to its handle) and behind a mod's per-object data (ObjectMap's table),
+        // with as many objects as a busy city shows.
+        constexpr int        kObjects = 2000;
+        std::vector<uint8_t> objects(kObjects * 16);
+        wxl::runtime::HandleTable handles;
+        std::vector<wxl_handle>   minted;
+        for (int i = 0; i < kObjects; ++i)
+            minted.push_back(handles.Track(&objects[i * 16], 0x0F00000000000000ull + i * 7919u, 1));
+        int at = 0;
+        time("handle table, object to handle", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            volatile wxl_handle h = handles.HandleOf(&objects[at * 16]);
+            (void)h;
+        });
+        time("handle table, guid to handle", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            volatile wxl_handle h = handles.FindByKey(0x0F00000000000000ull + at * 7919u);
+            (void)h;
+        });
+        time("handle table, track and untrack", 200000, [&] {
+            at = (at + 613) % kObjects;
+            handles.Untrack(&objects[at * 16]);
+            handles.Track(&objects[at * 16], 0x0F00000000000000ull + at * 7919u, 1);
+        });
+
+        wxl::ObjectMap<uint32_t>::map_type data;
+        for (wxl_handle h : minted) data[wxl::Object(h)] = 1;
+        time("ObjectMap table, find", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            auto found = data.find(wxl::Object(minted[at]));
+            volatile uint32_t v = found == data.end() ? 0 : found->second;
+            (void)v;
+        });
+        time("ObjectMap table, erase and insert", 200000, [&] {
+            at = (at + 613) % kObjects;
+            data.erase(wxl::Object(minted[at]));
+            data[wxl::Object(minted[at])] = 2;
+        });
+    }
+
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     {
         // The profiler up and no viewer, as in a game nobody profiles: the host's zones behind
@@ -6081,6 +6632,42 @@ void Bench()
         time("present (frame mark, flag, plots), no viewer", 200000, [&] { profile::Present(); });
     }
 #endif
+
+    {
+        // A point: the dispatch with nothing attached (a call that reached it as one was
+        // detached), then with one handler of each side. An unattached point never reaches it:
+        // on x86 it is not detoured, on x64 the client tests its byte.
+        namespace pts = wxl::core::points;
+        void*       a = nullptr;
+        void*       b = nullptr;
+        void* const pargs[] = {&a, &b};
+        int32_t     presult = 0;
+        const auto  original = [](void* const*, void* r) { *static_cast<int32_t*>(r) = 1; };
+        time("point, nothing attached", 2000000, [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const wxl_point_api& api = pts::Api();
+        const auto nothing = [](wxl_point_call*, void*) {};
+        const uint32_t before = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_BEFORE, nothing, nullptr, 0, 0);
+        time("point, one Before", 2000000, [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const uint32_t replace = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_REPLACE,
+                                            [](wxl_point_call* call, void*) { wxl::core::points::Api().call_original(call); },
+                                            nullptr, 0, 0);
+        time("point, one Before and a Replace calling the original", 2000000,
+             [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const uint32_t after = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_AFTER, nothing, nullptr, 0, 0);
+        time("point, Before, Replace and After", 2000000,
+             [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        api.detach(before);
+        api.detach(replace);
+        api.detach(after);
+#if defined(_M_IX86)
+        using CameraFn = int32_t(__cdecl*)(void*, void*);
+        const CameraFn camera = Opaque(&StandInCamera);
+        time("x86 point function, unattached (not detoured)", 2000000, [&] { camera(nullptr, nullptr); });
+        const uint32_t armed = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_BEFORE, nothing, nullptr, 0, 0);
+        time("x86 point function, detoured, one Before", 2000000, [&] { camera(nullptr, nullptr); });
+        api.detach(armed);
+#endif
+    }
 
     wxl::core::services::data::Clear();
 
@@ -6207,6 +6794,14 @@ int main(int argc, char** argv)
     CheckStormDetours();
     CheckAssetDetours();
     CheckValidatorDetour();
+#endif
+    CheckPointTable();
+    CheckPointDispatch();
+    CheckEveryPoint();
+#if defined(_M_IX86)
+    CheckPointPrologues();
+    CheckPointDetours();
+    CheckPointSides();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);
