@@ -24,5 +24,26 @@ namespace wxl::core::services
 
         /// The same for one mod, when it is disabled or unloaded.
         void CloseFilesOf(uint32_t mod);
+
+        /**
+         * @brief Where an open of @p name is answered from a folder of the search path.
+         *
+         * True when a folder holds the name and wins it: a folder of a priority above 0 over
+         * the client's own data, one of 0 or below only when the client has nothing by that name.
+         * @p out then receives the name the client resolves to that file -- its path relative
+         * to the client's folder -- and @p flags the bit that makes the client look among its
+         * loose files for it. False, nothing written, otherwise.
+         */
+        bool Resolve(const char* name, char* out, size_t capacity, uint32_t* flags);
+
+        /// Whether a name resolves, in the client's archives or in a folder of the search path.
+        bool Exists(const char* name);
+
+        /// Whether this thread is listing the archives for find: the opens of their listfiles
+        /// are the runtime's own, not the client's.
+        bool Listing();
+
+        /// Forgets the search path. Called on the way out, and by the harness.
+        void ForgetSearchPaths();
     }
 }

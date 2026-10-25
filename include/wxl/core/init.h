@@ -31,6 +31,10 @@ extern "C" {
 /// of a global set through the script rows of the binding. Answers how many results it pushed.
 typedef int32_t(WXL_CALL* wxl_script_native_fn)(void* state);
 
+/// A function told one name, as the client's SFile::List calls its callback: cdecl on x86
+/// (`call [ebp+0xc]; add esp, 8` at 0x0042509D). Answers nonzero to be told the next.
+typedef int32_t(WXL_CALL* wxl_core_name_fn)(const char* name, void* user);
+
 /// A function the client's object manager calls when an update changed a field it was set on,
 /// as its MIRRORHANDLERFUNC: the object's guid, the field's byte offset from its kind's first
 /// field and its size in bytes, the copy of its old bytes the client kept, and the param it was

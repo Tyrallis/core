@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace
 {
@@ -493,6 +494,76 @@ namespace wxl::core::binding
             reinterpret_cast<ArchiveOpen>(WXL_SITE("SFile::OpenArchive", 0));
         void* archive = nullptr;
         return call(path, priority, 0, &archive) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    const char* storage_base_path()
+    {
+        if (!IsClient()) return nullptr;
+        return reinterpret_cast<const char*>(WXL_STATIC("SFile::m_basePath"));
+    }
+
+    void storage_rescan()
+    {
+        // A static void(void): no argument, no cleanup, whatever its declared convention.
+        if (IsClient()) reinterpret_cast<void(__cdecl*)()>(WXL_SITE("SFile::RebuildHash", 0))();
+    }
+
+    uint32_t archive_list(wxl_core_name_fn fn, void* user)
+    {
+        if (!IsClient() || !fn) return 0;
+
+        // System_MPQGlobals::GetArchiveList answers the std::set of mounted archives. Its layout
+        // is MSVC 9's, as FindArchiveByName (0x00453FC0) and the set iterator's ++ (0x00429F90)
+        // read it: the head node at +4; a node's left, parent and right at 0, 4 and 8, its value
+        // (the ARCHIVEREC*) at 0xC, its is-nil flag at 0x11. The head is the nil node.
+        using GetList = const uint8_t*(__cdecl*)();
+        using List    = int32_t(__stdcall*)(void* archive, wxl_core_name_fn callback, void* param);
+        const uint8_t* set =
+            reinterpret_cast<GetList>(WXL_SITE("System_MPQGlobals::GetArchiveList", 0))();
+        if (!set) return 0;
+        const auto link = [](const uint8_t* node, size_t at) {
+            return *reinterpret_cast<const uint8_t* const*>(node + at);
+        };
+        const auto nil = [](const uint8_t* node) { return node[0x11] != 0; };
+
+        // The records first, walked in order; the listing opens files, which may reach the set.
+        std::vector<void*> records;
+        const uint8_t*     head = link(set, 4);
+        const uint8_t*     node = link(head, 0);
+        while (node && !nil(node) && records.size() < 4096)
+        {
+            records.push_back(*reinterpret_cast<void* const*>(node + 0xC));
+            if (!nil(link(node, 8)))
+            {
+                node = link(node, 8);
+                while (!nil(link(node, 0))) node = link(node, 0);
+            }
+            else
+            {
+                const uint8_t* parent = link(node, 4);
+                while (!nil(parent) && node == link(parent, 8))
+                {
+                    node   = parent;
+                    parent = link(parent, 4);
+                }
+                node = parent;
+            }
+        }
+
+        // SFile::List takes an SArchive: its type (0, an MPQ) then the record, as OpenEx reads it
+        // ([eax], [eax+4] at 0x00424C6F). stdcall: `ret 0xc` at 0x004250C8.
+        const List list  = reinterpret_cast<List>(WXL_SITE("SFile::List", 0));
+        uint32_t   listed = 0;
+        for (void* record : records)
+        {
+            struct
+            {
+                uint32_t type;
+                void*    archive;
+            } archive{0, record};
+            if (record && list(&archive, fn, user)) ++listed;
+        }
+        return listed;
     }
 
     wxl_bool gx_device_exists()

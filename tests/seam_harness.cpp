@@ -31,6 +31,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
@@ -535,6 +537,23 @@ namespace
 
     wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
 
+    // The client's folder and its archives' listfiles, as find and the search path see them.
+    std::string              g_basePath;
+    int                      g_rescans = 0;
+    std::vector<std::string> g_listed = {"Interface\\FrameXML\\FrameXML.toc",
+                                         "Interface\\FrameXML\\Bindings.xml",
+                                         "INTERFACE\\Icons\\A.blp", "Interface\\Glues\\Glues.toc"};
+
+    const char* WXL_CALL FakeBasePath() { return g_basePath.c_str(); }
+    void WXL_CALL FakeRescan() { ++g_rescans; }
+
+    uint32_t WXL_CALL FakeArchiveList(wxl_core_name_fn fn, void* user)
+    {
+        for (const std::string& name : g_listed)
+            if (!fn(name.c_str(), user)) break;
+        return 1;
+    }
+
     // The graphics device, as the paint and the device's resets see it.
     bool     g_gxContext = true;
     bool     g_gxVisible = true;
@@ -638,6 +657,9 @@ namespace
         init.file_read              = &FakeFileRead;
         init.file_close             = &FakeFileClose;
         init.archive_mount          = &FakeArchiveMount;
+        init.storage_base_path      = &FakeBasePath;
+        init.storage_rescan         = &FakeRescan;
+        init.archive_list           = &FakeArchiveList;
         init.gx_device_exists       = &FakeGxDeviceExists;
         init.gx_has_context         = &FakeGxHasContext;
         init.gx_window_visible      = &FakeGxWindowVisible;
@@ -2015,6 +2037,104 @@ namespace
               "Disconnected is raised before the client tears the connection down");
     }
 
+    // --- wxl.storage: a folder in the search, and the names across the archives ---------------
+
+    void WriteFileAt(const std::filesystem::path& path, const std::string& text)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream(path, std::ios::binary) << text;
+    }
+
+    void CheckSearchPath(const wxl_storage_api& api)
+    {
+        namespace fs = std::filesystem;
+        namespace storage = wxl::core::services::storage;
+        const fs::path root = fs::temp_directory_path() / "wxl-harness-storage";
+        std::error_code ignored;
+        fs::remove_all(root, ignored);
+        const fs::path client = root / "client";
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "Icons" / "Mine.blp", "mine");
+        WriteFileAt(client / "Mods" / "mymod" / "assets" / "Interface" / "FrameXML" / "FrameXML.toc", "ours");
+        WriteFileAt(client / "Mods" / "low" / "Interface" / "FrameXML" / "FrameXML.toc", "low");
+        WriteFileAt(client / "Mods" / "low" / "Interface" / "Only.txt", "only here");
+        WriteFileAt(root / "elsewhere" / "Interface" / "Far.txt", "far");
+        g_basePath = client.string() + "\\";
+        g_files.push_back(FakeFile{"Interface\\FrameXML\\FrameXML.toc", "the client's", 0, false});
+        g_rescans = 0;
+
+        const std::string assets = (client / "Mods" / "mymod" / "assets").string();
+        const std::string low    = (client / "Mods" / "low").string();
+        const std::string far    = (root / "elsewhere").string();
+        Check(api.add_search_path(Str(assets.c_str()), 1) == WXL_OK &&
+                  api.add_search_path(Str(low.c_str()), 0) == WXL_OK &&
+                  api.add_search_path(Str(far.c_str()), 5) == WXL_OK,
+              "folders join the search, at their priorities");
+        Check(api.add_search_path(Str((root / "nowhere").string().c_str()), 1) == WXL_E_NOT_FOUND &&
+                  api.add_search_path(Str(""), 1) == WXL_E_INVALID,
+              "a folder that is not there is not found; no name is invalid");
+        Check(api.exists(Str("Interface\\Icons\\Mine.blp")) == WXL_TRUE &&
+                  api.exists(Str("interface/only.txt")) == WXL_TRUE && api.exists(Str("Interface\\None.txt")) == WXL_FALSE,
+              "exists sees a folder's files, by their client names");
+
+        // The gate turns a name a folder wins into its path in the client's folder, flagged.
+        const auto open = [](const char* asked, uint32_t& flags) {
+            void*       archive = nullptr;
+            const char* name    = asked;
+            void**      file    = nullptr;
+            int32_t     answer  = -1;
+            flags               = 0;
+            wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file);
+            return std::string(name);
+        };
+        uint32_t flags = 0;
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "Mods\\mymod\\assets\\Interface\\Icons\\Mine.blp" &&
+                  flags == 1 && g_rescans == 1,
+              "a folder's file is opened by its path in the client's folder, as a loose file, after a rescan");
+        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) ==
+                      "Mods\\mymod\\assets\\Interface\\FrameXML\\FrameXML.toc" && g_rescans == 1,
+              "a folder above 0 wins a name over the client's own, and the scan is not made twice");
+        Check(open("Interface\\Only.txt", flags) == "Mods\\low\\Interface\\Only.txt",
+              "a folder at 0 fills a name the client does not have");
+        api.add_search_path(Str(assets.c_str()), -1);
+        Check(open("Interface\\FrameXML\\FrameXML.toc", flags) == "Interface\\FrameXML\\FrameXML.toc" && flags == 0 &&
+                  g_rescans == 1,
+              "but never one it has; a folder added again takes its new priority");
+        Check(open("Interface\\Far.txt", flags) == "Interface\\Far.txt" && flags == 0,
+              "a folder outside the client's folder cannot serve the client, and is passed over");
+        Check(open("World\\Elsewhere.wdt", flags) == "World\\Elsewhere.wdt" && flags == 0 &&
+                  open("C:\\x\\Interface\\Only.txt", flags) == "C:\\x\\Interface\\Only.txt",
+              "a name no folder holds, or that is not a client name, is the client's");
+        open("Interface\\Icons\\Mine.blp", flags);
+        Check(g_rescans == 2, "a folder joining asks for one more scan, made at the next open from a folder");
+
+        // find: the listfiles of the archives, then the folders, each name once.
+        std::vector<wxl_str> names(16);
+        const uint32_t count = api.find(Str("interface\\framexml\\*.toc"), names.data(), 16);
+        Check(count == 1 && std::string(names[0].data, names[0].size) == "Interface\\FrameXML\\FrameXML.toc",
+              "find matches case aside, and names a file both an archive and a folder have once");
+        const uint32_t icons = api.find(Str("Interface\\Icons\\*"), nullptr, 0);
+        const uint32_t again = api.find(Str("Interface\\Icons\\*"), names.data(), 16);
+        Check(icons == 2 && again == 2 && std::string(names[0].data, names[0].size) == "INTERFACE\\Icons\\A.blp" &&
+                  std::string(names[1].data, names[1].size) == "Interface\\Icons\\Mine.blp",
+              "a count then a fill give the same names, sorted, from the archives and the folders");
+        Check(api.find(Str("*.txt"), nullptr, 0) == 1 && api.find(Str("Nothing*"), nullptr, 0) == 0 &&
+                  api.exists(Str("Interface\\Far.txt")) == WXL_FALSE,
+              "a pattern spans the folders the client can open from, and may match nothing");
+
+        // wxl.data takes a table from a folder: its check is the storage's.
+        const wxl_data_api& data = wxl::core::services::DataApi();
+        Check(data.serve_table(Str("Only.dbc"), Str("Interface\\Only.txt")) == WXL_OK,
+              "a table served from a folder's file is accepted");
+        data.restore_table(Str("Only.dbc"));
+
+        storage::ForgetSearchPaths();
+        Check(open("Interface\\Icons\\Mine.blp", flags) == "Interface\\Icons\\Mine.blp",
+              "forgotten folders serve nothing");
+        g_files.clear();
+        g_basePath.clear();
+        fs::remove_all(root, ignored);
+    }
+
     // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
 
     void CheckStorageService()
@@ -2075,6 +2195,7 @@ namespace
               "its handle stops resolving with it");
 
         g_files.clear();
+        CheckSearchPath(api);
     }
 
     // --- Spell: casts read off the server's messages, and the two requests a mod can refuse ---

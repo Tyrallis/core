@@ -31,3 +31,17 @@ WXL_BINDING(file_close, void, (void* file), (file), (void)0)
 // Adds an archive to what the client searches. Higher priority wins a name collision; the
 // client's own data is 0. There is no unmount: the client has none either.
 WXL_BINDING(archive_mount, wxl_bool, (const char* path, int32_t priority), (path, priority), WXL_FALSE)
+
+// The folder the client finds loose files from, SFile::m_basePath: "C:\Games\WoW\" with its
+// separator, empty or null before the client set it.
+WXL_BINDING(storage_base_path, const char*, (void), (), 0)
+
+// Makes the client scan its folders for loose files again (SFile::RebuildHash): the scan runs at
+// the next open that looks for one. Only once the client is opening files: before that, its
+// lock is not made.
+WXL_BINDING(storage_rescan, void, (void), (), (void)0)
+
+// Tells `fn` every name the listfile of each mounted archive holds, archive by archive, with
+// SFile::List; answers how many archives were listed. An archive without a listfile adds none.
+// Opens each "(listfile)" through the client's open, on the calling thread.
+WXL_BINDING(archive_list, uint32_t, (wxl_core_name_fn fn, void* user), (fn, user), 0)
