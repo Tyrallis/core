@@ -6,7 +6,7 @@
     #error "include statics.def, not this shard"
 #endif
 
-WXL_OFFSET_STATIC("s_rndTable", 0x009F1700, "Engine/Source/Tempest/CRandom.cpp", 7)
+WXL_OFFSET_STATIC("s_rndTable", 0x009F1700, "Engine/Source/Tempest/CRandom.cpp", 8)
 WXL_OFFSET_STATIC("s_exp2Table", 0x009F1970, "Engine/Source/Tempest/CMath.cpp", 152)
 WXL_OFFSET_STATIC("s_log2MulTable", 0x009F1B70, "Engine/Source/Tempest/CMath.cpp", 167)
 WXL_OFFSET_STATIC("s_log2AddTable", 0x009F1D70, "Engine/Source/Tempest/CMath.cpp", 182)

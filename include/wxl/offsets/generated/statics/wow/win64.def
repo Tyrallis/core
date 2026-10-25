@@ -6,4 +6,4 @@
     #error "include statics.def, not this shard"
 #endif
 
-WXL_OFFSET_STATIC("lpFiber", 0x00B311E8, "WoW/Source/Win64/WinMain.cpp", 10)
+WXL_OFFSET_STATIC("lpFiber", 0x00B311E8, "WoW/Source/Win64/WinMain.cpp", 11)
