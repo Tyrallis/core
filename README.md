@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.16-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.17-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -358,6 +358,27 @@ source. Everything else observes.
 | `Storm.SMemReAlloc` | `SMemReAlloc(void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts; after, what the call left comes back, under the file that moved it |
 | `Storm.SErrDisplayError` | `SErrDisplayError(uint32_t errorcode, const char* filename, int32_t linenumber, const char* description, int32_t recoverable, uint32_t exitcode, uint32_t unknown)`, Storm's error display: every fatal error, assertion and the exception filter's dialog | nothing: before, the error goes to `WarcraftXL.log`, flushed; a fatal one with its stack, the running mod, the last events and the session's end line |
 | `Os.ValidateFunctionPointer` (gated) | `OsValidateFunctionPointer(const void* ptr)`, the check of every C function the client's Lua calls, Lua hook, console command handler and CVar callback | nothing: the gate takes the call for a pointer in the runtime's image or a binary the mod host loaded; any other goes on to the client's check, fatal outside its `.text` |
+| `Combat.UnitCombatLogAuraDose`, `Combat.UnitCombatLogAuraRefreshed` | `UnitCombatLogAuraDose(...)`, `UnitCombatLogAuraRefreshed(...)`, the combat log of an aura that stays in its slot | `UnitAuraRefreshed`, with the slot and the count before |
+| `Unit.MountDisplayIDUpdateHandler` | the mirror handler of `UNIT_FIELD_MOUNTDISPLAYID` | `UnitMountChanged` |
+| `Loot.SetObject` | `CGLootInfo::SetObject(CGObject_C*, int32_t coins, LOOT_ACQUIRE)`, the loot window put on an object or on nothing | `LootClosed` for the window it closes, `LootOpened` and a `LootSlot` per item for the new one |
+| `Loot.ClearSlot` | `CGLootInfo::ClearSlot(uint8_t slot)` | `LootSlotCleared` |
+| `Player.PH_LOOT_OPCODES` | the handler of the loot messages | `LootMoney`, `LootRollStart`, `LootRoll`, `LootRollWon`, `LootAllPassed` |
+| `Player.Packet_Group_9` | (also) `SMSG_ITEM_PUSH_RESULT`, `SMSG_INVENTORY_CHANGE_FAILURE` | `ItemPushed`, `InventoryError` |
+| `Container.InvUpdateHandler`, `Container.UpdateInvContents`, `Container.UpdateContainerContents` | the mirror handlers of the player's bag slots and of each bag's slots | `InventorySlotChanged` |
+| `Item.OnUpdateDurability`, `Item.OnUpdateStackCount` | the mirror handlers of an item's durability and stack count | `ItemDurabilityChanged`, `ItemStackChanged` |
+| `Player.OnUpdateQuest` | the mirror handler of a quest log entry | `QuestAccepted`, `QuestRemoved`, `QuestObjectiveChanged`, `QuestCompleted`, `QuestFailed` |
+| `Player.Packet_Group_12` | the quest giver's messages | `QuestGiverGreeting`, `QuestGiverDetail`, `QuestGiverProgress`, `QuestGiverReward`, `QuestTurnedIn` |
+| `Player.Packet_SMSG_GROUP_INVITE` (gated) | the invitation's handler | `GroupInvite`; an answered one is accepted or declined as the dialog does, which never shows |
+| `Player.Packet_SMSG_GROUP_LIST`, `_UNINVITE`, `_DESTROYED` | the group list's handlers | `GroupUpdated`, `GroupMember`, `GroupLootMethodChanged`, `GroupLeft` |
+| `Raid.Packet_MSG_RAID_READY_CHECK`, `_CONFIRM`, `_FINISHED` | the ready check's handlers | `ReadyCheck`, `ReadyCheckResponse`, `ReadyCheckFinished` |
+| `Duel.Packet_SMSG_DUEL_REQUESTED` (gated), `_COUNTDOWN`, `_WINNER`, `_COMPLETE` | the duel's handlers | `DuelRequested` (answerable), `DuelCountdown`, `DuelWon`, `DuelFinished` |
+| `Trade.Packet_SMSG_TRADE_STATUS` | the trade status handler | `TradeStatus` |
+| `Player.Packet_SMSG_EMOTE`, `Chat.OnTextEmote` | the emote handlers | `Emote`, `TextEmote` |
+| `Player.Packet_SMSG_RESURRECT_REQUEST` (gated) | the resurrection offer's handler | `ResurrectRequest` (answerable) |
+| `GameUI.UpdateActivePlayer`, `Player.UpdateGhostStatus` | the player's state of life told to the interface, its ghost flag | `PlayerDied`, `PlayerReleased`, `PlayerResurrected` |
+| `Reputation.Packet_SMSG_SET_FACTION_STANDING` | the standings' handler | `ReputationChanged` |
+| `Achievement.Packet_SMSG_ACHIEVEMENT_EARNED` | the achievement's handler | `AchievementEarned` |
+| `FrameScript.vSignalEvent` | (also) the interface events that open and close an NPC's window | `WindowOpened`, `WindowClosed` |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:
