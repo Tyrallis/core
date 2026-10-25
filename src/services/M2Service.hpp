@@ -40,6 +40,13 @@ namespace wxl::core::services
         /// Hands a change to every equipment watcher, each under the guard.
         void DispatchEquipment(const wxl_m2_equipment& change);
 
+        /// Whether any mod watches bones: the AnimateMT seam's whole cost for them when none does.
+        bool WatchingBones();
+
+        /// Hands `model`'s bones, just posed, to every bone watcher that wants its file. Animate
+        /// threads.
+        void DispatchBones(void* model);
+
         /// Whether any model follows its parent's bones: the AnimateMT seam's whole cost when none.
         bool Following();
 

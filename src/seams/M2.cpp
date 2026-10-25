@@ -44,7 +44,12 @@ namespace
 
 namespace wxl::seam::M2::AnimateMT
 {
-    void WXL_CALL After(void* self, const void*, const void*, const void*, float, float) { PoseAttached(self); }
+    void WXL_CALL After(void* self, const void*, const void*, const void*, float, float)
+    {
+        PoseAttached(self);
+        // Then the bone watchers (live physics), on top of the pose the model ends up with.
+        if (self && wxl::core::services::m2::WatchingBones()) wxl::core::services::m2::DispatchBones(self);
+    }
 }
 
 namespace wxl::seam::M2::AnimateMTSimple
