@@ -9,6 +9,7 @@
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
+#include "seams/Gameplay.hpp"
 
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
@@ -184,5 +185,19 @@ namespace wxl::seam::GameUI::HandleSpriteClick
             if (void* object = objects::Service().Handles().Resolve(args.object))
                 binding::object_position(object, &args.point);
         host->Raise(WXL_EV_WorldClick, &args);
+    }
+}
+
+namespace wxl::seam::GameUI::UpdateActivePlayer
+{
+    void WXL_CALL After()
+    {
+        wxl_unit_args   args{};
+        const wxl_event moved = wxl::core::seams::gameplay::LifeChanged(args);
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || moved == WXL_EV_COUNT) return;
+        if (moved == WXL_EV_PlayerDied) host->Raise(WXL_EV_PlayerDied, &args);
+        else if (moved == WXL_EV_PlayerReleased) host->Raise(WXL_EV_PlayerReleased, &args);
+        else host->Raise(WXL_EV_PlayerResurrected, &args);
     }
 }

@@ -3,7 +3,8 @@
 //
 // The Unit domain: seams on CGUnit_C, the client's creatures and players.
 //
-// Every row is a non-static member: thiscall, `self` first.
+// Every row but one is a non-static member: thiscall, `self` first. The mount display's mirror
+// handler is a free function whose address is taken: cdecl.
 
 #ifndef WXL_SEAM_AFTER
 #error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including unit.def"
@@ -20,14 +21,19 @@ WXL_SEAM_RAISES(Unit, OnDeath, UnitDeath)
 
 // Runs when an aura is added to the unit's aura slots: looks the spell up, adds its effect,
 // logs it, and for the local player refreshes the action bar and the tracking and shapeshift
-// state. `a3` is the flags byte the client passes along to the combat log. After raises
-// UnitAuraChanged with removed clear.
+// state. `a3` is the harmful bit of the aura's flags, which the client passes along to the combat
+// log; `aura` is the slot itself. After raises UnitAuraChanged with removed clear, and
+// UnitAuraApplied with what the slot holds.
 WXL_SEAM_AFTER(Unit, OnAuraAdded, "CGUnit_C::OnAuraAdded", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
 WXL_SEAM_RAISES(Unit, OnAuraAdded, UnitAuraChanged)
+WXL_SEAM_RAISES(Unit, OnAuraAdded, UnitAuraApplied)
 
-// The counterpart: the aura left the unit's slots. After raises UnitAuraChanged with removed set.
+// The counterpart: the aura left the unit's slots, and `aura` is the copy OnAuraUpdate kept of it
+// from before the update. After raises UnitAuraChanged with removed set, and UnitAuraRemoved with
+// what the aura was.
 WXL_SEAM_AFTER(Unit, OnAuraRemoved, "CGUnit_C::OnAuraRemoved", void, thiscall, (void* self, uint32_t index, uint8_t a3, void* aura, int32_t spell_id))
 WXL_SEAM_RAISES(Unit, OnAuraRemoved, UnitAuraChanged)
+WXL_SEAM_RAISES(Unit, OnAuraRemoved, UnitAuraRemoved)
 
 // Sends one movement message of the unit the player controls: builds the MSG_MOVE_* named by
 // msg_id over the unit's movement block and hands it to the connection. Every movement the
@@ -39,3 +45,12 @@ WXL_SEAM_RAISES(Unit, OnAuraRemoved, UnitAuraChanged)
 WXL_SEAM_BEFORE(Unit, SendMovementUpdate, "CGUnit_C::SendMovementUpdate@0x0071F0C0", int32_t, thiscall, (void* self, uint32_t time, uint32_t msg_id, float value, uint32_t index, uint64_t transport, uint8_t seat))
 WXL_SEAM_RAISES(Unit, SendMovementUpdate, PlayerMoveStart)
 WXL_SEAM_RAISES(Unit, SendMovementUpdate, PlayerMoveStop)
+
+// The type mirror handler of UNIT_FIELD_MOUNTDISPLAYID: runs after the server wrote the field on
+// any unit, with the unit's guid and the field's previous value by address, and has the unit
+// change its mount. Reached only through CallMirrorFunctions, which pushes six dwords and
+// cleans 0x18 at 0x004D5254; it reads the guid alone and ends in a bare `ret`: cdecl. Before
+// raises UnitMountChanged with the display ids before and after.
+WXL_SEAM_BEFORE(Unit, MountDisplayIDUpdateHandler, "MountDisplayIDUpdateHandler", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Unit, MountDisplayIDUpdateHandler, UnitMountChanged)
+WXL_SEAM_WITNESS(Unit, MountDisplayIDUpdateHandler, 0x004D5254)

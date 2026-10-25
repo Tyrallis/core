@@ -76,3 +76,14 @@ WXL_SEAM_RAISES(Combat, HandlePeriodicAuraLog, CombatEnergize)
 // at 0x006D4187, each cleaning one dword after the call.
 WXL_SEAM_BEFORE(Combat, HandleSpellLogEnergizeLog, "CombatLog::HandleSpellLogEnergizeLog", int32_t, regparm, (void* msg, int32_t time_offset))
 WXL_SEAM_RAISES(Combat, HandleSpellLogEnergizeLog, CombatEnergize)
+
+// The two combat-log statics OnAuraUpdate calls for an aura that stays in its slot: the dose
+// one when its stack count moved, the refresh one when only its end time did. Each has that one
+// caller (0x0072FAB3 pushes six and cleans 0x18, 0x0072FB34 pushes four and cleans 0x10), reads
+// its arguments at [ebp+8] on and ends in a bare `ret`: cdecl. `aura` is the slot as the update
+// left it; a6 and a4 are the harmful bit of its flags. Before raises UnitAuraRefreshed with the
+// slot and the count before.
+WXL_SEAM_BEFORE(Combat, UnitCombatLogAuraDose, "UnitCombatLogAuraDose", void, cdecl, (void* unit, const void* aura, int32_t spell_id, int32_t old_stack, int32_t new_stack, uint8_t a6))
+WXL_SEAM_RAISES(Combat, UnitCombatLogAuraDose, UnitAuraRefreshed)
+WXL_SEAM_BEFORE(Combat, UnitCombatLogAuraRefreshed, "UnitCombatLogAuraRefreshed", void, cdecl, (void* unit, const void* aura, int32_t spell_id, uint8_t a4))
+WXL_SEAM_RAISES(Combat, UnitCombatLogAuraRefreshed, UnitAuraRefreshed)

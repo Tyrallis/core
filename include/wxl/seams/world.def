@@ -6,13 +6,52 @@
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including world.def"
 #endif
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including world.def"
+#endif
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including world.def"
+#endif
+
+// The player is in the world from CGGameUI::EnterWorld to CGGameUI::LeaveWorld, the pair that
+// signals PLAYER_ENTERING_WORLD and PLAYER_LEAVING_WORLD, each guarded by CGGameUI::m_inWorld so
+// that it runs once per entry and once per exit:
+//
+//   login        CWorld::LoadMap, then the active player's object arrives:
+//                CGPlayer_C::PostInitActivePlayer calls EnterWorld;
+//   teleport to  LoadNewWorld (SMSG_NEW_WORLD) destroys the objects first, and
+//   another map  CGPlayer_C::DestructActivePlayer calls LeaveWorld while the old map is still
+//                loaded; then CWorld::LoadMap and the new object's EnterWorld, as at login;
+//   logout       ClientDestroyGame destroys the objects (DestructActivePlayer: LeaveWorld) before
+//                World::UnloadMap;
+//   /reload      CGGameUI::Shutdown calls LeaveWorld and CGGameUI::Initialize EnterWorld, with
+//                CGGameUI::m_currentlyReloadingUI set: the player never left, nothing is raised.
+//
+// A teleport far across the same map keeps the player's object and the interface: it shows the
+// loading screen through World::Preload alone, whose pair raises WorldLeave and WorldEnter.
+// All three seams share one state, so each entry is raised once and each exit names the map and
+// the place being left.
+
+// Static, no arguments: cdecl. Its only early return is the m_inWorld guard. After raises
+// WorldEnter, with the loaded map and the player's position, unless the player is already in
+// the world (a /reload, or an entry already announced).
+WXL_SEAM_AFTER(World, EnterWorld, "CGGameUI::EnterWorld", void, cdecl, ())
+WXL_SEAM_RAISES(World, EnterWorld, WorldEnter)
+
+// Static, no arguments: cdecl. Before raises WorldLeave, with the map entered and where the
+// world is loaded around (World::s_currentWorldPos), unless a /reload is running or the player
+// was not in the world.
+WXL_SEAM_BEFORE(World, LeaveWorld, "CGGameUI::LeaveWorld", void, cdecl, ())
+WXL_SEAM_RAISES(World, LeaveWorld, WorldLeave)
 
 // Loads the world around a position, with the loading screen when show_loading is nonzero.
-// Called with 1 from the movement update that follows a login or a teleport, with 0 for the
-// preloads around a cinematic camera, a far-sight target or a game object. The map id is already
-// the destination's when the call starts: CMap::Load ran before it. On return the terrain and
-// objects around the position are resident. Before raises WorldLeave and After raises
-// WorldEnter, both only when show_loading is nonzero.
+// Called with 1 from the movement update of a teleport far across the same map (and, in the
+// streaming client only, after the active player arrives on a transport), with 0 for the
+// preloads around a cinematic camera, a far-sight target or a game object. A login and a teleport
+// to another map load through CWorld::LoadMap instead. On return the terrain and objects around
+// the position are resident. With show_loading set and the player in the world, Before raises
+// WorldLeave (where the world was loaded around: the player has already moved) and After
+// WorldEnter at the position.
 WXL_SEAM(World, Preload, "World::Preload", void, cdecl, (const wxl_vec3* position, int32_t show_loading))
 WXL_SEAM_RAISES(World, Preload, WorldLeave)
 WXL_SEAM_RAISES(World, Preload, WorldEnter)

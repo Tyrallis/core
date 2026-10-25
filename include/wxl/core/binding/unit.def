@@ -49,3 +49,43 @@ WXL_BINDING_FIELD(unit_channel_spell_id, uint32_t, CGUnit_C, m_channelSpellId, 0
 // strafe right 8, ..., falling 0x800, swimming 0x200000, flying 0x1000000), as the client
 // keeps them while it moves the unit.
 WXL_BINDING_FIELD_VIA(unit_movement_flags, uint32_t, CGUnit_C, m_movement, CMovementShared, m_flags, 0)
+
+// The times of the cast and of the channel the client shows on the unit, in milliseconds on
+// the client's clock (OsGetAsyncTimeMs, which the client's Lua GetTime reads in seconds); 0
+// while there is none.
+WXL_BINDING_FIELD(unit_cast_start, uint32_t, CGUnit_C, m_castStartTime, 0)
+WXL_BINDING_FIELD(unit_cast_end, uint32_t, CGUnit_C, m_castEndTime, 0)
+WXL_BINDING_FIELD(unit_channel_start, uint32_t, CGUnit_C, m_channelStartTime, 0)
+WXL_BINDING_FIELD(unit_channel_end, uint32_t, CGUnit_C, m_channelEndTime, 0)
+
+// The mount model the client draws under the unit (not UNIT_FIELD_MOUNTDISPLAYID: the model
+// it loaded) and the client's own flags on it: CGUnit_C::IsMounted is the first above 0 with
+// 0x10000000 clear, the client's IsSwimming 0x200000.
+WXL_BINDING_FIELD(unit_mount_model, int32_t, CGUnit_C, m_mountDisplayId, 0)
+WXL_BINDING_FIELD(unit_client_flags, uint32_t, CGUnit_C, m_clientFlags, 0)
+
+// One of the unit's speeds, by wxl_move_type: the nine floats of its movement block from
+// CMovementShared::m_walkSpeed to m_pitchRate, in that order. False past the ninth.
+WXL_BINDING(unit_speed, wxl_bool, (const void* object, uint32_t index, float* out), (object, index, out), WXL_FALSE)
+
+// How the unit stands towards another, a wxl_reaction: CGUnit_C::UnitReaction(const CGUnit_C*),
+// the overload the client's name plates and Lua UnitReaction call. -1 with no client to ask.
+// Main thread only: it reads the object manager.
+WXL_BINDING(unit_reaction, int32_t, (const void* object, const void* other), (object, other), -1)
+
+// What the client works out of the unit's kind: CGUnit_C::GetCreatureType (a shapeshift form's
+// type, else the creature cache's, else the race's), GetCreatureFamily and
+// GetCreatureClassification (the creature cache's family and rank; 0 without a cache entry,
+// and the rank 0 for a pet).
+WXL_BINDING(unit_creature_type, int32_t, (const void* object), (object), 0)
+WXL_BINDING(unit_creature_family, uint32_t, (const void* object), (object), 0)
+WXL_BINDING(unit_classification, uint32_t, (const void* object), (object), 0)
+
+// Whether the unit knows a spell: CGUnit_C::IsSpellKnown, the active player's spell book or its
+// pet's; false for any other unit. Main thread only.
+WXL_BINDING(unit_knows_spell, wxl_bool, (const void* object, uint32_t spell), (object, spell), WXL_FALSE)
+
+// The auras the client holds on the unit: CGUnit_C::GetAuraCount, and the AuraData of a slot,
+// CGUnit_C::GetAura (null past the count): an AuraData, whose members gameplay.def reads.
+WXL_BINDING(unit_aura_count, uint32_t, (const void* object), (object), 0)
+WXL_BINDING(unit_aura_at, const void*, (const void* object, uint32_t index), (object, index), 0)

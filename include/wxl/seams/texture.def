@@ -19,3 +19,12 @@
 // when nobody listens, and on x64 the client skips the call then.
 WXL_SEAM_BEFORE(Texture, Create, "TextureCreate@0x004B9760", void*, cdecl, (const char* file_name, uint32_t tex_flags, void* status, uint32_t flags))
 WXL_SEAM_RAISES(Texture, Create, TextureLoad)
+
+// A texture's file, read by an asynchronous read, about to be decoded: the client's poll of the
+// read queue (AsyncFileReadPollHandler) calls this with the texture, on the main thread, and it
+// hands the bytes to PumpBlpTextureAsync (a register function, EAX and one stack dword), which
+// gives them to a CBLPFile (CBLPFile::Source). Before notes the texture's name for BLPFile.Source,
+// which raises TextureDecode. cdecl, the texture its one argument: [ebp+8], a bare `ret`; reached
+// only through the read's callback pointer: the witness is that call.
+WXL_SEAM_BEFORE(Texture, AsyncTextureSuccessCallback, "AsyncTextureSuccessCallback", void, cdecl, (void* texture))
+WXL_SEAM_WITNESS(Texture, AsyncTextureSuccessCallback, 0x004B9B9E)    // AsyncFileReadPollHandler: call ecx; add esp, 4

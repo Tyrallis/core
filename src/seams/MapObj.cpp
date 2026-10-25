@@ -35,3 +35,27 @@ namespace wxl::seam::MapObj::Load
         host->Raise(WXL_EV_MapObjectLoad, &args);
     }
 }
+
+namespace wxl::seam::MapObj::CreateGroup
+{
+    void WXL_CALL Before(void* self)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !self || !host->Listening(WXL_EV_MapObjectGroupLoad)) return;
+
+        void*       parent = nullptr;
+        uint32_t    index  = 0;
+        uint32_t    size   = 0;
+        const void* data   = wxl::core::binding::map_obj_group_bytes(self, &parent, &index, &size);
+        if (!data) return;
+        const char* root = parent ? wxl::core::binding::map_obj_path(parent) : nullptr;
+        if (!root) root = "";
+
+        wxl_map_object_group_args args{};
+        args.path  = wxl_str{root, static_cast<uint32_t>(strnlen(root, 260))};
+        args.group = index;
+        args.data  = data;
+        args.size  = size;
+        host->Raise(WXL_EV_MapObjectGroupLoad, &args);
+    }
+}

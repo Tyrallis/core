@@ -16,6 +16,8 @@
 #include <stdint.h>
 
 #include "wxl/abi.h"
+#include "wxl/events.h"
+#include "wxl/services/m2.h"
 
 #if defined(WXL_CORE_BUILD)
     #define WXL_CORE_API __declspec(dllexport)
@@ -87,6 +89,37 @@ typedef struct wxl_core_db
 } wxl_core_db;
 
 typedef void(WXL_CALL* wxl_core_db_fn)(const wxl_core_db* db, void* user);
+
+/// A model file (CM2Shared) as the loader holds it: the path it was opened by, its parsed header
+/// (or its bytes, before the parse), how many bytes that is, and its skin profile once one has
+/// been read.
+typedef struct wxl_core_m2_file
+{
+    const char* path;
+    void*       header;
+    uint32_t    size;
+    void*       skin;
+} wxl_core_m2_file;
+
+/**
+ * @brief A loaded model's skeleton, as the runtime poses one model's bones from another's.
+ *
+ * `bones` are the file's M2CompBone records, `bone_stride` bytes apart, laid out as the file is
+ * on every client (key bone id at 0, parent index at 8, name hash at 12, pivot at 0x4C);
+ * `key_bones` maps a key bone id to a bone index, 0xFFFF for none; `matrices` are the model's
+ * bone matrices this frame (C44Matrix: 16 floats, the translation in the fourth row). `file` is
+ * what the bones belong to, so that a map built between two files can be kept.
+ */
+typedef struct wxl_core_m2_skeleton
+{
+    const void*     file;
+    const uint8_t*  bones;
+    uint32_t        bone_count;
+    uint32_t        bone_stride;
+    const uint16_t* key_bones;
+    uint32_t        key_bone_count;
+    float*          matrices;
+} wxl_core_m2_skeleton;
 
 /// One string per row of wxl/core/binding.def, "name: ret (params)", in table order. The
 /// client hands its copy over in wxl_core_init and the runtime compares it with its own, so a

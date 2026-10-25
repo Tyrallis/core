@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Reputation domain: seams on ReputationInfo.cpp, the local player's standings.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including reputation.def"
+#endif
+
+// The handler of SMSG_SET_FACTION_STANDING: the refer-a-friend bonus, then each faction's new
+// standing by its place in the reputation list, which the handler writes into
+// CGReputationInfo::m_factionStandings and logs. Reached only through the handler table, the
+// message read at [ebp+0x14], a bare `ret`: cdecl. Before raises ReputationChanged per faction
+// whose standing moves, with the values the interface counts (base plus standing) before and after.
+WXL_SEAM_BEFORE(Reputation, Packet_SMSG_SET_FACTION_STANDING, "Packet_SMSG_SET_FACTION_STANDING", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Reputation, Packet_SMSG_SET_FACTION_STANDING, ReputationChanged)

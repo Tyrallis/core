@@ -19,6 +19,7 @@
 #include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
 #include "seams/Chat.hpp"
+#include "seams/Gameplay.hpp"
 #include "seams/Message.hpp"
 #include "services/ScriptService.hpp"
 
@@ -480,5 +481,27 @@ namespace wxl::seam::Chat::Packet_SMSG_LOG_XPGAIN
         args.kind           = kind;
         args.refer_a_friend = referAFriend ? WXL_TRUE : WXL_FALSE;
         host->Raise(WXL_EV_PlayerXpGain, &args);
+    }
+}
+
+namespace wxl::seam::Chat::OnTextEmote
+{
+    void WXL_CALL Before(void* param, uint32_t msg_id, uint32_t time, void* msg)
+    {
+        (void)param;
+        (void)msg_id;
+        (void)time;
+        wxl::host::ModHost* host = wxl::core::seams::gameplay::Listener({ WXL_EV_TextEmote });
+        if (!host) return;
+        wxl::core::seams::MessageReader in(msg);
+        wxl_text_emote_args args{};
+        const char* target = nullptr;
+        uint32_t    length = 0;
+        if (!in.U64(args.sender_guid) || !in.U32(args.text_emote) || !in.U32(args.emote_number) ||
+            !in.SizedString(target, length))
+            return;
+        args.sender      = wxl::core::objects::FromGuid(args.sender_guid);
+        args.target_name = wxl_str{ target ? target : "", target ? length : 0u };
+        host->Raise(WXL_EV_TextEmote, &args);
     }
 }

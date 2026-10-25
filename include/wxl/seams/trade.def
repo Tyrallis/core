@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The Trade domain: seams on Trade_C.cpp, trades between players.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including trade.def"
+#endif
+
+// The handler of SMSG_TRADE_STATUS: a proposal, the window opening, an acceptance, the end of a
+// trade, a refusal and its reason. Reached only through the handler table, the message read at
+// [ebp+0x14], a bare `ret`: cdecl. Before raises TradeStatus with the status and, for a proposal,
+// who proposes.
+WXL_SEAM_BEFORE(Trade, Packet_SMSG_TRADE_STATUS, "Packet_SMSG_TRADE_STATUS", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Trade, Packet_SMSG_TRADE_STATUS, TradeStatus)

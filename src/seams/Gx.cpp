@@ -5,6 +5,8 @@
 
 #include "wxl/seams/seams.h"
 
+#include <cstring>
+
 #include "binding/Binding.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Core.hpp"
@@ -74,5 +76,23 @@ namespace wxl::seam::Gx::NotifyOnDeviceRestored
         // Read after the reset, which is what reaching this function means: the new size.
         const wxl_swapchain_args args = Size();
         host->Raise(WXL_EV_SwapchainRestored, &args);
+    }
+}
+
+namespace wxl::seam::Gx::IShaderLoad
+{
+    void WXL_CALL Before(void*, void*, uint32_t target, const char* path, const char* name, uint32_t permutations)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !host->Listening(WXL_EV_ShaderLoad)) return;
+        if (!path) path = "";
+        if (!name) name = "";
+
+        wxl_shader_load_args args{};
+        args.stage        = target;
+        args.path         = wxl_str{path, static_cast<uint32_t>(strnlen(path, 260))};
+        args.name         = wxl_str{name, static_cast<uint32_t>(strnlen(name, 260))};
+        args.permutations = permutations;
+        host->Raise(WXL_EV_ShaderLoad, &args);
     }
 }

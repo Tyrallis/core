@@ -8,16 +8,25 @@
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "runtime/Core.hpp"
 #include "seams/Table.hpp"
 #include "services/DataService.hpp"
 #include "profile/Profile.hpp"
+#include "services/ActionService.hpp"
 #include "services/FootprintService.hpp"
+#include "services/GxService.hpp"
+#include "services/M2FileService.hpp"
+#include "services/M2Service.hpp"
 #include "services/ScriptService.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/services/object.h"
+#include "wxl/services/point.h"
 #include "wxl/services/data.h"
+#include "wxl/services/gx.h"
+#include "wxl/services/m2.h"
+#include "wxl/services/m2file.h"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
@@ -56,6 +65,11 @@ namespace wxl::core::attachment
             { WXL_STORAGE_SERVICE, WXL_STORAGE_SERVICE_VERSION, &services::StorageApi() },
             { WXL_DATA_SERVICE, WXL_DATA_SERVICE_VERSION, &services::DataApi() },
             { WXL_FOOTPRINT_SERVICE, WXL_FOOTPRINT_SERVICE_VERSION, &services::FootprintApi() },
+            { WXL_ACTION_SERVICE, WXL_ACTION_SERVICE_VERSION, &services::ActionApi() },
+            { WXL_POINT_SERVICE, WXL_POINT_SERVICE_VERSION, &points::Api() },
+            { WXL_M2FILE_SERVICE, WXL_M2FILE_SERVICE_VERSION, &services::M2FileApi() },
+            { WXL_M2_SERVICE, WXL_M2_SERVICE_VERSION, &services::M2Api() },
+            { WXL_GX_SERVICE, WXL_GX_SERVICE_VERSION, &services::GxApi() },
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
             { WXL_PROFILE_SERVICE, WXL_PROFILE_SERVICE_VERSION, &profile::Api() },
 #endif

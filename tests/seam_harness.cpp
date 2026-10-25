@@ -5,16 +5,23 @@
 
 #include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Code.hpp"
 #include "runtime/Crash.hpp"
 #include "runtime/Frame.hpp"
 #include "runtime/Stages.hpp"
+#include "seams/Gameplay.hpp"
 #include "seams/Table.hpp"
+#include "services/ActionService.hpp"
 #include "services/DataService.hpp"
 #include "services/FootprintService.hpp"
+#include "services/GxService.hpp"
+#include "services/M2FileService.hpp"
+#include "services/M2Service.hpp"
 #include "services/ScriptService.hpp"
+#include "services/Assets.hpp"
 #include "services/StorageService.hpp"
 
 #include <chrono>
@@ -22,17 +29,28 @@
 #include "wxl/events.h"
 #include "wxl/host/mod_host.hpp"
 #include "wxl/seams/seams.h"
+#include "wxl/core/points.h"
 #include "wxl/core/profile.h"
 #include "wxl/core/storm.hpp"
+#include "wxl/objects/map.hpp"
+#include "wxl/runtime/handles.hpp"
+#include "wxl/core/filestack.hpp"
 #include "wxl/services/script.h"
 #include "wxl/services/storage.h"
 
 #if defined(_M_IX86)
+    #include "binding/CallX86.hpp"
+    #include "binding/ModelDrawX86.hpp"
     #include "seams/Detour.hpp"
+    #include "hook/Engine.hpp"
+    #include "hook/Safety.hpp"
+    #include "points/PointsX86.hpp"
     #include "seams/RegparmX86.hpp"
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -91,6 +109,23 @@ namespace
         int32_t  visibleItems[19]{};
         uint32_t castingSpellId = 0; ///< the cast the client shows on a unit
         uint32_t channelSpellId = 0; ///< the channel it shows
+        uint32_t castEnd        = 0; ///< when the cast ends, on the fake clock
+        uint32_t channelEnd     = 0;
+        int32_t  mountModel     = 0;
+        uint32_t clientFlags    = 0;
+        int32_t  reaction       = 3; ///< towards anyone
+        int32_t  creatureType   = 0;
+        uint32_t family         = 0;
+        uint32_t rank           = 0;
+        uint32_t knownSpell     = 0;
+        float    speeds[9]{};
+        struct Stats
+        {
+            uint32_t quality, level, requiredLevel, itemClass, subclass, inventoryType;
+            int32_t  stackable;
+            uint32_t sellPrice;
+        };
+        const Stats* stats = nullptr; ///< the item cache's record, null until cached
         uint32_t movementFlags  = 0; ///< the movement block's flags
         float    facing         = 0.0f;
         uint32_t money          = 0; ///< the local block's coinage
@@ -293,6 +328,17 @@ namespace
     void* WXL_CALL FakeScriptState(void) { return g_vm.live ? &g_vm : nullptr; }
     int32_t WXL_CALL FakeUiInitialized(void) { return g_uiInitialized; }
     uint8_t WXL_CALL FakeUiLoggingIn(void) { return g_uiLoggingIn; }
+    uint8_t g_uiReloading = 0;
+    uint8_t WXL_CALL FakeUiReloading(void) { return g_uiReloading; }
+
+    /// World::s_currentWorldPos, answered while a map is loaded.
+    wxl_vec3 g_worldPosition{};
+    wxl_bool WXL_CALL FakeWorldPosition(wxl_vec3* out)
+    {
+        if (g_mapId < 0) return WXL_FALSE;
+        *out = g_worldPosition;
+        return WXL_TRUE;
+    }
 
     wxl_bool WXL_CALL FakeGlobalIsSet(void* state, const char* name)
     {
@@ -501,37 +547,177 @@ namespace
         return nullptr;
     }
 
-    wxl_bool WXL_CALL FakeFileExists(const char* path)
+    std::string g_basePath; ///< the client's folder, as SFile::m_basePath holds it
+
+    // The client's file stack, as Blizzard::File dispatches through it: one node whose verbs
+    // know no file of their own, which the runtime's file layer writes its verbs into.
+    namespace fsk = wxl::core::filestack;
+
+    bool FakeVerbFails(fsk::Filesystem*, fsk::FileParms*) { return false; }
+
+    fsk::Filesystem  g_fakeInitial{};
+    fsk::Filesystem* g_fakeNode = nullptr;
+    void*            g_fakeTop  = &g_fakeInitial;
+
+    /// Builds the stack as file_init does: a node of its own on top.
+    void BuildFakeStack()
     {
-        return path && FileNamed(path) ? WXL_TRUE : WXL_FALSE;
+        static fsk::Filesystem node;
+        node = fsk::Filesystem{};
+        fsk::Verb* verbs = &node.verbs.cd;
+        for (size_t i = 0; i < sizeof node.verbs / sizeof(fsk::Verb); ++i) verbs[i] = &FakeVerbFails;
+        g_fakeNode = &node;
+        g_fakeTop  = &node;
+        wxl::core::services::assets::ForgetInstall();
     }
 
+    void** WXL_CALL FakeFilestackTop() { return &g_fakeTop; }
+    const void* WXL_CALL FakeFilestackInitial() { return &g_fakeInitial; }
+
+    fsk::Verb TopVerb(uintptr_t offset) { return fsk::VerbAt(static_cast<fsk::Filesystem*>(g_fakeTop), offset); }
+
+    /// An open file of the fake client: one it holds, one of the disk, or one of the file stack.
+    struct FakeHandle
+    {
+        FakeFile*          file = nullptr; ///< a file it holds, or one read off the disk
+        std::unique_ptr<FakeFile> disk;
+        fsk::StreamRecord* stream = nullptr;
+    };
+
+    /// FindFile as the client runs it: the gate first, then a name behind two backslashes off
+    /// the disk at the base path, else the files it holds. Answers the path to open, and
+    /// whether that path is the file stack's.
+    bool FakeFind(const char* name, std::string& path, bool& stacked)
+    {
+        char        buffer[260] = {};
+        char*       out         = buffer;
+        uint32_t    size        = sizeof buffer;
+        uint32_t    flags       = 0;
+        uint32_t    type        = 3;
+        uint32_t*   typeAt      = &type;
+        void*       archive     = nullptr;
+        void**      archiveAt   = &archive;
+        int32_t     answer      = 0;
+        const char* asked       = name;
+        if (wxl::seam::Storage::FindFile::Gate(&answer, &asked, &out, &size, &flags, &typeAt, &archiveAt))
+        {
+            if (!answer) return false;
+            path    = buffer;
+            stacked = true;
+            return true;
+        }
+        stacked = false;
+        if (asked[0] == '\\' && asked[1] == '\\')
+        {
+            path = g_basePath + asked;
+            const DWORD attributes = ::GetFileAttributesA(path.c_str());
+            return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+        }
+        path = asked;
+        return FileNamed(asked) != nullptr;
+    }
+
+    wxl_bool WXL_CALL FakeFileExists(const char* path)
+    {
+        std::string found;
+        bool        stacked = false;
+        return path && FakeFind(path, found, stacked) ? WXL_TRUE : WXL_FALSE;
+    }
+
+    /// SFileOpenFile: SFile::OpenEx's gate, FindFile, then the open of what it found.
     void* WXL_CALL FakeFileOpen(const char* path)
     {
-        FakeFile* file = path ? FileNamed(path) : nullptr;
-        if (!file) return nullptr;
-        file->at   = 0;
-        file->open = true;
+        if (!path) return nullptr;
+        void*       archive = nullptr;
+        const char* name    = path;
+        uint32_t    flags   = 0;
+        void**      result  = nullptr;
+        int32_t     answer  = 0;
+        if (wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &result)) return nullptr;
+
+        std::string found;
+        bool        stacked = false;
+        if (!FakeFind(name, found, stacked)) return nullptr;
+        auto handle = std::make_unique<FakeHandle>();
+        if (stacked)
+        {
+            fsk::FileParms parms{};
+            parms.verb = offsetof(fsk::Filesystem, verbs.open);
+            parms.path = found.data();
+            parms.mode = 0x1005;
+            if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) || !parms.stream) return nullptr;
+            handle->stream = parms.stream;
+        }
+        else if (found.size() > 1 && found.find(":\\") != std::string::npos)
+        {
+            std::ifstream in(found, std::ios::binary);
+            if (!in) return nullptr;
+            handle->disk = std::make_unique<FakeFile>();
+            handle->disk->name.assign(found);
+            handle->disk->bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            handle->file = handle->disk.get();
+        }
+        else
+        {
+            handle->file = FileNamed(found.c_str());
+            if (!handle->file) return nullptr;
+        }
+        if (handle->file)
+        {
+            handle->file->at   = 0;
+            handle->file->open = true;
+        }
         ++g_opens;
-        return file;
+        return handle.release();
     }
+
+    FakeHandle* Handle(void* file) { return static_cast<FakeHandle*>(file); }
 
     uint64_t WXL_CALL FakeFileSize(void* file)
     {
-        return file ? static_cast<const FakeFile*>(file)->bytes.size() : 0u;
+        if (!file) return 0;
+        FakeHandle* handle = Handle(file);
+        if (handle->file) return handle->file->bytes.size();
+        fsk::FileParms parms{};
+        parms.verb   = offsetof(fsk::Filesystem, verbs.getfileinfo);
+        parms.stream = handle->stream;
+        if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) || !parms.info) return 0;
+        return static_cast<uint64_t>(parms.info->size);
     }
 
     wxl_bool WXL_CALL FakeFileSeek(void* file, uint64_t offset)
     {
         if (!file) return WXL_FALSE;
-        static_cast<FakeFile*>(file)->at = offset;
-        return WXL_TRUE;
+        FakeHandle* handle = Handle(file);
+        if (handle->file)
+        {
+            handle->file->at = offset;
+            return WXL_TRUE;
+        }
+        fsk::FileParms parms{};
+        parms.verb     = offsetof(fsk::Filesystem, verbs.setpos);
+        parms.stream   = handle->stream;
+        parms.pos      = static_cast<int64_t>(offset);
+        parms.pos_mode = 0;
+        return TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms) ? WXL_TRUE : WXL_FALSE;
     }
 
-    uint32_t WXL_CALL FakeFileRead(void* handle, void* buffer, uint32_t count)
+    uint32_t WXL_CALL FakeFileRead(void* opened, void* buffer, uint32_t count)
     {
-        FakeFile* file = static_cast<FakeFile*>(handle);
-        if (!file || !buffer || file->at >= file->bytes.size()) return 0;
+        if (!opened || !buffer) return 0;
+        FakeHandle* handle = Handle(opened);
+        if (!handle->file)
+        {
+            fsk::FileParms parms{};
+            parms.verb   = offsetof(fsk::Filesystem, verbs.read);
+            parms.stream = handle->stream;
+            parms.buffer = buffer;
+            parms.amount = static_cast<int32_t>(count);
+            if (!TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms)) return 0;
+            return static_cast<uint32_t>(parms.amount);
+        }
+        FakeFile* file = handle->file;
+        if (file->at >= file->bytes.size()) return 0;
         const uint64_t left = file->bytes.size() - file->at;
         const uint32_t got  = left < count ? static_cast<uint32_t>(left) : count;
         memcpy(buffer, file->bytes.data() + file->at, got);
@@ -539,17 +725,25 @@ namespace
         return got;
     }
 
-    void WXL_CALL FakeFileClose(void* file)
+    void WXL_CALL FakeFileClose(void* opened)
     {
-        if (!file) return;
-        static_cast<FakeFile*>(file)->open = false;
+        if (!opened) return;
+        FakeHandle* handle = Handle(opened);
+        if (handle->file) handle->file->open = false;
+        if (handle->stream)
+        {
+            fsk::FileParms parms{};
+            parms.verb   = offsetof(fsk::Filesystem, verbs.close);
+            parms.stream = handle->stream;
+            TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms);
+        }
+        delete handle;
         ++g_closes;
     }
 
     wxl_bool WXL_CALL FakeArchiveMount(const char*, int32_t) { return WXL_TRUE; }
 
-    // The client's folder and its archives' listfiles, as find and the search path see them.
-    std::string              g_basePath;
+    // The client's archives' listfiles, as find sees them.
     std::vector<std::string> g_listed = {"Interface\\FrameXML\\FrameXML.toc",
                                          "Interface\\FrameXML\\Bindings.xml",
                                          "INTERFACE\\Icons\\A.blp", "Interface\\Glues\\Glues.toc"};
@@ -725,7 +919,67 @@ namespace
         std::string bytes;
         std::string replaced;    ///< what model_replace_bytes put in place, when it was asked
         bool        replace_fails = false;
+        std::string skin;        ///< its skin profile, as read
     };
+
+    /// A terrain tile, a map object's group and a texture, as the asset event rows read them.
+    struct FakeTile
+    {
+        int32_t     x = 0, y = 0;
+        const char* file = nullptr; ///< stands for the open file: its name
+        std::string bytes;
+    };
+
+    struct FakeGroup
+    {
+        void*       parent = nullptr;
+        uint32_t    index  = 0;
+        std::string bytes;
+    };
+
+    struct FakeTexture
+    {
+        char name[260] = {};
+    };
+
+    const void* WXL_CALL FakeAreaBytes(const void* area, int32_t* x, int32_t* y, void** file, uint32_t* size)
+    {
+        const FakeTile* tile = static_cast<const FakeTile*>(area);
+        if (!tile) return nullptr;
+        *x    = tile->x;
+        *y    = tile->y;
+        *file = const_cast<char*>(tile->file);
+        *size = static_cast<uint32_t>(tile->bytes.size());
+        return tile->bytes.data();
+    }
+
+    wxl_bool WXL_CALL FakeFileName(void* file, char* buffer, uint32_t capacity)
+    {
+        if (!file) return WXL_FALSE;
+        std::snprintf(buffer, capacity, "%s", static_cast<const char*>(file));
+        return WXL_TRUE;
+    }
+
+    const void* WXL_CALL FakeGroupBytes(const void* group, void** parent, uint32_t* index, uint32_t* size)
+    {
+        const FakeGroup* g = static_cast<const FakeGroup*>(group);
+        if (!g) return nullptr;
+        *parent = g->parent;
+        *index  = g->index;
+        *size   = static_cast<uint32_t>(g->bytes.size());
+        return g->bytes.data();
+    }
+
+    const void* WXL_CALL FakeSkinBytes(const void* shared)
+    {
+        const FakeModel* model = static_cast<const FakeModel*>(shared);
+        return model && !model->skin.empty() ? model->skin.data() : nullptr;
+    }
+
+    const char* WXL_CALL FakeTextureName(const void* texture)
+    {
+        return texture ? static_cast<const FakeTexture*>(texture)->name : nullptr;
+    }
 
     struct FakeMapObj
     {
@@ -780,7 +1034,457 @@ namespace
         return WXL_TRUE;
     }
 
+
+    // --- The gameplay rows: aura slots, the loot window, the factions, the dialogs' answers ---
+
+    /// An aura slot as the client keeps one (AuraData), as the aura rows read it.
+    struct FakeAura
+    {
+        uint64_t caster   = 0;
+        int32_t  spell    = 0;
+        uint8_t  flags    = 0;
+        uint8_t  level    = 0;
+        uint8_t  stacks   = 0;
+        int32_t  duration = 0;
+        int32_t  end      = 0;
+    };
+
+    const FakeAura* Aura(const void* aura) { return static_cast<const FakeAura*>(aura); }
+
+    uint64_t WXL_CALL FakeAuraCaster(const void* aura) { return Aura(aura)->caster; }
+    int32_t WXL_CALL FakeAuraSpell(const void* aura) { return Aura(aura)->spell; }
+    uint8_t WXL_CALL FakeAuraFlags(const void* aura) { return Aura(aura)->flags; }
+    uint8_t WXL_CALL FakeAuraLevel(const void* aura) { return Aura(aura)->level; }
+    uint8_t WXL_CALL FakeAuraStacks(const void* aura) { return Aura(aura)->stacks; }
+    int32_t WXL_CALL FakeAuraDuration(const void* aura) { return Aura(aura)->duration; }
+    int32_t WXL_CALL FakeAuraEnd(const void* aura) { return Aura(aura)->end; }
+
+    /// The aura slots of the one unit the checks give some, and the client's clock.
+    const void* g_auraOwner = nullptr;
+    FakeAura    g_auraSlots[4];
+    uint32_t    g_timeMs = 0;
+
+    int32_t WXL_CALL FakeAuraSlot(const void* unit, const void* aura)
+    {
+        const FakeAura* slot = Aura(aura);
+        if (unit != g_auraOwner || slot < g_auraSlots || slot >= g_auraSlots + 4) return -1;
+        return static_cast<int32_t>(slot - g_auraSlots);
+    }
+
+    uint32_t WXL_CALL FakeTimeMs(void) { return g_timeMs; }
+
+    /// The loot window: its object, kind, money and entries (item, quantity, display, suffix,
+    /// property, server slot, slot type; item 0 for an empty one).
+    uint64_t g_lootGuid  = 0;
+    uint32_t g_lootKind  = 0;
+    uint32_t g_lootMoney = 0;
+    int32_t  g_lootSlots[18][7]{};
+    uint32_t g_nextRoll  = 0;
+    int32_t  g_uiMap     = 0;
+
+    uint64_t WXL_CALL FakeLootGuid(void) { return g_lootGuid; }
+    uint32_t WXL_CALL FakeLootKind(void) { return g_lootKind; }
+    uint32_t WXL_CALL FakeLootMoney(void) { return g_lootMoney; }
+    uint32_t WXL_CALL FakeNextRoll(void) { return g_nextRoll; }
+    int32_t WXL_CALL FakeUiMap(void) { return g_uiMap; }
+
+    wxl_bool WXL_CALL FakeLootSlot(uint32_t index, int32_t* out)
+    {
+        if (index >= 18 || !out || !g_lootSlots[index][0]) return WXL_FALSE;
+        memcpy(out, g_lootSlots[index], sizeof g_lootSlots[index]);
+        return WXL_TRUE;
+    }
+
+    /// The reputation list: one faction at list id 3, the others empty.
+    int32_t g_factionId = 0, g_factionBase = 0, g_factionStanding = 0;
+
+    wxl_bool WXL_CALL FakeFaction(uint32_t list_id, int32_t* faction, int32_t* base, int32_t* standing)
+    {
+        if (list_id >= 128) return WXL_FALSE;
+        const bool mine = list_id == 3;
+        if (faction) *faction = mine ? g_factionId : 0;
+        if (base) *base = mine ? g_factionBase : 0;
+        if (standing) *standing = mine ? g_factionStanding : 0;
+        return WXL_TRUE;
+    }
+
+    uint64_t g_interact = 0, g_tradePartner = 0;
+    uint64_t WXL_CALL FakeInteract(void) { return g_interact; }
+    uint64_t WXL_CALL FakeTradePartner(void) { return g_tradePartner; }
+
+    /// The answers the seams gave in a dialog's place, in order.
+    std::vector<std::string> g_answers;
+
+    void WXL_CALL FakeGroupAnswer(wxl_bool accept) { g_answers.push_back(accept ? "group accept" : "group decline"); }
+
+    void WXL_CALL FakeResurrectAnswer(uint64_t offerer, uint32_t sickness, uint32_t, wxl_bool accept)
+    {
+        g_answers.push_back(std::string(accept ? "resurrect accept " : "resurrect decline ") +
+                            std::to_string(offerer) + (sickness ? " sick" : ""));
+    }
+
+    void WXL_CALL FakeDuelAnswer(uint64_t arbiter, uint64_t challenger, wxl_bool accept)
+    {
+        g_answers.push_back(std::string(accept ? "duel accept " : "duel decline ") + std::to_string(arbiter) + " " +
+                            std::to_string(challenger));
+    }
+
+    // --- M2: the batch a fake renderer drew, appearances, a fake model heap, a model file ----------
+
+    /// The batch the fake model renderer last drew: what gx_model_draw answers, once per draw.
+    wxl_model_batch_args g_gxDraw{};
+    bool                 g_gxDrew = false;
+
+    wxl_bool WXL_CALL FakeGxModelDraw(const void* render, wxl_model_batch_args* out)
+    {
+        if (!render || !out || !g_gxDrew) return WXL_FALSE;
+        g_gxDrew = false;
+        *out     = g_gxDraw;
+        return WXL_TRUE;
+    }
+
+    struct FakeComponent
+    {
+        void*    model;
+        uint32_t race;
+        uint32_t sex;
+        uint32_t display[12];
+        bool     npc;
+    };
+
+    /// A model of the fake heap: its references, what it hangs on, what was done to it, and a
+    /// skeleton of three bones whose matrices the posing writes.
+    struct FakeM2Model
+    {
+        int         refs       = 1;
+        void*       parent     = nullptr;
+        void*       source     = nullptr; ///< what an interface copy was duplicated from
+        uint32_t    geoFirst   = 0, geoLast = 0;
+        wxl_bool    geoVisible = WXL_FALSE;
+        uint32_t    texType    = 0;
+        std::string texture;
+        uint32_t    attachment = 0;
+        wxl_bool    toRoot     = WXL_FALSE;
+        void*       file       = nullptr; ///< a copy's: the model file it shares; a made model is its own
+        bool        loaded     = true;
+        float       matrices[3][16]{};
+    };
+
+    std::vector<FakeM2Model*> g_fakeLive; // every fake model alive, for m2_children
+    int                       g_fakeCopies      = 0;
+    int                       g_wearerAsked     = 0;
+    int                       g_fakeModelsFreed = 0;
+    FakeComponent             g_component{};
+
+    /// The character model the appearance wears: a skeleton of its own, never released.
+    FakeM2Model g_charModel;
+
+    FakeM2Model* AsFake(void* model) { return static_cast<FakeM2Model*>(model); }
+
+    /// The bones of every fake file, as the file lays them out (0x58 bytes, key bone id at 0,
+    /// parent at 8, name hash at 12, pivot at 0x4C): the body's root, its spine (key bone 5),
+    /// and a hand (name 0xAB); a piece made of a root, a bone of key bone 5 and one named 0xAB.
+    struct FakeBones
+    {
+        uint8_t  bytes[3][0x58]{};
+        uint16_t keys[8];
+
+        FakeBones()
+        {
+            for (uint16_t& key : keys) key = 0xFFFF;
+            const int32_t  ids[3]     = {-1, 5, -1};
+            const int16_t  parents[3] = {-1, 0, 1};
+            const uint32_t names[3]   = {0, 0, 0xAB};
+            for (int i = 0; i < 3; ++i)
+            {
+                std::memcpy(bytes[i] + 0x00, &ids[i], 4);
+                std::memcpy(bytes[i] + 0x08, &parents[i], 2);
+                std::memcpy(bytes[i] + 0x0C, &names[i], 4);
+                const float pivot[3] = {0.0f, 0.0f, static_cast<float>(i)};
+                std::memcpy(bytes[i] + 0x4C, pivot, sizeof pivot);
+            }
+            keys[5] = 1;
+        }
+    };
+
+    FakeBones g_bodyBones;
+
+    wxl_bool WXL_CALL FakeComponentWearer(const void* component, uint32_t item_slot, wxl_appearance_args* out)
+    {
+        ++g_wearerAsked;
+        if (component != &g_component || !out) return WXL_FALSE;
+        out->wearer     = const_cast<void*>(component);
+        out->model      = g_component.model;
+        out->race_id    = g_component.race;
+        out->sex_id     = g_component.sex;
+        out->item_slot  = item_slot;
+        out->display_id = item_slot < 12 ? g_component.display[item_slot] : 0;
+        out->npc        = g_component.npc ? WXL_TRUE : WXL_FALSE;
+        return WXL_TRUE;
+    }
+
+    void* WXL_CALL FakeObjectModel(const void* object) { return object ? static_cast<void*>(&g_charModel) : nullptr; }
+
+    wxl_bool WXL_CALL FakeItemDisplay(uint32_t id, wxl_m2_item_display* out)
+    {
+        if (id != 416036 || !out) return WXL_FALSE;
+        out->id               = id;
+        out->model[0]         = "belt.mdx";
+        out->model[1]         = "";
+        out->model_texture[0] = "belt_skin";
+        out->model_texture[1] = "";
+        out->icon[0]          = "";
+        out->icon[1]          = "53::96";
+        out->particle_color_id = 7;
+        return WXL_TRUE;
+    }
+
+    const char* WXL_CALL FakeRacePrefix(uint32_t race) { return race == 1 ? "Hu" : nullptr; }
+
+    void* WXL_CALL FakeCreateModel(void* scene_model, const char* path)
+    {
+        if (!scene_model || !path || !*path) return nullptr;
+        FakeM2Model* model = new FakeM2Model{};
+        g_fakeLive.push_back(model);
+        return model;
+    }
+
+    void WXL_CALL FakeReleaseModel(void* model)
+    {
+        FakeM2Model* fake = AsFake(model);
+        if (!fake || fake == &g_charModel || --fake->refs > 0) return;
+        std::erase(g_fakeLive, fake);
+        delete fake;
+        ++g_fakeModelsFreed;
+    }
+
+    wxl_bool WXL_CALL FakeAttachModel(void* model, void* parent, uint32_t attachment, wxl_bool to_root)
+    {
+        FakeM2Model* fake = AsFake(model);
+        if (!fake || !parent || (attachment == 99 && !to_root)) return WXL_FALSE; // 99: a point the parent lacks
+        if (!fake->parent) ++fake->refs;                                           // the parent's reference
+        fake->parent     = parent;
+        fake->attachment = attachment;
+        fake->toRoot     = to_root;
+        return WXL_TRUE;
+    }
+
+    void WXL_CALL FakeDetachModel(void* model)
+    {
+        FakeM2Model* fake = AsFake(model);
+        if (!fake || !fake->parent) return;
+        fake->parent = nullptr;
+        FakeReleaseModel(model);
+    }
+
+    void* WXL_CALL FakeModelParent(const void* model) { return model ? AsFake(const_cast<void*>(model))->parent : nullptr; }
+
+    void* WXL_CALL FakeModelSource(const void* model) { return model ? AsFake(const_cast<void*>(model))->source : nullptr; }
+
+    void WXL_CALL FakeSetGeosets(void* model, uint32_t first, uint32_t last, wxl_bool visible)
+    {
+        if (FakeM2Model* fake = AsFake(model))
+        {
+            fake->geoFirst   = first;
+            fake->geoLast    = last;
+            fake->geoVisible = visible;
+        }
+    }
+
+    wxl_bool WXL_CALL FakeReplaceTexture(void* model, uint32_t type, const char* path)
+    {
+        FakeM2Model* fake = AsFake(model);
+        if (!fake || !path || std::strcmp(path, "missing.blp") == 0) return WXL_FALSE;
+        fake->texType = type;
+        fake->texture = path;
+        return WXL_TRUE;
+    }
+
+    void* WXL_CALL FakeModelFile(const void* model)
+    {
+        FakeM2Model* fake = AsFake(const_cast<void*>(model));
+        return fake ? (fake->file ? fake->file : fake) : nullptr;
+    }
+
+    wxl_bool WXL_CALL FakeAttachmentPoint(const void* model, uint32_t attachment, wxl_vec3* out)
+    {
+        if (model != &g_charModel || attachment != 32 || !out) return WXL_FALSE;
+        *out = wxl_vec3{0.1f, 0.2f, 1.1f};
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeSkeleton(void* model, wxl_core_m2_skeleton* out)
+    {
+        FakeM2Model* fake = AsFake(model);
+        if (!fake || !out || !fake->loaded) return WXL_FALSE;
+        out->file           = fake == &g_charModel ? static_cast<const void*>(&g_charModel) : FakeModelFile(fake);
+        out->bones          = &g_bodyBones.bytes[0][0];
+        out->bone_count     = 3;
+        out->bone_stride    = 0x58;
+        out->key_bones      = g_bodyBones.keys;
+        out->key_bone_count = 8;
+        out->matrices       = &fake->matrices[0][0];
+        return WXL_TRUE;
+    }
+
+    uint32_t WXL_CALL FakeChildren(const void* model, void** out, uint32_t capacity)
+    {
+        uint32_t count = 0;
+        for (FakeM2Model* fake : g_fakeLive)
+        {
+            if (fake->parent != model) continue;
+            if (out && count < capacity) out[count] = fake;
+            ++count;
+        }
+        return count;
+    }
+
+    wxl_bool WXL_CALL FakeAttachInfo(const void* model, uint32_t* attachment, wxl_bool* to_root)
+    {
+        FakeM2Model* fake = AsFake(const_cast<void*>(model));
+        if (!fake || !fake->parent) return WXL_FALSE;
+        *attachment = fake->attachment;
+        *to_root    = fake->toRoot;
+        return WXL_TRUE;
+    }
+
+    wxl_bool WXL_CALL FakeAttachCopy(void* source, void* parent, uint32_t attachment, wxl_bool to_root)
+    {
+        if (!source || !parent) return WXL_FALSE;
+        FakeM2Model* copy = new FakeM2Model{};
+        copy->parent = parent, copy->source = source, copy->attachment = attachment, copy->toRoot = to_root;
+        g_fakeLive.push_back(copy);
+        ++g_fakeCopies;
+        return WXL_TRUE;
+    }
+
+    /// One fake model file, its bytes and skin, and the shadow bones counted on it.
+    struct FakeM2File
+    {
+        uint8_t bytes[64];
+        uint8_t skin[48];
+        bool    hasSkin;
+        int     asked;    // m2_file_info calls
+        int     animated; // m2_file_animate_bones calls
+    };
+
+    FakeM2File g_m2File{};
+
+    wxl_bool WXL_CALL FakeM2FileInfo(const void* file, wxl_core_m2_file* out)
+    {
+        ++g_m2File.asked;
+        if (file != &g_m2File || !out) return WXL_FALSE;
+        out->path   = "creature\\fake\\fake.m2";
+        out->header = g_m2File.bytes;
+        out->size   = sizeof g_m2File.bytes;
+        out->skin   = g_m2File.hasSkin ? g_m2File.skin : nullptr;
+        return WXL_TRUE;
+    }
+
+    void WXL_CALL FakeM2FileAnimateBones(void* file)
+    {
+        if (file == &g_m2File) ++g_m2File.animated;
+    }
+
     /// Every other row stays null, which is what a client that hands nothing over looks like.
+    // --- the typed reads and the actions (unit.def, item.def, action.def) ---------------------
+
+    uint64_t g_party[4]{};
+    uint64_t g_raid[40]{};
+    uint32_t g_raidCount = 0;
+
+    /// What the fake client was asked to do, as "target 0x..." lines.
+    std::vector<std::string> g_actions;
+    bool                     g_refuseActions = false;
+
+    void Did(const char* what, uint64_t a = 0, uint64_t b = 0)
+    {
+        char line[96];
+        snprintf(line, sizeof line, "%s %llx %llx", what, static_cast<unsigned long long>(a),
+                 static_cast<unsigned long long>(b));
+        g_actions.emplace_back(line);
+    }
+
+    uint32_t WXL_CALL FakeCastStart(const void*) { return 0; }
+    uint32_t WXL_CALL FakeCastEnd(const void* o) { return Obj(o)->castEnd; }
+    uint32_t WXL_CALL FakeChannelStart(const void*) { return 0; }
+    uint32_t WXL_CALL FakeChannelEnd(const void* o) { return Obj(o)->channelEnd; }
+    int32_t WXL_CALL FakeMountModel(const void* o) { return Obj(o)->mountModel; }
+    uint32_t WXL_CALL FakeClientFlags(const void* o) { return Obj(o)->clientFlags; }
+    wxl_bool WXL_CALL FakeSpeed(const void* o, uint32_t i, float* out)
+    {
+        if (i > 8) return WXL_FALSE;
+        *out = Obj(o)->speeds[i];
+        return WXL_TRUE;
+    }
+    int32_t WXL_CALL FakeReaction(const void* o, const void*) { return Obj(o)->reaction; }
+    int32_t WXL_CALL FakeCreatureType(const void* o) { return Obj(o)->creatureType; }
+    uint32_t WXL_CALL FakeFamily(const void* o) { return Obj(o)->family; }
+    uint32_t WXL_CALL FakeRank(const void* o) { return Obj(o)->rank; }
+    wxl_bool WXL_CALL FakeKnows(const void* o, uint32_t spell) { return Obj(o)->knownSpell == spell ? WXL_TRUE : WXL_FALSE; }
+    /// The auras of the units the typed reads give some: the unit, its slots.
+    std::map<const void*, std::vector<FakeAura>> g_unitAuras;
+
+    uint32_t WXL_CALL FakeAuraCount(const void* o)
+    {
+        const auto found = g_unitAuras.find(o);
+        return found == g_unitAuras.end() ? 0u : static_cast<uint32_t>(found->second.size());
+    }
+    const void* WXL_CALL FakeAuraAt(const void* o, uint32_t i)
+    {
+        const auto found = g_unitAuras.find(o);
+        return found != g_unitAuras.end() && i < found->second.size() ? &found->second[i] : nullptr;
+    }
+    const void* WXL_CALL FakeItemStats(const void* o) { return Obj(o)->stats; }
+    using FakeStats = FakeObject::Stats;
+    const FakeStats* StatsOf(const void* s) { return static_cast<const FakeStats*>(s); }
+    uint32_t WXL_CALL FakeStatQuality(const void* s) { return StatsOf(s)->quality; }
+    uint32_t WXL_CALL FakeStatLevel(const void* s) { return StatsOf(s)->level; }
+    uint32_t WXL_CALL FakeStatRequired(const void* s) { return StatsOf(s)->requiredLevel; }
+    uint32_t WXL_CALL FakeStatClass(const void* s) { return StatsOf(s)->itemClass; }
+    uint32_t WXL_CALL FakeStatSubclass(const void* s) { return StatsOf(s)->subclass; }
+    uint32_t WXL_CALL FakeStatInventory(const void* s) { return StatsOf(s)->inventoryType; }
+    int32_t WXL_CALL FakeStatStack(const void* s) { return StatsOf(s)->stackable; }
+    uint32_t WXL_CALL FakeStatSell(const void* s) { return StatsOf(s)->sellPrice; }
+    uint64_t WXL_CALL FakePartyGuid(uint32_t i) { return i < 4 ? g_party[i] : 0; }
+    uint32_t WXL_CALL FakeRaidCount(void) { return g_raidCount; }
+    uint64_t WXL_CALL FakeRaidGuid(uint32_t i) { return i < 40 ? g_raid[i] : 0; }
+    wxl_bool WXL_CALL FakeActTarget(uint64_t guid)
+    {
+        Did("target", guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActInteract(uint64_t guid)
+    {
+        Did("interact", guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActCast(uint32_t spell, uint64_t target)
+    {
+        Did("cast", spell, target);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActStop(void)
+    {
+        Did("stop");
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActUse(const void* item, uint64_t target)
+    {
+        Did("use", Obj(item)->guid, target);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActFollow(const void* mover, uint64_t guid)
+    {
+        Did("follow", Obj(mover)->guid, guid);
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+    wxl_bool WXL_CALL FakeActMove(const void* player, wxl_vec3 point)
+    {
+        Did("move", Obj(player)->guid, static_cast<uint64_t>(point.x));
+        return g_refuseActions ? WXL_FALSE : WXL_TRUE;
+    }
+
     wxl_core_init FakeInit()
     {
         wxl_core_init init{};
@@ -802,6 +1506,8 @@ namespace
         init.map_area_tile_y        = &FakeTileY;
         init.ui_initialized         = &FakeUiInitialized;
         init.ui_logging_in          = &FakeUiLoggingIn;
+        init.ui_reloading           = &FakeUiReloading;
+        init.world_position         = &FakeWorldPosition;
         init.script_state           = &FakeScriptState;
         init.script_global_is_set   = &FakeGlobalIsSet;
         init.script_set_global_closure = &FakeSetGlobalClosure;
@@ -833,16 +1539,79 @@ namespace
         init.archive_mount          = &FakeArchiveMount;
         init.storage_base_path      = &FakeBasePath;
         init.archive_list           = &FakeArchiveList;
+        init.filestack_top          = &FakeFilestackTop;
+        init.filestack_initial      = &FakeFilestackInitial;
         init.gx_device_exists       = &FakeGxDeviceExists;
         init.gx_has_context         = &FakeGxHasContext;
         init.gx_window_visible      = &FakeGxWindowVisible;
         init.gx_window_size         = &FakeGxWindowSize;
+        init.gx_model_draw          = &FakeGxModelDraw;
+        init.component_wearer       = &FakeComponentWearer;
+        init.m2_object_model        = &FakeObjectModel;
+        init.m2_item_display        = &FakeItemDisplay;
+        init.m2_race_prefix         = &FakeRacePrefix;
+        init.m2_create_model        = &FakeCreateModel;
+        init.m2_release_model       = &FakeReleaseModel;
+        init.m2_attach_model        = &FakeAttachModel;
+        init.m2_detach_model        = &FakeDetachModel;
+        init.m2_model_parent        = &FakeModelParent;
+        init.m2_model_source        = &FakeModelSource;
+        init.m2_set_geosets         = &FakeSetGeosets;
+        init.m2_replace_texture     = &FakeReplaceTexture;
+        init.m2_children            = &FakeChildren;
+        init.m2_attach_info         = &FakeAttachInfo;
+        init.m2_attach_copy         = &FakeAttachCopy;
+        init.m2_model_file          = &FakeModelFile;
+        init.m2_attachment_point    = &FakeAttachmentPoint;
+        init.m2_skeleton            = &FakeSkeleton;
+        init.m2_file_info           = &FakeM2FileInfo;
+        init.m2_file_animate_bones  = &FakeM2FileAnimateBones;
         init.pending_cast_caster    = &FakePendingCaster;
         init.pending_cast_spell_id  = &FakePendingSpellId;
         init.pending_cast_count     = &FakePendingCount;
         init.object_facing          = &FakeFacing;
         init.unit_movement_flags    = &FakeMovementFlags;
         init.player_money           = &FakeMoney;
+        init.unit_cast_start        = &FakeCastStart;
+        init.unit_cast_end          = &FakeCastEnd;
+        init.unit_channel_start     = &FakeChannelStart;
+        init.unit_channel_end       = &FakeChannelEnd;
+        init.unit_mount_model       = &FakeMountModel;
+        init.unit_client_flags      = &FakeClientFlags;
+        init.unit_speed             = &FakeSpeed;
+        init.unit_reaction          = &FakeReaction;
+        init.unit_creature_type     = &FakeCreatureType;
+        init.unit_creature_family   = &FakeFamily;
+        init.unit_classification    = &FakeRank;
+        init.unit_knows_spell       = &FakeKnows;
+        init.unit_aura_count        = &FakeAuraCount;
+        init.unit_aura_at           = &FakeAuraAt;
+        init.aura_caster            = &FakeAuraCaster;
+        init.aura_spell_id          = &FakeAuraSpell;
+        init.aura_flags             = &FakeAuraFlags;
+        init.aura_level             = &FakeAuraLevel;
+        init.aura_stacks            = &FakeAuraStacks;
+        init.aura_duration          = &FakeAuraDuration;
+        init.aura_end_time          = &FakeAuraEnd;
+        init.item_stats             = &FakeItemStats;
+        init.item_stats_quality     = &FakeStatQuality;
+        init.item_stats_level       = &FakeStatLevel;
+        init.item_stats_required_level = &FakeStatRequired;
+        init.item_stats_class       = &FakeStatClass;
+        init.item_stats_subclass    = &FakeStatSubclass;
+        init.item_stats_inventory_type = &FakeStatInventory;
+        init.item_stats_stackable   = &FakeStatStack;
+        init.item_stats_sell_price  = &FakeStatSell;
+        init.party_member_guid      = &FakePartyGuid;
+        init.raid_member_count      = &FakeRaidCount;
+        init.raid_member_guid       = &FakeRaidGuid;
+        init.action_target          = &FakeActTarget;
+        init.action_interact        = &FakeActInteract;
+        init.action_cast_spell      = &FakeActCast;
+        init.action_stop_casting    = &FakeActStop;
+        init.action_use_item        = &FakeActUse;
+        init.action_follow          = &FakeActFollow;
+        init.action_move_to         = &FakeActMove;
         init.terrain_click_guid     = &FakeTerrainGuid;
         init.terrain_click_x        = &FakeTerrainX;
         init.terrain_click_y        = &FakeTerrainY;
@@ -873,7 +1642,26 @@ namespace
         init.model_replace_bytes    = &FakeModelReplace;
         init.map_obj_path           = &FakeMapObjPath;
         init.map_obj_bytes          = &FakeMapObjBytes;
+        init.map_area_bytes         = &FakeAreaBytes;
+        init.file_name              = &FakeFileName;
+        init.map_obj_group_bytes    = &FakeGroupBytes;
+        init.model_skin_bytes       = &FakeSkinBytes;
+        init.texture_name           = &FakeTextureName;
         init.doodad_position        = &FakeDoodadPosition;
+        init.unit_aura_slot         = &FakeAuraSlot;
+        init.os_time_ms             = &FakeTimeMs;
+        init.loot_object_guid       = &FakeLootGuid;
+        init.loot_kind              = &FakeLootKind;
+        init.loot_money             = &FakeLootMoney;
+        init.loot_slot              = &FakeLootSlot;
+        init.loot_next_roll_id      = &FakeNextRoll;
+        init.ui_map_id              = &FakeUiMap;
+        init.faction_standing       = &FakeFaction;
+        init.ui_interact_target     = &FakeInteract;
+        init.trade_partner          = &FakeTradePartner;
+        init.group_invite_answer    = &FakeGroupAnswer;
+        init.resurrect_answer       = &FakeResurrectAnswer;
+        init.duel_answer            = &FakeDuelAnswer;
         return init;
     }
 }
@@ -1089,46 +1877,100 @@ namespace
               "Update carries the seam's elapsed_sec as its delta");
     }
 
-    /// World.Preload: the pair raises WorldEnter on the way in and WorldLeave only once a world
-    /// has been entered, and neither when the loading screen is not being shown.
-    void CheckWorldPreload()
+    /// The World seams: CGGameUI::EnterWorld and LeaveWorld raise WorldEnter and WorldLeave once
+    /// per entry and exit (login, a teleport to another map, logout), never for a /reload; a
+    /// same-map teleport's World::Preload with the loading screen raises the pair while the
+    /// player is in the world, and nothing otherwise.
+    void CheckWorld()
     {
-        const wxl_vec3 where{ 1.0f, 2.0f, 3.0f };
+        FakeObject me;
+        me.guid     = 0x0000000000000042ull;
+        me.typeId   = WXL_OBJECT_PLAYER;
+        me.position = { 5.0f, 6.0f, 7.0f };
+        const wxl_vec3 there{ 1.0f, 2.0f, 3.0f };
+        auto same = [](const wxl_vec3& a, const wxl_vec3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
+
+        // Before any login: no preload enters a world.
         g_mapId = 571;
-
-        // A preload with no loading screen is a far-sight, cinematic or game-object preload.
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 0);
-        wxl::seam::World::Preload::After(&where, 0);
-        Check(g_received.empty(), "World.Preload raises nothing when show_loading is clear");
+        wxl::seam::World::Preload::Before(&there, 0);
+        wxl::seam::World::Preload::After(&there, 0);
+        wxl::seam::World::Preload::Before(&there, 1);
+        wxl::seam::World::Preload::After(&there, 1);
+        Check(g_received.empty(), "World.Preload raises nothing before the player is in the world");
 
-        // The first real preload enters a world; there is no world to leave yet.
+        // Login: the active player's object arrives and the interface enters the world.
+        g_localPlayer = &me;
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 1);
-        wxl::seam::World::Preload::After(&where, 1);
-        Check(Only(WXL_EV_WorldLeave) == nullptr, "the first world entry raises no WorldLeave");
-
+        wxl::seam::World::EnterWorld::After();
         const Received* entered = Only(WXL_EV_WorldEnter);
-        Check(entered != nullptr, "World.Preload raises WorldEnter once a world is loaded");
+        Check(entered != nullptr && Only(WXL_EV_WorldLeave) == nullptr,
+              "World.EnterWorld raises WorldEnter at login, and no WorldLeave");
         if (entered)
-        {
-            const wxl_world_args args = entered->As<wxl_world_args>();
-            Check(args.map_id == 571u, "WorldEnter carries the map the binding reports");
-            Check(args.position.x == 1.0f && args.position.y == 2.0f && args.position.z == 3.0f,
-                  "WorldEnter carries the position the seam was called with");
-        }
-
-        // The next one leaves the world just entered, naming it, and enters the new one.
-        g_mapId = 0;
+            Check(entered->As<wxl_world_args>().map_id == 571u && same(entered->As<wxl_world_args>().position, me.position),
+                  "WorldEnter carries the loaded map and the player's position");
         g_received.clear();
-        wxl::seam::World::Preload::Before(&where, 1);
+        wxl::seam::World::EnterWorld::After();
+        Check(g_received.empty(), "an entry already announced is not raised again");
+
+        // /reload: the interface leaves and enters the world again, the player never left.
+        g_uiReloading = 1;
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        wxl::seam::World::EnterWorld::After();
+        g_uiReloading = 0;
+        Check(g_received.empty(), "a /reload raises neither WorldLeave nor WorldEnter");
+
+        // A teleport far across the same map: the loading screen of World::Preload.
+        g_worldPosition = me.position;
+        g_received.clear();
+        wxl::seam::World::Preload::Before(&there, 0);
+        wxl::seam::World::Preload::After(&there, 0);
+        Check(g_received.empty(), "World.Preload raises nothing when show_loading is clear");
+        wxl::seam::World::Preload::Before(&there, 1);
         const Received* left = Only(WXL_EV_WorldLeave);
-        Check(left != nullptr, "the next world entry raises WorldLeave first");
+        Check(left != nullptr && Only(WXL_EV_WorldEnter) == nullptr,
+              "a same-map teleport's preload raises WorldLeave first");
         if (left)
-            Check(left->As<wxl_world_args>().map_id == 571u,
-                  "WorldLeave names the map being left, not the one arriving");
-        wxl::seam::World::Preload::After(&where, 1);
-        Check(Only(WXL_EV_WorldEnter) != nullptr, "and WorldEnter after it");
+            Check(left->As<wxl_world_args>().map_id == 571u && same(left->As<wxl_world_args>().position, me.position),
+                  "WorldLeave names the map and the place being left, not the destination");
+        g_received.clear();
+        wxl::seam::World::Preload::After(&there, 1);
+        entered = Only(WXL_EV_WorldEnter);
+        Check(entered != nullptr, "and WorldEnter after it");
+        if (entered)
+            Check(entered->As<wxl_world_args>().map_id == 571u && same(entered->As<wxl_world_args>().position, there),
+                  "WorldEnter carries the position the preload loaded around");
+
+        // A teleport to another map: the old player object goes while its map is loaded.
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        left = Only(WXL_EV_WorldLeave);
+        Check(left != nullptr && left->As<wxl_world_args>().map_id == 571u,
+              "World.LeaveWorld raises WorldLeave with the map entered");
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        wxl::seam::World::Preload::Before(&there, 1);
+        wxl::seam::World::Preload::After(&there, 1);
+        Check(g_received.empty(), "out of the world, neither a leave nor a preload raises anything");
+        g_mapId = 0;
+        wxl::seam::World::EnterWorld::After();
+        entered = Only(WXL_EV_WorldEnter);
+        Check(entered != nullptr && entered->As<wxl_world_args>().map_id == 0u,
+              "the new map's entry raises WorldEnter with its id");
+
+        // Logout: the player leaves; the next login enters again.
+        g_received.clear();
+        wxl::seam::World::LeaveWorld::Before();
+        left = Only(WXL_EV_WorldLeave);
+        Check(left != nullptr && left->As<wxl_world_args>().map_id == 0u, "a logout raises WorldLeave");
+        g_received.clear();
+        wxl::seam::World::EnterWorld::After();
+        Check(Only(WXL_EV_WorldEnter) != nullptr, "and the relog WorldEnter");
+        wxl::seam::World::LeaveWorld::Before();
+
+        g_localPlayer   = nullptr;
+        g_worldPosition = {};
     }
 
     /// ObjectMgr: InitObject's After tracks and announces; ObjDelete's Before announces and
@@ -1555,6 +2397,162 @@ namespace
         wxl::seam::ObjectMgr::ObjDelete::Before(&me);
     }
 
+    /// The typed reads (abi 0.1.17) a runtime answers itself, through wxl.object over the
+    /// binding: the client's own functions and members, as the fake client hands them over.
+    void CheckTypedReads()
+    {
+        const wxl_object_api* api = wxl::core::objects::Api();
+
+        FakeObject me;
+        me.guid   = 0x0000000000000042ull;
+        me.typeId = WXL_OBJECT_PLAYER;
+        FakeObject wolf;
+        wolf.guid         = 0xF130000000000789ull;
+        wolf.typeId       = WXL_OBJECT_UNIT;
+        wolf.reaction     = 1;
+        wolf.creatureType = 1;
+        wolf.family       = 1;
+        wolf.rank         = 2;
+        wolf.mountModel   = 0;
+        wolf.speeds[1]    = 7.0f;
+        wolf.castingSpellId = 133;
+        wolf.castEnd        = 1500;
+        g_unitAuras[&wolf]  = {FakeAura{0x42, 1459, 0x10, 80, 0, 1800000, 1801000},
+                               FakeAura{0x42, 9484, 0x80, 80, 3, 0, 0}};
+        FakeObject stone;
+        stone.guid   = 0x4000000000000123ull;
+        stone.typeId = WXL_OBJECT_ITEM;
+
+        g_localPlayer = &me;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&stone, nullptr, 100u);
+        const wxl_handle player = wxl::core::objects::HandleOf(&me);
+        const wxl_handle unit   = wxl::core::objects::HandleOf(&wolf);
+        const wxl_handle item   = wxl::core::objects::HandleOf(&stone);
+
+        uint32_t value = 0;
+        wxl_bool yes   = WXL_FALSE;
+        Check(api->unit_reaction(unit, &value) == WXL_OK && value == WXL_REACTION_HOSTILE,
+              "unit_reaction asks the client's UnitReaction towards the active player");
+        Check(api->unit_reaction_to(unit, player, &value) == WXL_OK && value == WXL_REACTION_HOSTILE &&
+                  api->unit_reaction_to(unit, item, &value) == WXL_E_INVALID,
+              "unit_reaction_to another unit, refused for an item");
+        Check(api->unit_creature_type(unit, &value) == WXL_OK && value == WXL_CREATURE_BEAST &&
+                  api->unit_creature_family(unit, &value) == WXL_OK && value == 1 &&
+                  api->unit_classification(unit, &value) == WXL_OK && value == WXL_CLASSIFICATION_RARE_ELITE,
+              "the creature's type, family and rank are the client's");
+        float speed = 0.0f;
+        Check(api->unit_speed(unit, WXL_MOVE_RUN, &speed) == WXL_OK && speed == 7.0f &&
+                  api->unit_speed(unit, 9, &speed) == WXL_E_INVALID,
+              "a speed by wxl_move_type, invalid past the ninth");
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_FALSE, "no mount model, not mounted");
+        wolf.mountModel = 14334;
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_TRUE, "a mount model, mounted");
+        wolf.clientFlags = 0x10000000u;
+        Check(api->unit_is_mounted(unit, &yes) == WXL_OK && yes == WXL_FALSE,
+              "unless the client flags the mount as going, as IsMounted reads it");
+        wolf.clientFlags = 0x200000u;
+        Check(api->unit_is_swimming(unit, &yes) == WXL_OK && yes == WXL_TRUE, "swimming is the client's flag");
+        g_timeMs = 1000;
+        Check(api->unit_is_casting(unit, &yes) == WXL_OK && yes == WXL_TRUE, "a cast whose end is to come is a cast");
+        g_timeMs = 1500;
+        Check(api->unit_is_casting(unit, &yes) == WXL_OK && yes == WXL_FALSE, "and none once its end has passed");
+        Check(api->unit_aura_count(unit, &value) == WXL_OK && value == 2, "the client's aura count");
+        wxl_aura aura{};
+        aura.struct_size = sizeof aura;
+        Check(api->unit_aura(unit, 1, &aura) == WXL_OK && aura.spell_id == 9484 && aura.stacks == 3 &&
+                  aura.flags == 0x80 && aura.caster == 0x42 && aura.level == 80,
+              "an aura's spell, stacks, flags, caster and level");
+        Check(api->unit_aura(unit, 0, &aura) == WXL_OK && aura.duration == 1800000 && aura.expiration == 1801000,
+              "its duration and expiration");
+        Check(api->unit_aura(unit, 2, &aura) == WXL_E_INVALID, "a slot past the count is invalid");
+        Check(api->unit_has_aura(unit, 1459, &yes) == WXL_OK && yes == WXL_TRUE &&
+                  api->unit_has_aura(unit, 1, &yes) == WXL_OK && yes == WXL_FALSE,
+              "has_aura, through the shared runtime, over the client's auras");
+        me.knownSpell = 133;
+        Check(api->unit_knows_spell(player, 133, &yes) == WXL_OK && yes == WXL_TRUE &&
+                  api->unit_knows_spell(player, 134, &yes) == WXL_OK && yes == WXL_FALSE,
+              "knows_spell asks the client's spell book");
+
+        Check(api->item_quality(item, &value) == WXL_E_FAILED, "an item the cache lacks answers failed");
+        const FakeStats hearth{1, 1, 0, 15, 0, 0, 1, 0};
+        stone.stats = &hearth;
+        Check(api->item_quality(item, &value) == WXL_OK && value == WXL_QUALITY_COMMON &&
+                  api->item_class(item, &value) == WXL_OK && value == 15 &&
+                  api->item_max_stack(item, &value) == WXL_OK && value == 1,
+              "and the cache's record once the client has it");
+
+        g_party[1] = 0x77;
+        g_raidCount = 0;
+        wxl_guid guid = 0;
+        Check(api->player_party_size(player, &value) == WXL_OK && value == 1 &&
+                  api->player_party_member_guid(player, 1, &guid) == WXL_OK && guid == 0x77 &&
+                  api->player_party_member_guid(player, 4, &guid) == WXL_E_INVALID,
+              "the party: its size and its members' guids by slot");
+        Check(api->player_party_size(unit, &value) == WXL_E_INVALID, "the group is the active player's alone");
+        g_party[1] = 0;
+
+        g_unitAuras.clear();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&stone);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
+    }
+
+    /// wxl.action over the binding: the thread, the world and the object checked first, then
+    /// the client asked.
+    void CheckActions()
+    {
+        const wxl_action_api& act = wxl::core::services::ActionApi();
+
+        FakeObject me;
+        me.guid   = 0x42;
+        me.typeId = WXL_OBJECT_PLAYER;
+        FakeObject wolf;
+        wolf.guid   = 0x789;
+        wolf.typeId = WXL_OBJECT_UNIT;
+        FakeObject stone;
+        stone.guid   = 0x123;
+        stone.typeId = WXL_OBJECT_ITEM;
+        wxl::seam::ObjectMgr::InitObject::After(&me, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&wolf, nullptr, 100u);
+        wxl::seam::ObjectMgr::InitObject::After(&stone, nullptr, 100u);
+        const wxl_handle unit = wxl::core::objects::HandleOf(&wolf);
+        const wxl_handle item = wxl::core::objects::HandleOf(&stone);
+
+        g_actions.clear();
+        Check(act.target(unit) == WXL_E_UNSUPPORTED && g_actions.empty(), "out of the world nothing is asked");
+        g_localPlayer = &me;
+        Check(act.target(unit) == WXL_OK && act.clear_target() == WXL_OK && act.interact(unit) == WXL_OK &&
+                  act.cast_spell(133, unit) == WXL_OK && act.cast_spell(133, WXL_HANDLE_NONE) == WXL_OK &&
+                  act.stop_casting() == WXL_OK && act.use_item(item, unit) == WXL_OK && act.follow(unit) == WXL_OK &&
+                  act.move_to(wxl_vec3{12.0f, 0.0f, 0.0f}) == WXL_OK,
+              "every action reaches the client");
+        const std::vector<std::string> expected = {"target 789 0", "target 0 0",    "interact 789 0",
+                                                   "cast 85 789",  "cast 85 0",     "stop 0 0",
+                                                   "use 123 789",  "follow 42 789", "move 42 c"};
+        Check(g_actions == expected, "with the guids and the spell, none for the current target");
+        Check(act.assist(unit) == WXL_E_FAILED, "assisting a unit that targets nothing fails");
+        Check(act.use_item(unit, WXL_HANDLE_NONE) == WXL_E_INVALID && act.follow(item) == WXL_E_INVALID,
+              "an object of the wrong kind is invalid");
+        Check(act.cast_spell(0, WXL_HANDLE_NONE) == WXL_E_INVALID, "a spell id of 0 is invalid");
+        Check(act.target(0xDEAD) == WXL_E_NOT_FOUND, "a stale handle is gone");
+        g_refuseActions = true;
+        Check(act.interact(unit) == WXL_E_FAILED, "what the client refuses answers failed");
+        g_refuseActions = false;
+
+        g_actions.clear();
+        wxl_result fromThread = WXL_OK;
+        std::thread([&] { fromThread = act.target(unit); }).join();
+        Check(fromThread == WXL_E_INVALID && g_actions.empty(), "off the main thread an action is refused");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&stone);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        g_localPlayer = nullptr;
+    }
+
     /// GameUI: the target is announced once per change, with the previous and current handles,
     /// through SendTarget after Target's internal clear, and through a standalone ClearTarget.
     void CheckGameUI()
@@ -1625,6 +2623,11 @@ namespace
         Check(!g_host->Listening(WXL_EV_TextureLoad), "with its one subscription gone, nobody listens");
         Unmute(WXL_EV_TextureLoad);
         Check(g_host->Listening(WXL_EV_TextureLoad), "and subscribing again is heard at once");
+        Mute(WXL_EV_ModelBatchDrawn);
+        const bool quiet = !wxl::seam::Listening(WXL_EV_ModelBatchDrawn);
+        Unmute(WXL_EV_ModelBatchDrawn);
+        Check(quiet && wxl::seam::Listening(WXL_EV_ModelBatchDrawn),
+              "the flag a hot seam reads first follows its event's first and last handler");
     }
 
     /// Texture, M2Shared and MapObj: an asset named, read or walked raises its event with what
@@ -1701,6 +2704,124 @@ namespace
     }
 
     /// Map: a doodad an overload placed is announced once; one it answered from the hash is not.
+
+    // --- the engine's own loads: tiles, groups, skins, textures, shaders, sounds ----------------
+
+    void CheckAssetEvents()
+    {
+        FakeTile tile;
+        tile.x     = 32;
+        tile.y     = 48;
+        tile.file  = "|wxl|00000000|World\\Maps\\Azeroth\\Azeroth_32_48.adt";
+        tile.bytes = "REVM tile";
+        g_received.clear();
+        wxl::seam::MapArea::AsyncCallback::Before(&tile);
+        const Received* loaded = Only(WXL_EV_TerrainTileLoad);
+        Check(loaded && loaded->As<wxl_terrain_tile_args>().tile_x == 32 && loaded->As<wxl_terrain_tile_args>().tile_y == 48 &&
+                  loaded->As<wxl_terrain_tile_args>().size == 9u,
+              "MapArea.AsyncCallback raises TerrainTileLoad with the tile's place and its bytes");
+        Check(loaded && loaded->As<wxl_terrain_tile_args>().path.size == strlen("World\\Maps\\Azeroth\\Azeroth_32_48.adt"),
+              "named by the client's name, not the file layer's path");
+
+        FakeMapObj root;
+        strcpy(root.name, "World\\wmo\\Inn.wmo");
+        FakeGroup group;
+        group.parent = &root;
+        group.index  = 3;
+        group.bytes  = "REVM group";
+        g_received.clear();
+        wxl::seam::MapObj::CreateGroup::Before(&group);
+        const Received* grouped = Only(WXL_EV_MapObjectGroupLoad);
+        Check(grouped && grouped->As<wxl_map_object_group_args>().group == 3u &&
+                  grouped->As<wxl_map_object_group_args>().size == 10u &&
+                  grouped->As<wxl_map_object_group_args>().path.size == strlen(root.name),
+              "MapObj.CreateGroup raises MapObjectGroupLoad with the root's name, the group's number and bytes");
+
+        FakeModel model;
+        strcpy(model.name, "Creature\\Boar\\Boar.m2");
+        model.skin = "SKIN data";
+        g_received.clear();
+        wxl::seam::M2Shared::FinishLoadingSkinProfile::Before(&model, 9);
+        const Received* skin = Only(WXL_EV_SkinProfileLoad);
+        Check(skin && skin->As<wxl_skin_profile_args>().size == 9u &&
+                  skin->As<wxl_skin_profile_args>().model.size == strlen(model.name),
+              "M2Shared.FinishLoadingSkinProfile raises SkinProfileLoad with the model and the skin's bytes");
+
+        // A BLP2 header: 256 x 128, DXT, 8-bit alpha, DXT5, three mip levels.
+        std::vector<uint8_t> blp(0x94 + 16, 0);
+        const uint32_t       header[] = {0x32504C42u, 1u};
+        std::memcpy(blp.data(), header, sizeof header);
+        blp[8]  = 2;
+        blp[9]  = 8;
+        blp[10] = 7;
+        blp[11] = 1;
+        const uint32_t size[] = {256u, 128u};
+        std::memcpy(blp.data() + 12, size, sizeof size);
+        for (int i = 0; i < 3; ++i)
+        {
+            const uint32_t mip = 100u >> i;
+            std::memcpy(blp.data() + 0x54 + 4 * i, &mip, 4);
+        }
+        FakeTexture texture;
+        strcpy(texture.name, "World\\Grass.blp");
+        g_received.clear();
+        wxl::seam::Texture::AsyncTextureSuccessCallback::Before(&texture);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        const Received* decoded = Only(WXL_EV_TextureDecode);
+        Check(decoded && decoded->As<wxl_texture_decode_args>().width == 256u &&
+                  decoded->As<wxl_texture_decode_args>().height == 128u &&
+                  decoded->As<wxl_texture_decode_args>().encoding == WXL_TEXTURE_DXT &&
+                  decoded->As<wxl_texture_decode_args>().alpha_bits == 8u &&
+                  decoded->As<wxl_texture_decode_args>().alpha_kind == 7u &&
+                  decoded->As<wxl_texture_decode_args>().mip_levels == 3u &&
+                  decoded->As<wxl_texture_decode_args>().path.size == strlen(texture.name),
+              "BLPFile.Source raises TextureDecode with the header's facts, named by the texture the read was for");
+        g_received.clear();
+        wxl::seam::BLPFile::Open::Before(nullptr, "Interface\\Icons\\A.blp", 0);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        decoded = Only(WXL_EV_TextureDecode);
+        Check(decoded && decoded->As<wxl_texture_decode_args>().path.size == strlen("Interface\\Icons\\A.blp"),
+              "or by CBLPFile::Open's name");
+        g_received.clear();
+        blp[0] = 'X';
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        Check(g_received.empty(), "bytes that are not a BLP2 file raise nothing");
+
+        g_received.clear();
+        wxl::seam::Gx::IShaderLoad::Before(nullptr, nullptr, 4u, "Shaders\\Pixel", "MapObjDiffuse", 2u);
+        const Received* shader = Only(WXL_EV_ShaderLoad);
+        Check(shader && shader->As<wxl_shader_load_args>().stage == WXL_SHADER_PIXEL &&
+                  shader->As<wxl_shader_load_args>().permutations == 2u &&
+                  shader->As<wxl_shader_load_args>().name.size == 13u,
+              "Gx.IShaderLoad raises ShaderLoad with the stage, the folder, the name and the permutations");
+
+        g_received.clear();
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "Sound\\Music\\Zone.mp3", 0u, nullptr, nullptr, nullptr, 0u, 50, 0,
+                                                 0xFFFFFF01u, 0u, 0, 0.f, 0.f, 0.f, nullptr);
+        const Received* sound = Only(WXL_EV_SoundFileLoad);
+        Check(sound && sound->As<wxl_sound_file_args>().streaming == WXL_TRUE && sound->As<wxl_sound_file_args>().priority == 50,
+              "Sound.CreateWaveData raises SoundFileLoad: a bool pushed as a dword is read by its low byte");
+        g_received.clear();
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "", 0u, nullptr, nullptr, nullptr, 0u, 0, 0, 0u, 0u, 0, 0.f, 0.f,
+                                                 0.f, nullptr);
+        Check(g_received.empty(), "an empty sound name raises nothing");
+
+        const wxl_event quiet[] = {WXL_EV_TerrainTileLoad, WXL_EV_MapObjectGroupLoad, WXL_EV_SkinProfileLoad,
+                                   WXL_EV_TextureDecode, WXL_EV_ShaderLoad, WXL_EV_SoundFileLoad};
+        for (wxl_event event : quiet) Mute(event);
+        g_received.clear();
+        blp[0] = 'B';
+        wxl::seam::MapArea::AsyncCallback::Before(&tile);
+        wxl::seam::MapObj::CreateGroup::Before(&group);
+        wxl::seam::M2Shared::FinishLoadingSkinProfile::Before(&model, 9);
+        wxl::seam::BLPFile::Source::Before(nullptr, blp.data());
+        wxl::seam::Gx::IShaderLoad::Before(nullptr, nullptr, 0u, "Shaders\\Vertex", "X", 1u);
+        wxl::seam::Sound::CreateWaveData::Before(nullptr, "a.wav", 0u, nullptr, nullptr, nullptr, 0u, 0, 0, 0u, 0u, 0, 0.f,
+                                                 0.f, 0.f, nullptr);
+        for (wxl_event event : quiet) Unmute(event);
+        Check(g_received.empty(), "none of them raises anything while nobody listens");
+    }
+
     void CheckDoodads()
     {
         FakeDoodad tree;
@@ -1748,7 +2869,9 @@ namespace
         FakeFile file;
         file.name  = "DBFilesClient\\Spell.dbc";
         file.bytes = std::string(1234, 'x');
-        void* handle = &file;
+        FakeHandle opened_file;
+        opened_file.file = &file;
+        void* handle     = &opened_file;
 
         g_received.clear();
         wxl::seam::Storage::OpenEx::After(1, nullptr, "DBFilesClient\\Spell.dbc", 0u, &handle);
@@ -2652,6 +3775,16 @@ namespace
             int32_t     answer  = -1;
             flags               = 0;
             wxl::seam::Storage::OpenFile::Gate(&answer, &archive, &name, &flags, &file);
+            // Then FindFile, as SFile::OpenEx calls it: a folder's file is a name rewritten.
+            char      path[260] = {};
+            char*     out       = path;
+            uint32_t  size      = sizeof path;
+            uint32_t  type      = 3;
+            uint32_t* typeAt    = &type;
+            void*     found     = nullptr;
+            void**    foundAt   = &found;
+            if (wxl::seam::Storage::FindFile::Gate(&answer, &name, &out, &size, &flags, &typeAt, &foundAt))
+                return std::string(path);
             return std::string(name);
         };
         uint32_t flags = 0;
@@ -2788,6 +3921,367 @@ namespace
         g_files.clear();
         g_basePath.clear();
         fs::remove_all(root, ignored);
+    }
+
+
+    // --- the asset pipeline: providers, served bytes, transforms --------------------------------
+
+    /// A provider over a table of names, counting what it is asked.
+    struct FakeProvider
+    {
+        std::map<std::string, std::string> files; ///< by lower-case name
+        std::map<std::string, std::vector<std::pair<std::string, bool>>> folders;
+        std::atomic<int> opens{0}, closes{0}, reads{0};
+        bool             faultOnExists = false;
+        uint64_t         removeFromInside = 0; ///< a handle exists tries to take back
+        wxl_result       removedFromInside = WXL_OK;
+        wxl_asset_provider table{};
+
+        static std::string Lowered(wxl_str path)
+        {
+            std::string key(path.data, path.size);
+            for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return key;
+        }
+
+        std::set<std::string> pending; ///< names it answers "not yet" for
+
+        static wxl_result WXL_CALL Exists(void* user, wxl_str path)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            if (self.pending.count(Lowered(path))) return WXL_E_PENDING;
+            if (self.faultOnExists) *static_cast<volatile int*>(nullptr) = 1;
+            if (self.removeFromInside)
+                self.removedFromInside = wxl::core::services::StorageApi().remove_provider(self.removeFromInside);
+            return self.files.count(Lowered(path)) ? WXL_OK : WXL_E_NOT_FOUND;
+        }
+
+        static void* WXL_CALL Open(void* user, wxl_str path, uint64_t* size)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            const auto    it   = self.files.find(Lowered(path));
+            if (it == self.files.end()) return nullptr;
+            ++self.opens;
+            *size = it->second.size();
+            return const_cast<std::string*>(&it->second);
+        }
+
+        static wxl_result WXL_CALL ReadAt(void* user, void* file, uint64_t offset, void* buffer, uint32_t size,
+                                          uint32_t* read)
+        {
+            ++static_cast<FakeProvider*>(user)->reads;
+            const std::string& bytes = *static_cast<const std::string*>(file);
+            const uint64_t     left  = offset < bytes.size() ? bytes.size() - offset : 0;
+            *read                    = left < size ? static_cast<uint32_t>(left) : size;
+            std::memcpy(buffer, bytes.data() + offset, *read);
+            return WXL_OK;
+        }
+
+        static void WXL_CALL Close(void* user, void*) { ++static_cast<FakeProvider*>(user)->closes; }
+
+        static void WXL_CALL List(void* user, wxl_str folder, wxl_asset_entry_fn fn, void* context)
+        {
+            FakeProvider& self = *static_cast<FakeProvider*>(user);
+            const auto    it   = self.folders.find(Lowered(folder));
+            if (it == self.folders.end()) return;
+            for (const auto& [name, isFolder] : it->second)
+                fn(context, wxl_str{name.data(), static_cast<uint32_t>(name.size())}, isFolder ? WXL_TRUE : WXL_FALSE);
+        }
+
+        const wxl_asset_provider* Table()
+        {
+            table = wxl_asset_provider{sizeof(wxl_asset_provider), this, &Exists, &Open, &ReadAt, &Close, &List};
+            return &table;
+        }
+    };
+
+    std::string ReadAll(const wxl_storage_api& api, const char* path)
+    {
+        std::string bytes(4096, '\0');
+        uint64_t    read = 0;
+        if (api.read(Str(path), bytes.data(), bytes.size(), &read) != WXL_OK) return "<none>";
+        bytes.resize(static_cast<size_t>(read));
+        return bytes;
+    }
+
+    /// A transform that upper-cases a file, one that adds a mark (a size change), one by magic.
+    wxl_result WXL_CALL Upper(void*, wxl_str, const void* data, uint64_t size, const wxl_asset_output* out)
+    {
+        char* to = static_cast<char*>(out->replace(out->context, size));
+        if (!to) return WXL_E_FAILED;
+        for (uint64_t i = 0; i < size; ++i) to[i] = static_cast<char>(std::toupper(static_cast<const unsigned char*>(data)[i]));
+        return WXL_OK;
+    }
+
+    wxl_result WXL_CALL Mark(void* user, wxl_str, const void* data, uint64_t size, const wxl_asset_output* out)
+    {
+        const std::string& mark = *static_cast<const std::string*>(user);
+        char*              to   = static_cast<char*>(out->replace(out->context, size + mark.size()));
+        std::memcpy(to, data, static_cast<size_t>(size));
+        std::memcpy(to + size, mark.data(), mark.size());
+        return WXL_OK;
+    }
+
+    wxl_result WXL_CALL Untouched(void* user, wxl_str, const void*, uint64_t, const wxl_asset_output*)
+    {
+        ++*static_cast<int*>(user);
+        return WXL_E_NOT_FOUND;
+    }
+
+    std::vector<std::string> g_walked;
+
+    bool Walked(const fsk::ProcessDirParms& parms)
+    {
+        g_walked.push_back(std::string(parms.filename) + (parms.is_dir ? "\\" : ""));
+        return true;
+    }
+
+    void CheckAssetPipeline()
+    {
+        namespace assets = wxl::core::services::assets;
+        const wxl_storage_api& api = wxl::core::services::StorageApi();
+        Check(api.struct_size >= offsetof(wxl_storage_api, unserve) + sizeof(void*),
+              "wxl.storage carries the asset pipeline's members");
+
+        BuildFakeStack();
+        g_files.clear();
+        g_files.push_back(FakeFile{"World\\Base.txt", "the client's", 0, false});
+        g_files.push_back(FakeFile{"World\\Model.bin", "MD20 model", 0, false});
+        g_files.push_back(FakeFile{"World\\Other.bin", "MD21 model", 0, false});
+        g_opens = g_closes = 0;
+
+        Check(!assets::Active() && ReadAll(api, "World\\Base.txt") == "the client's",
+              "with nothing registered, the client's files are its own");
+
+        // Providers by priority: above 0 before the client, 0 or below only what it lacks.
+        FakeProvider high, low;
+        high.files = {{"interface\\p\\a.txt", "from high"}, {"world\\base.txt", "high's base"}};
+        low.files  = {{"interface\\p\\fill.txt", "from low"}, {"world\\base.txt", "low's base"},
+                      {"interface\\p\\a.txt", "low's a"}};
+        uint64_t highId = 0, lowId = 0;
+        Check(api.add_provider(high.Table(), 5, &highId) == WXL_OK && highId != 0 &&
+                  api.add_provider(low.Table(), -1, &lowId) == WXL_OK && lowId != highId,
+              "two providers join, at their priorities");
+        wxl_asset_provider broken = *high.Table();
+        broken.read_at            = nullptr;
+        uint64_t ignored          = 0;
+        Check(api.add_provider(&broken, 1, &ignored) == WXL_E_INVALID && api.add_provider(nullptr, 1, &ignored) == WXL_E_INVALID,
+              "a provider missing a function is refused");
+        Check(api.exists(Str("interface/P/A.TXT")) == WXL_TRUE && api.exists(Str("Interface\\P\\None.txt")) == WXL_FALSE,
+              "exists sees a provider's files, in any case and with either slash");
+        Check(ReadAll(api, "Interface\\P\\A.txt") == "from high", "the client reads a provider's file through its file stack");
+        Check(ReadAll(api, "World\\Base.txt") == "high's base", "a provider above 0 wins a name over the client's own");
+        Check(ReadAll(api, "Interface\\P\\Fill.txt") == "from low", "one at 0 or below fills a name the client lacks");
+        Check(high.closes.load() == high.opens.load() && low.closes.load() == low.opens.load(),
+              "and every file a provider opened is closed when the client closes it");
+
+        {
+            const wxl_handle file = api.open(Str("Interface\\P\\A.txt"));
+            char             piece[8] = {};
+            uint64_t         read     = 0;
+            Check(file != WXL_HANDLE_NONE && api.read_at(file, 5, piece, 4, &read) == WXL_OK && read == 4 &&
+                      std::string(piece, 4) == "high",
+                  "a provider's file is read at an offset, a piece at a time");
+            Check(api.read_at(file, 0, piece, 4, &read) == WXL_OK && std::string(piece, 4) == "from",
+                  "and from the start again");
+            api.close(file);
+        }
+
+        // Many threads at once: every read whole and right. The harness's own recorder of
+        // events is not made for threads, so it hears nothing meanwhile.
+        {
+            Mute(WXL_EV_FileOpen);
+            Mute(WXL_EV_FileOpened);
+            std::atomic<int>         wrong{0};
+            std::vector<std::thread> loaders;
+            for (int t = 0; t < 8; ++t)
+                loaders.emplace_back([&] {
+                    for (int i = 0; i < 100; ++i)
+                        if (ReadAll(api, i % 2 ? "Interface\\P\\A.txt" : "Interface\\P\\Fill.txt") !=
+                            (i % 2 ? "from high" : "from low"))
+                            ++wrong;
+                });
+            for (std::thread& loader : loaders) loader.join();
+            Unmute(WXL_EV_FileOpen);
+            Unmute(WXL_EV_FileOpened);
+            Check(wrong.load() == 0, "eight threads reading providers' files at once each read them whole");
+        }
+
+        // Taken back: the client's files come back; a file still open reads as an error.
+        void* held = FakeFileOpen("Interface\\P\\A.txt");
+        Check(held != nullptr, "the client holds a provider's file open");
+        const int closedBefore = high.closes.load();
+        Check(api.remove_provider(lowId) == WXL_OK && api.remove_provider(lowId) == WXL_E_NOT_FOUND,
+              "a provider is taken back once; again is not found");
+        Check(api.remove_provider(highId + 1000) == WXL_E_NOT_FOUND, "a handle never given is not found");
+        constexpr uint32_t kOther = 9;
+        const uint32_t previous = g_host->SwapCurrentMod(kOther);
+        Check(api.remove_provider(highId) == WXL_E_NOT_FOUND, "another mod cannot take a provider back");
+        g_host->SwapCurrentMod(previous);
+        assets::ReleaseOf(0);
+        Check(high.closes.load() == closedBefore + 1, "a mod that goes has its provider close the files the client holds");
+        char into[4];
+        Check(FakeFileRead(held, into, 4) == 0, "and those files read nothing from then on");
+        FakeFileClose(held);
+        Check(high.closes.load() == closedBefore + 1, "the client's close then frees what is left, closing nothing twice");
+        Check(ReadAll(api, "World\\Base.txt") == "the client's" && api.exists(Str("Interface\\P\\A.txt")) == WXL_FALSE,
+              "with its providers gone, the client's own files answer again");
+
+        // "Not yet": the name is looked for further down, and a mod's read is told so.
+        {
+            FakeProvider later;
+            later.pending = {"world\\base.txt", "interface\\p\\soon.txt"};
+            uint64_t id   = 0;
+            api.add_provider(later.Table(), 4, &id);
+            Check(ReadAll(api, "World\\Base.txt") == "the client's",
+                  "a name a provider has not yet is the client's own meanwhile");
+            uint64_t size = 0;
+            char     none[4];
+            uint64_t read = 0;
+            Check(api.size(Str("Interface\\P\\Soon.txt"), &size) == WXL_E_PENDING &&
+                      api.read(Str("Interface\\P\\Soon.txt"), none, sizeof none, &read) == WXL_E_PENDING &&
+                      api.exists(Str("Interface\\P\\Soon.txt")) == WXL_FALSE,
+                  "and one nobody else has reads as WXL_E_PENDING for a mod, absent for the client");
+            Check(api.size(Str("Interface\\P\\Never.txt"), &size) == WXL_E_NOT_FOUND,
+                  "while a name no provider waits for is not found");
+            api.remove_provider(id);
+        }
+
+        // A provider taking itself back from inside its own call is refused.
+        {
+            FakeProvider self;
+            uint64_t     id = 0;
+            api.add_provider(self.Table(), 1, &id);
+            self.removeFromInside = id;
+            api.exists(Str("Interface\\Anything.txt"));
+            Check(self.removedFromInside == WXL_E_INVALID, "a provider cannot take itself back from inside its own call");
+            self.removeFromInside = 0;
+            api.remove_provider(id);
+        }
+
+        // A provider that faults is never called again.
+        {
+            FakeProvider faulty;
+            faulty.files         = {{"world\\base.txt", "never"}};
+            faulty.faultOnExists = true;
+            uint64_t id          = 0;
+            api.add_provider(faulty.Table(), 3, &id);
+            Check(ReadAll(api, "World\\Base.txt") == "the client's", "a provider that faults answers nothing");
+            faulty.faultOnExists = false;
+            Check(ReadAll(api, "World\\Base.txt") == "the client's", "and is not asked again");
+            api.remove_provider(id);
+        }
+
+        // Served bytes.
+        const char hello[] = "served here";
+        Check(api.serve(Str("Interface\\Served.txt"), hello, 11, 1) == WXL_OK &&
+                  ReadAll(api, "interface\\served.txt") == "served here",
+              "bytes a mod serves are read as one of the client's files");
+        Check(api.serve(Str("World\\Base.txt"), "x", 1, 0) == WXL_OK && ReadAll(api, "World\\Base.txt") == "the client's",
+              "served at 0, a name the client has stays the client's");
+        Check(api.serve(Str("Interface\\Served.txt"), "again", 5, 1) == WXL_OK &&
+                  ReadAll(api, "Interface\\Served.txt") == "again",
+              "serving a name again replaces the mod's bytes");
+        Check(api.unserve(Str("Interface\\Served.txt")) == WXL_OK && api.unserve(Str("Interface\\Served.txt")) == WXL_E_NOT_FOUND &&
+                  api.exists(Str("Interface\\Served.txt")) == WXL_FALSE,
+              "unserved, the name is gone; unserving again is not found");
+        Check(api.serve(Str(""), "x", 1, 1) == WXL_E_INVALID && api.serve(Str(std::string(241, 'a').c_str()), "x", 1, 1) == WXL_E_INVALID,
+              "an empty name or one past 240 bytes is refused");
+        api.unserve(Str("World\\Base.txt"));
+
+        // Transforms: chained by priority, sizes changing, filtered by magic.
+        const std::string bang = "!";
+        int               untouched = 0;
+        wxl_asset_transform upper{sizeof(wxl_asset_transform), nullptr, Str("TXT"), 0, &Upper};
+        wxl_asset_transform mark{sizeof(wxl_asset_transform), const_cast<std::string*>(&bang), Str(".txt"), 0, &Mark};
+        wxl_asset_transform byMagic{sizeof(wxl_asset_transform), const_cast<std::string*>(&bang), Str("bin"),
+                                    0x3032444Du /* MD20 */, &Mark};
+        wxl_asset_transform none{sizeof(wxl_asset_transform), &untouched, Str("txt"), 0, &Untouched};
+        uint64_t upperId = 0, markId = 0, magicId = 0, noneId = 0;
+        Check(api.add_transform(&mark, 5, &markId) == WXL_OK && api.add_transform(&upper, 10, &upperId) == WXL_OK &&
+                  api.add_transform(&byMagic, 0, &magicId) == WXL_OK && api.add_transform(&none, 1, &noneId) == WXL_OK,
+              "transforms join, by kind and priority");
+        wxl_asset_transform noKind{sizeof(wxl_asset_transform), nullptr, Str(""), 0, &Upper};
+        Check(api.add_transform(&noKind, 1, &ignored) == WXL_E_INVALID, "a transform with no kind is refused");
+        Check(ReadAll(api, "World\\Base.txt") == "THE CLIENT'S!",
+              "the highest runs first and the next gets what it left, the file growing by a byte");
+        Check(untouched == 1, "a transform that answers nothing leaves the bytes as they came");
+        Check(ReadAll(api, "World\\Model.bin") == "MD20 model!" && ReadAll(api, "World\\Other.bin") == "MD21 model",
+              "a transform by magic sees only the files that start with it");
+        Check(api.exists(Str("World\\Base.txt")) == WXL_TRUE && api.exists(Str("World\\Nothing.txt")) == WXL_FALSE,
+              "a transformed kind still exists only where a file is");
+        {
+            FakeProvider source;
+            source.files = {{"interface\\p\\t.txt", "provided"}};
+            uint64_t id  = 0;
+            api.add_provider(source.Table(), 2, &id);
+            Check(ReadAll(api, "Interface\\P\\T.txt") == "PROVIDED!", "a provider's file is transformed too");
+            api.remove_provider(id);
+        }
+        Check(api.remove_transform(upperId) == WXL_OK && ReadAll(api, "World\\Base.txt") == "the client's!",
+              "a transform taken back no longer runs");
+        assets::ReleaseOf(0);
+        Check(!assets::Active() && ReadAll(api, "World\\Base.txt") == "the client's",
+              "a mod that goes takes its transforms with it");
+
+        // A folder's listing: the providers' entries join the disk's.
+        {
+            FakeProvider addons;
+            addons.folders = {{"interface\\addons", {{"MyAddOn", true}}},
+                              {"interface\\addons\\myaddon", {{"MyAddOn.toc", false}, {"Main.lua", false}}}};
+            addons.files   = {{"interface\\addons\\myaddon\\myaddon.toc", "## Title: Mine"}};
+            uint64_t id    = 0;
+            api.add_provider(addons.Table(), 1, &id);
+            g_basePath = "C:\\Game\\";
+            assets::Install();
+            fsk::FileParms parms{};
+            parms.verb        = offsetof(fsk::Filesystem, verbs.dirwalk);
+            std::string where = "C:\\Game\\Interface\\AddOns";
+            parms.path        = where.data();
+            parms.dircallback = &Walked;
+            g_walked.clear();
+            TopVerb(parms.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &parms);
+            Check(g_walked.size() == 1 && g_walked[0] == "MyAddOn\\",
+                  "a listing of the add-ons folder tells a provider's add-on as a folder of the disk");
+
+            // The client then asks each entry's info by its path (OsFileList keeps the folders,
+            // which the add-on list reads), and may ask whether it exists.
+            const auto info = [](const char* path, fsk::FileInfo& out) {
+                fsk::FileParms asked{};
+                asked.verb = offsetof(fsk::Filesystem, verbs.getfileinfo);
+                std::string named(path);
+                asked.path = named.data();
+                asked.info = &asked.info2;
+                const bool answered = TopVerb(asked.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &asked);
+                if (answered) out = *asked.info;
+                return answered;
+            };
+            fsk::FileInfo got{};
+            Check(info("C:\\Game\\Interface\\AddOns\\MyAddOn", got) && got.existence == 2 && (got.attributes & 0x40),
+                  "the info of a provider's listed folder says a folder");
+            Check(info("C:\\Game\\Interface\\AddOns\\myaddon\\MYADDON.toc", got) && got.existence == 1 &&
+                      !(got.attributes & 0x40) && got.regular_file,
+                  "and of a file it lists, a file, whatever the case");
+            Check(!info("C:\\Game\\Interface\\AddOns\\Other", got) && !info("D:\\Elsewhere\\MyAddOn", got),
+                  "a name no provider lists, or outside the client's folder, is the disk's answer");
+            fsk::FileParms exists{};
+            exists.verb        = offsetof(fsk::Filesystem, verbs.exists);
+            std::string folder = "Interface\\AddOns\\MyAddOn";
+            exists.path        = folder.data();
+            exists.info        = &exists.info2;
+            Check(TopVerb(exists.verb)(static_cast<fsk::Filesystem*>(g_fakeTop), &exists) && exists.info->existence == 2,
+                  "a provider's listed folder exists, asked by a path relative to the client's folder");
+            std::vector<wxl_str> names(8);
+            const uint32_t       count = api.find(Str("Interface\\AddOns\\*.toc"), names.data(), 8);
+            Check(count == 1 && std::string(names[0].data, names[0].size) == "Interface\\AddOns\\MyAddOn\\MyAddOn.toc",
+                  "find walks a provider's folders");
+            api.remove_provider(id);
+            g_basePath.clear();
+        }
+
+        assets::ReleaseAll();
+        assets::ForgetInstall();
+        g_files.clear();
     }
 
     // --- wxl.storage: the client's files, as a mod reads them ---------------------------------
@@ -4943,6 +6437,70 @@ namespace
         return slot;
     }
 
+    /// The x86 binding's calls into the client (binding/CallX86.hpp), against stand-ins with the
+    /// conventions Wow.exe gives the functions it calls: __thiscall members popping their
+    /// arguments, a bool answered in AL, a WOWGUID by value as two stack slots, cdecl free
+    /// functions. Each stand-in is reached through an address read back through a volatile
+    /// slot, as the client's are, so the optimiser cannot see the convention it is declared with.
+    struct ClientStandIn
+    {
+        int32_t base = 70;
+
+        __declspec(noinline) int32_t __thiscall Reaction(const void* other)
+        {
+            return other == this ? 4 : base / 10;
+        }
+
+        __declspec(noinline) bool __thiscall Knows(uint32_t spell) { return spell == 133; }
+
+        __declspec(noinline) bool __thiscall Move(int32_t type, const uint64_t* guid, const wxl_vec3* point,
+                                                  float facing)
+        {
+            return type == 4 && *guid == 0 && point->z == 3.0f && facing == 0.5f;
+        }
+    };
+
+    uint64_t g_castGuid  = 0;
+    uint32_t g_castSpell = 0;
+
+    __declspec(noinline) bool __cdecl CastStandIn(uint32_t spell, const void* item, uint64_t target, int32_t confirmed)
+    {
+        g_castSpell = spell;
+        g_castGuid  = target;
+        return item == nullptr && confirmed == 0;
+    }
+
+    template <class M>
+    std::uintptr_t AddressOf(M member)
+    {
+        return reinterpret_cast<std::uintptr_t>(Opaque(*reinterpret_cast<void**>(&member)));
+    }
+
+    void CheckCallX86()
+    {
+        using wxl::core::binding::x86::CallFree;
+        using wxl::core::binding::x86::CallMember;
+
+        ClientStandIn unit;
+        volatile uint32_t canary = 0xC0FFEE;
+        Check(CallMember<int32_t>(AddressOf(&ClientStandIn::Reaction), &unit, static_cast<const void*>(nullptr)) == 7 &&
+                  CallMember<int32_t>(AddressOf(&ClientStandIn::Reaction), &unit, static_cast<const void*>(&unit)) == 4,
+              "CallMember passes this in ECX and an argument the callee pops");
+        Check(CallMember<bool>(AddressOf(&ClientStandIn::Knows), &unit, uint32_t(133)) &&
+                  !CallMember<bool>(AddressOf(&ClientStandIn::Knows), &unit, uint32_t(134)),
+              "a bool answer is read from AL");
+        const uint64_t none = 0;
+        const wxl_vec3 point{1.0f, 2.0f, 3.0f};
+        Check(CallMember<bool>(AddressOf(&ClientStandIn::Move), &unit, int32_t(4), &none, &point, 0.5f),
+              "four stack arguments, a float among them, reach a __thiscall callee");
+        const auto cast = reinterpret_cast<std::uintptr_t>(Opaque(&CastStandIn));
+        Check(CallFree<bool>(cast, uint32_t(133), static_cast<const void*>(nullptr), uint64_t(0xF130000000000789ull),
+                             int32_t(0)) &&
+                  g_castSpell == 133 && g_castGuid == 0xF130000000000789ull,
+              "a cdecl call passes a 64-bit guid as two slots, low first");
+        Check(canary == 0xC0FFEE, "and the stack is the caller's again after each");
+    }
+
     using ShimSeam = wxl::core::seams::DetourOf<wxl::seam::detail::conv_thiscall,
                                                 int32_t(void*, int32_t, int32_t)>;
     using ShimLink = ShimSeam::Link<&ShimBefore, &ShimAfter>;
@@ -5843,9 +7401,834 @@ namespace
         Check(Only(WXL_EV_MapObjectLoad) != nullptr, "and Before raised MapObjectLoad for it");
         MapObjLink::original = nullptr;
     }
+
+    // --- System_SFile2::FindFile: the gate, called as SFile::FileExistsEx calls it ---------------
+
+    int g_findCalls = 0;
+
+    /// A cdecl function of FindFile's shape that finds nothing.
+    __declspec(noinline) int32_t __cdecl FakeFindFile(const char*, char*, uint32_t, uint32_t, uint32_t*, void**)
+    {
+        ++g_findCalls;
+        return 0;
+    }
+
+    uint32_t g_eaxAfter = 0;
+
+    /// Six dwords pushed, `add esp, 0x18` after the call, as FileExistsEx at 0x00424B33 does.
+    __declspec(noinline) void CallLikeFindFile(void* detour, const char* name, char* path, uint32_t* kind, void** found)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push found
+            push kind
+            push 0
+            push 0x104
+            push path
+            push name
+            call detour
+            add  esp, 0x18
+            mov  dword ptr [g_espAfter], esp
+            mov  dword ptr [g_eaxAfter], eax
+        }
+    }
+
+    using FindGateSeam = wxl::core::seams::GateOf<wxl::seam::Storage::FindFile::Convention,
+                                                  wxl::seam::Storage::FindFile::Signature>;
+    using FindGateLink = FindGateSeam::Link<&wxl::seam::Storage::FindFile::Gate>;
+
+    void CheckFindFileDetour()
+    {
+        BuildFakeStack();
+        const wxl_storage_api& api = wxl::core::services::StorageApi();
+        api.serve(Str("Interface\\Served.txt"), "x", 1, 1);
+        FindGateLink::original = Opaque(reinterpret_cast<FindGateSeam::Fn>(&FakeFindFile));
+        void* const detour     = Opaque(reinterpret_cast<void*>(&FindGateLink::Detour));
+
+        char     path[260] = {};
+        uint32_t type      = 3;
+        void*    archive   = reinterpret_cast<void*>(1);
+        g_findCalls        = 0;
+        CallLikeFindFile(detour, "Interface\\Served.txt", path, &type, &archive);
+        Check(g_espBefore == g_espAfter && g_eaxAfter == 1 && g_findCalls == 0,
+              "the FindFile detour takes a served name: eax 1, the caller cleans its six dwords");
+        Check(std::strncmp(path, "|wxl|", 5) == 0 && type == 0 && archive == nullptr,
+              "with the file layer's path, a plain file, no archive");
+        CallLikeFindFile(detour, "Interface\\Missing.txt", path, &type, &archive);
+        Check(g_espBefore == g_espAfter && g_eaxAfter == 0 && g_findCalls == 1,
+              "and hands any other name to the client's FindFile");
+        FindGateLink::original = nullptr;
+        wxl::core::services::assets::ReleaseAll();
+        wxl::core::services::assets::ForgetInstall();
+    }
 #endif
 }
 
+
+// --- Gameplay: auras, loot, items, quests, groups, the people around -------------------------
+
+namespace
+{
+    std::string Said(wxl_str text) { return std::string(text.data ? text.data : "", text.size); }
+
+    /// A player-kind object with a descriptor block, tracked as the client would build it.
+    void Build(FakeObject& object, uint64_t guid, uint32_t type, uint32_t dwords)
+    {
+        object.guid   = guid;
+        object.typeId = type;
+        object.block.assign(dwords, 0u);
+        object.block[0] = static_cast<uint32_t>(guid);
+        object.block[1] = static_cast<uint32_t>(guid >> 32);
+        wxl::seam::ObjectMgr::InitObject::After(&object, nullptr, 9300u);
+    }
+
+    void CheckGameplayAuras()
+    {
+        printf("\ngameplay, auras:\n");
+        FakeObject wolf, shaman;
+        Build(wolf, 0xF130000000001111ull, WXL_OBJECT_UNIT, 0x94);
+        Build(shaman, 0x0000000000000077ull, WXL_OBJECT_PLAYER, 0x500);
+        g_held      = {&wolf, &shaman};
+        g_auraOwner = &wolf;
+        g_timeMs    = 100000;
+        g_auraSlots[2] = FakeAura{ shaman.guid, 8050, 0xA0, 70, 0, 18000, 112000 };
+
+        g_received.clear();
+        wxl::seam::Unit::OnAuraAdded::After(&wolf, 2u, 1, &g_auraSlots[2], 8050);
+        const Received* applied = Only(WXL_EV_UnitAuraApplied);
+        Check(applied != nullptr && Count(WXL_EV_UnitAuraChanged) == 1,
+              "Unit.OnAuraAdded raises UnitAuraApplied beside UnitAuraChanged");
+        if (applied)
+        {
+            const wxl_aura_args a = applied->As<wxl_aura_args>();
+            Check(a.unit == wxl::core::objects::HandleOf(&wolf) && a.unit_guid == wolf.guid && a.slot == 2 &&
+                      a.spell_id == 8050 && a.caster_guid == shaman.guid &&
+                      a.caster == wxl::core::objects::HandleOf(&shaman) && a.level == 70 && a.flags == 0xA0 &&
+                      a.harmful == WXL_TRUE && a.duration == 18000 && a.remaining == 12000,
+                  "with the slot, the spell, the caster, the level, harmful, the duration and what is left");
+        }
+
+        // A removal hands the copy kept from before the update.
+        FakeAura gone{ wolf.guid, 774, 0x18, 60, 3, 0, 0 };
+        g_received.clear();
+        wxl::seam::Unit::OnAuraRemoved::After(&wolf, 5u, 0, &gone, 774);
+        const Received* removed = Only(WXL_EV_UnitAuraRemoved);
+        Check(removed && removed->As<wxl_aura_args>().slot == 5 && removed->As<wxl_aura_args>().stacks == 3 &&
+                  removed->As<wxl_aura_args>().harmful == WXL_FALSE && removed->As<wxl_aura_args>().duration == 0 &&
+                  removed->As<wxl_aura_args>().caster_guid == wolf.guid,
+              "Unit.OnAuraRemoved raises UnitAuraRemoved with what the aura was, self-cast, no duration");
+
+        g_auraSlots[2].stacks = 4;
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraDose::Before(&wolf, &g_auraSlots[2], 8050, 3, 4, 1);
+        const Received* dose = Only(WXL_EV_UnitAuraRefreshed);
+        Check(dose && dose->As<wxl_aura_args>().slot == 2 && dose->As<wxl_aura_args>().stacks == 4 &&
+                  dose->As<wxl_aura_args>().previous_stacks == 3,
+              "Combat.UnitCombatLogAuraDose raises UnitAuraRefreshed with the slot and both counts");
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraRefreshed::Before(&wolf, &g_auraSlots[2], 8050, 1);
+        dose = Only(WXL_EV_UnitAuraRefreshed);
+        Check(dose && dose->As<wxl_aura_args>().previous_stacks == 4,
+              "Combat.UnitCombatLogAuraRefreshed raises it with the count unchanged");
+        g_received.clear();
+        wxl::seam::Combat::UnitCombatLogAuraRefreshed::Before(&wolf, &gone, 774, 0);
+        Check(g_received.empty(), "an aura that is none of the unit's slots raises nothing");
+
+        Mute(WXL_EV_UnitAuraApplied);
+        g_received.clear();
+        wxl::seam::Unit::OnAuraAdded::After(&wolf, 2u, 1, &g_auraSlots[2], 8050);
+        Check(Count(WXL_EV_UnitAuraApplied) == 0 && Count(WXL_EV_UnitAuraChanged) == 1,
+              "nobody listening to UnitAuraApplied: only UnitAuraChanged");
+        Unmute(WXL_EV_UnitAuraApplied);
+
+        // The mount display's mirror handler: the field already written, the old value by address.
+        wolf.block[0x45]       = 2410;
+        const uint32_t walking = 0;
+        g_received.clear();
+        wxl::seam::Unit::MountDisplayIDUpdateHandler::Before(wolf.guid, 0x45 * 4 - 0x18, 4, &walking, nullptr);
+        const Received* mount = Only(WXL_EV_UnitMountChanged);
+        Check(mount && mount->As<wxl_mount_args>().display_id == 2410 &&
+                  mount->As<wxl_mount_args>().previous_display_id == 0 &&
+                  mount->As<wxl_mount_args>().unit_guid == wolf.guid,
+              "Unit.MountDisplayIDUpdateHandler raises UnitMountChanged with both display ids");
+
+        g_auraOwner = nullptr;
+        wxl::seam::ObjectMgr::ObjDelete::Before(&wolf);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&shaman);
+        g_held.clear();
+    }
+
+    void CheckGameplayLoot()
+    {
+        printf("\ngameplay, loot:\n");
+        FakeObject boar;
+        Build(boar, 0xF130000000002222ull, WXL_OBJECT_UNIT, 0x94);
+        g_held = {&boar};
+
+        // OpenLoot: SetObject on the boar, which the client fills before After runs.
+        g_lootGuid = 0;
+        g_received.clear();
+        wxl::seam::Loot::SetObject::Before(&boar, 130, 1);
+        g_lootGuid  = boar.guid;
+        g_lootKind  = 1;
+        g_lootMoney = 130;
+        int32_t first[7]  = { 2589, 3, 1, 0, 0, 0, 0 };
+        int32_t second[7] = { 4306, 1, 2, 7, -12, 2, 1 };
+        memcpy(g_lootSlots[0], first, sizeof first);
+        memcpy(g_lootSlots[1], second, sizeof second);
+        wxl::seam::Loot::SetObject::After(&boar, 130, 1);
+        const Received* opened = Only(WXL_EV_LootOpened);
+        Check(opened && opened->As<wxl_loot_args>().source == wxl::core::objects::HandleOf(&boar) &&
+                  opened->As<wxl_loot_args>().money == 130 && opened->As<wxl_loot_args>().count == 2 &&
+                  opened->As<wxl_loot_args>().kind == WXL_LOOT_CORPSE && Count(WXL_EV_LootClosed) == 0,
+              "Loot.SetObject raises LootOpened with the source, the kind, the money and the count");
+        Check(Count(WXL_EV_LootSlot) == 2 && g_received.back().As<wxl_loot_slot_args>().item_id == 4306 &&
+                  g_received.back().As<wxl_loot_slot_args>().slot == 2 &&
+                  g_received.back().As<wxl_loot_slot_args>().random_property_id == -12 &&
+                  g_received.back().As<wxl_loot_slot_args>().slot_type == WXL_LOOT_SLOT_ROLL &&
+                  g_received.back().As<wxl_loot_slot_args>().index == 1,
+              "then a LootSlot per item, in the window's order");
+
+        g_received.clear();
+        wxl::seam::Loot::ClearSlot::Before(2);
+        const Received* cleared = Only(WXL_EV_LootSlotCleared);
+        Check(cleared && cleared->As<wxl_loot_slot_args>().item_id == 4306 && cleared->As<wxl_loot_slot_args>().index == 1,
+              "Loot.ClearSlot raises LootSlotCleared with the entry it empties");
+        g_received.clear();
+        wxl::seam::Loot::ClearSlot::Before(9);
+        Check(g_received.empty(), "a slot the window does not hold raises nothing");
+
+        // CloseLoot: SetObject on nothing.
+        g_received.clear();
+        wxl::seam::Loot::SetObject::Before(nullptr, 0, 0);
+        g_lootGuid = 0;
+        memset(g_lootSlots, 0, sizeof g_lootSlots);
+        wxl::seam::Loot::SetObject::After(nullptr, 0, 0);
+        const Received* closed = Only(WXL_EV_LootClosed);
+        Check(closed && closed->As<wxl_loot_args>().source_guid == boar.guid && Count(WXL_EV_LootOpened) == 0,
+              "and LootClosed for the window it closes");
+
+        Body money;
+        money.U32(57).U8(0);
+        FakeStore store = money.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x163, 0, &store);
+        Check(Only(WXL_EV_LootMoney) && Only(WXL_EV_LootMoney)->As<wxl_loot_money_args>().amount == 57 &&
+                  Only(WXL_EV_LootMoney)->As<wxl_loot_money_args>().alone == WXL_FALSE,
+              "Player.PH_LOOT_OPCODES raises LootMoney for SMSG_LOOT_MONEY_NOTIFY");
+
+        Body start;
+        start.U64(boar.guid).U32(530).U32(1).U32(4306).U32(7).U32(0xFFFFFFF4u).U32(1).U32(60000).U8(0x0F);
+        g_uiMap    = 530;
+        g_nextRoll = 12;
+        store      = start.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A1, 0, &store);
+        const Received* roll = Only(WXL_EV_LootRollStart);
+        Check(roll && roll->As<wxl_loot_roll_start_args>().roll_id == 12 &&
+                  roll->As<wxl_loot_roll_start_args>().duration == 60000 &&
+                  roll->As<wxl_loot_roll_start_args>().random_property_id == -12 &&
+                  roll->As<wxl_loot_roll_start_args>().vote_mask == 0x0F,
+              "LootRollStart for SMSG_LOOT_START_ROLL with the id the client will give the roll");
+        g_uiMap = 571;
+        store   = start.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A1, 0, &store);
+        Check(g_received.empty(), "and nothing for a roll on another map, which the client drops");
+
+        Body rolled;
+        rolled.U64(boar.guid).U32(1).U64(0x77).U32(4306).U32(7).U32(0).U8(88).U8(2).U8(0);
+        store = rolled.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x2A2, 0, &store);
+        Check(Only(WXL_EV_LootRoll) && Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().roll == 88 &&
+                  Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().roll_type == WXL_ROLL_GREED &&
+                  Only(WXL_EV_LootRoll)->As<wxl_loot_roll_args>().player_guid == 0x77,
+              "LootRoll for SMSG_LOOT_ROLL");
+        Body won;
+        won.U64(boar.guid).U32(1).U32(4306).U32(7).U32(0).U64(0x77).U8(88).U8(2);
+        store = won.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x29F, 0, &store);
+        Check(Only(WXL_EV_LootRollWon) && Only(WXL_EV_LootRollWon)->As<wxl_loot_roll_args>().random_suffix == 7,
+              "LootRollWon for SMSG_LOOT_ROLL_WON");
+        Body passed;
+        passed.U64(boar.guid).U32(1).U32(4306).U32(0xFFFFFFF4u).U32(7);
+        store = passed.Store();
+        g_received.clear();
+        wxl::seam::Player::PH_LOOT_OPCODES::Before(nullptr, 0x29E, 0, &store);
+        Check(Only(WXL_EV_LootAllPassed) && Only(WXL_EV_LootAllPassed)->As<wxl_loot_roll_args>().random_property_id == -12 &&
+                  Only(WXL_EV_LootAllPassed)->As<wxl_loot_roll_args>().random_suffix == 7,
+              "LootAllPassed for SMSG_LOOT_ALL_PASSED, its property read before its suffix");
+        Check(store.read == 0u, "the loot handler's reads leave the cursor where it was");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&boar);
+        g_held.clear();
+    }
+
+    void CheckGameplayItems()
+    {
+        printf("\ngameplay, items:\n");
+        FakeObject me, bag, sword;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(bag, 0x4000000000000100ull, WXL_OBJECT_CONTAINER, 0x8A);
+        Build(sword, 0x4000000000000200ull, WXL_OBJECT_ITEM, 0x40);
+        g_held = {&me, &bag, &sword};
+
+        Body push;
+        push.U64(me.guid).U32(0).U32(0).U32(1).U8(255).U32(23).U32(2589).U32(0).U32(0).U32(3).U32(10);
+        FakeStore store = push.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x166, 0, &store);
+        const Received* pushed = Only(WXL_EV_ItemPushed);
+        Check(pushed && pushed->As<wxl_item_push_args>().item_id == 2589 && pushed->As<wxl_item_push_args>().bag == 255 &&
+                  pushed->As<wxl_item_push_args>().slot == 23 && pushed->As<wxl_item_push_args>().total == 10 &&
+                  pushed->As<wxl_item_push_args>().received == WXL_FALSE &&
+                  pushed->As<wxl_item_push_args>().announced == WXL_TRUE,
+              "Player.Packet_Group_9 raises ItemPushed for SMSG_ITEM_PUSH_RESULT");
+        Body failed;
+        failed.U8(1).U64(sword.guid).U64(0).U8(0).U32(40);
+        store = failed.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x112, 0, &store);
+        Check(Only(WXL_EV_InventoryError) && Only(WXL_EV_InventoryError)->As<wxl_inventory_error_args>().required_level == 40 &&
+                  Only(WXL_EV_InventoryError)->As<wxl_inventory_error_args>().item_guid == sword.guid,
+              "InventoryError for SMSG_INVENTORY_CHANGE_FAILURE, with the level a level refusal needs");
+        Body fine;
+        fine.U8(0);
+        store = fine.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_9::Before(nullptr, 0x112, 0, &store);
+        Check(g_received.empty(), "and nothing for a result of 0, which is no failure");
+
+        // The backpack's first slot (23) gets the sword: PLAYER_FIELD_INV_SLOT_HEAD + 46.
+        const uint32_t at = 0x144 + 23 * 2;
+        me.block[at]      = static_cast<uint32_t>(sword.guid);
+        me.block[at + 1]  = static_cast<uint32_t>(sword.guid >> 32);
+        const uint64_t none = 0;
+        g_received.clear();
+        wxl::seam::Container::UpdateInvContents::Before(me.guid, (at - 0x94) * 4, 8, &none, nullptr);
+        const Received* slot = Only(WXL_EV_InventorySlotChanged);
+        Check(slot && slot->As<wxl_inventory_slot_args>().slot == 23 &&
+                  slot->As<wxl_inventory_slot_args>().item_guid == sword.guid &&
+                  slot->As<wxl_inventory_slot_args>().item == wxl::core::objects::HandleOf(&sword) &&
+                  slot->As<wxl_inventory_slot_args>().container == wxl::core::objects::HandleOf(&me) &&
+                  slot->As<wxl_inventory_slot_args>().previous_guid == 0,
+              "Container.UpdateInvContents raises InventorySlotChanged for the player's slot");
+        g_received.clear();
+        wxl::seam::Container::InvUpdateHandler::Before(me.guid, (at - 0x94) * 4, 8, &sword.guid, nullptr);
+        Check(g_received.empty(), "a slot that holds what it held raises nothing");
+
+        bag.block[0x42 + 4]     = static_cast<uint32_t>(sword.guid);
+        bag.block[0x42 + 5]     = static_cast<uint32_t>(sword.guid >> 32);
+        g_received.clear();
+        wxl::seam::Container::UpdateContainerContents::Before(bag.guid, 8 + 2 * 8, 8, &none, nullptr);
+        slot = Only(WXL_EV_InventorySlotChanged);
+        Check(slot && slot->As<wxl_inventory_slot_args>().slot == 2 &&
+                  slot->As<wxl_inventory_slot_args>().container_guid == bag.guid,
+              "Container.UpdateContainerContents raises it for the bag's slot");
+
+        sword.block[0x3C]   = 40;
+        sword.block[0x3D]   = 75;
+        const uint32_t was  = 41;
+        g_received.clear();
+        wxl::seam::Item::OnUpdateDurability::Before(sword.guid, (0x3C - 6) * 4, 4, &was, nullptr);
+        Check(Only(WXL_EV_ItemDurabilityChanged) &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().current == 40 &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().previous == 41 &&
+                  Only(WXL_EV_ItemDurabilityChanged)->As<wxl_item_durability_args>().maximum == 75,
+              "Item.OnUpdateDurability raises ItemDurabilityChanged with the maximum");
+        sword.block[0x0E]  = 5;
+        const uint32_t two = 2;
+        g_received.clear();
+        wxl::seam::Item::OnUpdateStackCount::Before(sword.guid, (0x0E - 6) * 4, 4, &two, nullptr);
+        Check(Only(WXL_EV_ItemStackChanged) && Only(WXL_EV_ItemStackChanged)->As<wxl_item_stack_args>().current == 5 &&
+                  Only(WXL_EV_ItemStackChanged)->As<wxl_item_stack_args>().previous == 2,
+              "Item.OnUpdateStackCount raises ItemStackChanged");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&bag);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&sword);
+        g_held.clear();
+    }
+
+    void CheckGameplayQuests()
+    {
+        printf("\ngameplay, quests:\n");
+        FakeObject me, giver;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(giver, 0xF130000000003333ull, WXL_OBJECT_UNIT, 0x94);
+        g_held = {&me, &giver};
+
+        // Slot 1 of the log: PLAYER_QUEST_LOG_2_1, the player block's dword 15.
+        const uint32_t entry = 0x94 + 0x0A + 5;
+        uint32_t       before[5]{};
+        me.block[entry] = 783;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, before, nullptr);
+        Check(Only(WXL_EV_QuestAccepted) && Only(WXL_EV_QuestAccepted)->As<wxl_quest_args>().quest_id == 783 &&
+                  Only(WXL_EV_QuestAccepted)->As<wxl_quest_args>().log_slot == 1,
+              "Player.OnUpdateQuest raises QuestAccepted for a quest new in the log");
+
+        uint32_t accepted[5] = { 783, 0, 0, 0, 0 };
+        me.block[entry + 2] = 0x00030000u; // the second objective at 3
+        me.block[entry + 1] = 1;           // complete
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, accepted, nullptr);
+        const Received* progress = Only(WXL_EV_QuestObjectiveChanged);
+        Check(progress && progress->As<wxl_quest_objective_args>().objective == 1 &&
+                  progress->As<wxl_quest_objective_args>().current == 3 &&
+                  progress->As<wxl_quest_objective_args>().previous == 0 && Only(WXL_EV_QuestCompleted) &&
+                  Count(WXL_EV_QuestAccepted) == 0,
+              "QuestObjectiveChanged for the count that moved, and QuestCompleted as its state completes");
+
+        uint32_t done[5] = { 783, 1, 0x00030000u, 0, 0 };
+        for (uint32_t i = 0; i < 5; ++i) me.block[entry + i] = 0;
+        g_received.clear();
+        wxl::seam::Player::OnUpdateQuest::Before(me.guid, (0x0A + 5) * 4, 20, done, nullptr);
+        Check(Only(WXL_EV_QuestRemoved) && Only(WXL_EV_QuestRemoved)->As<wxl_quest_args>().quest_id == 783 &&
+                  g_received.size() == 1,
+              "QuestRemoved when the entry empties");
+
+        Body complete;
+        complete.U32(783).U32(1250).U32(0xFFFFFF9Cu).U32(0).U32(0).U32(0);
+        FakeStore store = complete.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x191, 0, &store);
+        Check(Only(WXL_EV_QuestTurnedIn) && Only(WXL_EV_QuestTurnedIn)->As<wxl_quest_reward_args>().xp == 1250 &&
+                  Only(WXL_EV_QuestTurnedIn)->As<wxl_quest_reward_args>().money == -100,
+              "Player.Packet_Group_12 raises QuestTurnedIn with the rewards");
+
+        Body details;
+        details.U64(giver.guid).U64(0x99).U32(783).Str("The Defias Brotherhood").Str("Go west.").Str("Kill them.");
+        store = details.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x188, 0, &store);
+        const Received* detail = Only(WXL_EV_QuestGiverDetail);
+        Check(detail && Said(detail->As<wxl_quest_giver_args>().title) == "The Defias Brotherhood" &&
+                  Said(detail->As<wxl_quest_giver_args>().text) == "Go west." &&
+                  detail->As<wxl_quest_giver_args>().shared_by == 0x99 &&
+                  detail->As<wxl_quest_giver_args>().giver == wxl::core::objects::HandleOf(&giver),
+              "QuestGiverDetail with the giver, the title, the text and who shared it");
+        Body list;
+        list.U64(giver.guid).Str("Greetings.").U32(0).U32(1).U8(2);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x185, 0, &store);
+        Check(Only(WXL_EV_QuestGiverGreeting) && Only(WXL_EV_QuestGiverGreeting)->As<wxl_quest_giver_args>().count == 2 &&
+                  Said(Only(WXL_EV_QuestGiverGreeting)->As<wxl_quest_giver_args>().text) == "Greetings.",
+              "QuestGiverGreeting with the greeting and how many quests it lists");
+        Body request;
+        request.U64(giver.guid).U32(783).Str("Title").Str("Bring them.");
+        store = request.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x18B, 0, &store);
+        Check(Only(WXL_EV_QuestGiverProgress) != nullptr, "QuestGiverProgress for SMSG_QUESTGIVER_REQUEST_ITEMS");
+        store = request.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_Group_12::Before(nullptr, 0x18D, 0, &store);
+        Check(Only(WXL_EV_QuestGiverReward) != nullptr, "QuestGiverReward for SMSG_QUESTGIVER_OFFER_REWARD");
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&giver);
+        g_held.clear();
+    }
+
+    /// Answers every GroupInvite, DuelRequested and ResurrectRequest with what it holds.
+    struct RequestAnswer
+    {
+        bool accept  = false;
+        bool decline = false;
+    };
+
+    RequestAnswer g_requestAnswer;
+
+    void WXL_CALL OnRequest(void* user, const void* args)
+    {
+        const auto kind = reinterpret_cast<uintptr_t>(user);
+        wxl_bool* accept  = nullptr;
+        wxl_bool* decline = nullptr;
+        if (kind == 0) accept = static_cast<const wxl_group_invite_args*>(args)->accept, decline = static_cast<const wxl_group_invite_args*>(args)->decline;
+        if (kind == 1) accept = static_cast<const wxl_duel_request_args*>(args)->accept, decline = static_cast<const wxl_duel_request_args*>(args)->decline;
+        if (kind == 2) accept = static_cast<const wxl_resurrect_request_args*>(args)->accept, decline = static_cast<const wxl_resurrect_request_args*>(args)->decline;
+        if (g_requestAnswer.accept && accept) *accept = WXL_TRUE;
+        if (g_requestAnswer.decline && decline) *decline = WXL_TRUE;
+    }
+
+    void CheckGameplayGroup()
+    {
+        printf("\ngameplay, group:\n");
+        const wxl_subscription invite = g_host->Events().Subscribe(WXL_EV_GroupInvite, &OnRequest, reinterpret_cast<void*>(0), 0);
+
+        Body body;
+        body.U8(1).Str("Jaina").U32(0).U8(0).U32(0);
+        FakeStore store = body.Store();
+        int32_t   result = 0;
+        void*     param = nullptr;
+        uint32_t  id = 0x6F, time = 0;
+        void*     msg = &store;
+        g_answers.clear();
+        g_requestAnswer = RequestAnswer{};
+        g_received.clear();
+        bool taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && Only(WXL_EV_GroupInvite) && Said(Only(WXL_EV_GroupInvite)->As<wxl_group_invite_args>().inviter) == "Jaina" &&
+                  g_answers.empty(),
+              "Player.Packet_SMSG_GROUP_INVITE raises GroupInvite and leaves an unanswered one to the dialog");
+        g_requestAnswer.accept = true;
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && result == 1 && g_answers.size() == 1 && g_answers[0] == "group accept",
+              "an accepted one joins as the dialog's Accept does, and the dialog never shows");
+        g_requestAnswer.decline = true;
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && g_answers.size() == 2 && g_answers[1] == "group decline", "decline wins over accept");
+        Body grouped;
+        grouped.U8(0).Str("Jaina").U32(0).U8(0).U32(0);
+        store = grouped.Store();
+        taken = wxl::seam::Player::Packet_SMSG_GROUP_INVITE::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && g_answers.size() == 2, "an invitation the player cannot take is only told");
+        g_host->Events().Unsubscribe(invite);
+
+        // A party of two, the leader the other member, group loot.
+        Body list;
+        list.U8(0).U8(0).U8(0).U8(0).U64(0x1F00000000000001ull).U32(1).U32(1)
+            .Str("Thrall").U64(0x51).U8(1).U8(0).U8(1).U8(2)
+            .U64(0x51).U8(3).U64(0).U8(2).U8(0).U8(0).U8(0);
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_LIST::Before(nullptr, 0x7D, 0, &store);
+        const Received* group = Only(WXL_EV_GroupUpdated);
+        Check(group && group->As<wxl_group_args>().count == 1 && group->As<wxl_group_args>().leader_guid == 0x51 &&
+                  group->As<wxl_group_args>().loot_method == WXL_LOOT_GROUP &&
+                  group->As<wxl_group_args>().loot_threshold == 2 && group->As<wxl_group_args>().raid == WXL_FALSE,
+              "Player.Packet_SMSG_GROUP_LIST raises GroupUpdated");
+        Check(Only(WXL_EV_GroupMember) && Said(Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().name) == "Thrall" &&
+                  Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().roles == 2 &&
+                  Only(WXL_EV_GroupMember)->As<wxl_group_member_args>().online == WXL_TRUE,
+              "a GroupMember per member");
+        Check(Only(WXL_EV_GroupLootMethodChanged) != nullptr, "and GroupLootMethodChanged for the first rules it sees");
+        store = list.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_LIST::Before(nullptr, 0x7D, 0, &store);
+        Check(g_received.empty(), "the same sequence again within a minute is dropped, as the client drops it");
+
+        store = Body{}.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_DESTROYED::Before(nullptr, 0x37F, 0, &store);
+        Check(Only(WXL_EV_GroupLeft) && Only(WXL_EV_GroupLeft)->As<wxl_group_left_args>().reason == WXL_GROUP_DISBANDED,
+              "Player.Packet_SMSG_GROUP_DESTROYED raises GroupLeft, disbanded");
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_GROUP_UNINVITE::Before(nullptr, 0x77, 0, &store);
+        Check(Only(WXL_EV_GroupLeft) && Only(WXL_EV_GroupLeft)->As<wxl_group_left_args>().reason == WXL_GROUP_REMOVED,
+              "Player.Packet_SMSG_GROUP_UNINVITE raises GroupLeft, removed");
+
+        Body check;
+        check.U64(0x51);
+        store = check.Store();
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK::Before(nullptr, 0x322, 0, &store);
+        Check(Only(WXL_EV_ReadyCheck) && Only(WXL_EV_ReadyCheck)->As<wxl_ready_check_args>().duration == 30000 &&
+                  Only(WXL_EV_ReadyCheck)->As<wxl_ready_check_args>().initiator_guid == 0x51,
+              "Raid.Packet_MSG_RAID_READY_CHECK raises ReadyCheck");
+        Body confirm;
+        confirm.U64(0x52).U8(1);
+        store = confirm.Store();
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK_CONFIRM::Before(nullptr, 0x3AE, 0, &store);
+        Check(Only(WXL_EV_ReadyCheckResponse) && Only(WXL_EV_ReadyCheckResponse)->As<wxl_ready_check_response_args>().ready == WXL_TRUE,
+              "Raid.Packet_MSG_RAID_READY_CHECK_CONFIRM raises ReadyCheckResponse");
+        g_received.clear();
+        wxl::seam::Raid::Packet_MSG_RAID_READY_CHECK_FINISHED::Before(nullptr, 0x3C6, 0, nullptr);
+        Check(Only(WXL_EV_ReadyCheckFinished) &&
+                  Only(WXL_EV_ReadyCheckFinished)->As<wxl_ready_check_end_args>().initiator_guid == 0x51,
+              "Raid.Packet_MSG_RAID_READY_CHECK_FINISHED raises ReadyCheckFinished with the check's initiator");
+    }
+
+    void CheckGameplaySocial()
+    {
+        printf("\ngameplay, social:\n");
+        FakeObject me, rival, priest;
+        Build(me, 0x0000000000000042ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(rival, 0x0000000000000043ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(priest, 0x0000000000000044ull, WXL_OBJECT_PLAYER, 0x500);
+        g_held        = {&me, &rival, &priest};
+        g_localPlayer = &me;
+
+        const wxl_subscription duel = g_host->Events().Subscribe(WXL_EV_DuelRequested, &OnRequest, reinterpret_cast<void*>(1), 0);
+        const wxl_subscription res  = g_host->Events().Subscribe(WXL_EV_ResurrectRequest, &OnRequest, reinterpret_cast<void*>(2), 0);
+        Body challenge;
+        challenge.U64(0xF110000000000009ull).U64(rival.guid);
+        FakeStore store = challenge.Store();
+        int32_t   result = 0;
+        void*     param = nullptr;
+        uint32_t  id = 0x167, time = 0;
+        void*     msg = &store;
+        g_answers.clear();
+        g_requestAnswer = RequestAnswer{};
+        g_received.clear();
+        bool taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && Only(WXL_EV_DuelRequested) &&
+                  Only(WXL_EV_DuelRequested)->As<wxl_duel_request_args>().challenger == wxl::core::objects::HandleOf(&rival),
+              "Duel.Packet_SMSG_DUEL_REQUESTED raises DuelRequested and leaves an unanswered one to the dialog");
+        g_requestAnswer.decline = true;
+        taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && result == 1 && g_answers.size() == 1 &&
+                  g_answers[0] == "duel decline " + std::to_string(0xF110000000000009ull) + " " + std::to_string(rival.guid),
+              "a declined one is cancelled with its arbiter, and the dialog never shows");
+        Body own;
+        own.U64(0xF110000000000009ull).U64(me.guid);
+        store = own.Store();
+        g_received.clear();
+        taken = wxl::seam::Duel::Packet_SMSG_DUEL_REQUESTED::Gate(&result, &param, &id, &time, &msg);
+        Check(!taken && g_received.empty(), "the player's own challenge, which the client accepts itself, is no request");
+
+        Body offer;
+        offer.U64(priest.guid).Sized("Anduin").U8(1).U8(0);
+        store = offer.Store();
+        g_requestAnswer = RequestAnswer{};
+        g_requestAnswer.accept = true;
+        g_received.clear();
+        taken = wxl::seam::Player::Packet_SMSG_RESURRECT_REQUEST::Gate(&result, &param, &id, &time, &msg);
+        Check(taken && Only(WXL_EV_ResurrectRequest) &&
+                  Said(Only(WXL_EV_ResurrectRequest)->As<wxl_resurrect_request_args>().name) == "Anduin" &&
+                  g_answers.size() == 2 && g_answers[1] == "resurrect accept " + std::to_string(priest.guid) + " sick",
+              "Player.Packet_SMSG_RESURRECT_REQUEST raises ResurrectRequest and accepts the offer it kept");
+        g_host->Events().Unsubscribe(duel);
+        g_host->Events().Unsubscribe(res);
+
+        Body countdown;
+        countdown.U32(3000);
+        store = countdown.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_COUNTDOWN::Before(nullptr, 0x2B7, 0, &store);
+        Check(Only(WXL_EV_DuelCountdown) && Only(WXL_EV_DuelCountdown)->As<wxl_duel_countdown_args>().duration == 3000,
+              "Duel.Packet_SMSG_DUEL_COUNTDOWN raises DuelCountdown");
+        Body winner;
+        winner.U8(1).Str("Garrosh").Str("Varian");
+        store = winner.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_WINNER::Before(nullptr, 0x16B, 0, &store);
+        Check(Only(WXL_EV_DuelWon) && Said(Only(WXL_EV_DuelWon)->As<wxl_duel_won_args>().loser) == "Varian" &&
+                  Only(WXL_EV_DuelWon)->As<wxl_duel_won_args>().fled == WXL_TRUE,
+              "Duel.Packet_SMSG_DUEL_WINNER raises DuelWon");
+        Body over;
+        over.U8(0);
+        store = over.Store();
+        g_received.clear();
+        wxl::seam::Duel::Packet_SMSG_DUEL_COMPLETE::Before(nullptr, 0x16A, 0, &store);
+        Check(Only(WXL_EV_DuelFinished) && Only(WXL_EV_DuelFinished)->As<wxl_duel_finished_args>().completed == WXL_FALSE,
+              "Duel.Packet_SMSG_DUEL_COMPLETE raises DuelFinished");
+
+        Body trade;
+        trade.U32(1).U64(rival.guid);
+        store = trade.Store();
+        g_received.clear();
+        wxl::seam::Trade::Packet_SMSG_TRADE_STATUS::Before(nullptr, 0x120, 0, &store);
+        Check(Only(WXL_EV_TradeStatus) && Only(WXL_EV_TradeStatus)->As<wxl_trade_args>().status == WXL_TRADE_PROPOSED &&
+                  Only(WXL_EV_TradeStatus)->As<wxl_trade_args>().partner_guid == rival.guid,
+              "Trade.Packet_SMSG_TRADE_STATUS raises TradeStatus, a proposal with its proposer");
+
+        Body emote;
+        emote.U32(10).U64(rival.guid);
+        store = emote.Store();
+        g_received.clear();
+        wxl::seam::Player::Packet_SMSG_EMOTE::Before(nullptr, 0x103, 0, &store);
+        Check(Only(WXL_EV_Emote) && Only(WXL_EV_Emote)->As<wxl_emote_args>().emote_id == 10 &&
+                  Only(WXL_EV_Emote)->As<wxl_emote_args>().unit == wxl::core::objects::HandleOf(&rival),
+              "Player.Packet_SMSG_EMOTE raises Emote");
+        Body text;
+        text.U64(rival.guid).U32(101).U32(0).Sized("Thrall");
+        store = text.Store();
+        g_received.clear();
+        wxl::seam::Chat::OnTextEmote::Before(nullptr, 0x105, 0, &store);
+        Check(Only(WXL_EV_TextEmote) && Only(WXL_EV_TextEmote)->As<wxl_text_emote_args>().text_emote == 101 &&
+                  Said(Only(WXL_EV_TextEmote)->As<wxl_text_emote_args>().target_name) == "Thrall",
+              "Chat.OnTextEmote raises TextEmote");
+
+        // Windows, by the names of the game's event table.
+        const char* names[] = { "PLAYER_LOGIN", "MERCHANT_SHOW", "MERCHANT_CLOSED", "QUEST_DETAIL", "QUEST_FINISHED" };
+        wxl::core::seams::gameplay::Install(names, 5);
+        g_interact = rival.guid;
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(1, nullptr, nullptr);
+        wxl::seam::FrameScript::vSignalEvent::Before(1, nullptr, nullptr);
+        const Received* window = Only(WXL_EV_WindowOpened);
+        Check(window && window->As<wxl_window_args>().kind == WXL_WINDOW_MERCHANT &&
+                  window->As<wxl_window_args>().npc == wxl::core::objects::HandleOf(&rival),
+              "FrameScript.vSignalEvent raises WindowOpened once for MERCHANT_SHOW, on the interface's npc");
+        g_interact = 0;
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(2, nullptr, nullptr);
+        wxl::seam::FrameScript::vSignalEvent::Before(4, nullptr, nullptr);
+        window = Only(WXL_EV_WindowClosed);
+        Check(window && window->As<wxl_window_args>().npc_guid == rival.guid && Count(WXL_EV_WindowOpened) == 0,
+              "WindowClosed for MERCHANT_CLOSED on whom it opened, and nothing for a window never opened");
+        g_received.clear();
+        wxl::seam::FrameScript::vSignalEvent::Before(0, nullptr, nullptr);
+        Check(Count(WXL_EV_WindowOpened) == 0 && Count(WXL_EV_WindowClosed) == 0, "any other event opens no window");
+        wxl::core::seams::gameplay::Install(nullptr, 0);
+
+        // Death, release, resurrection, from the client's re-tellings of the player's state.
+        wxl::core::seams::gameplay::Forget();
+        me.health = 100;
+        g_received.clear();
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(g_received.empty(), "GameUI.UpdateActivePlayer: the first state seen raises nothing");
+        me.health = 0;
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(Only(WXL_EV_PlayerDied) && Only(WXL_EV_PlayerDied)->As<wxl_unit_args>().unit == wxl::core::objects::HandleOf(&me),
+              "PlayerDied when the health falls to nothing");
+        me.health         = 1;
+        me.block[0x96]    = 0x10;
+        g_received.clear();
+        wxl::seam::Player::UpdateGhostStatus::After(&me);
+        Check(Only(WXL_EV_PlayerReleased) != nullptr, "Player.UpdateGhostStatus raises PlayerReleased for a new ghost");
+        me.block[0x96] = 0;
+        g_received.clear();
+        wxl::seam::Player::UpdateGhostStatus::After(&me);
+        wxl::seam::GameUI::UpdateActivePlayer::After();
+        Check(Only(WXL_EV_PlayerResurrected) != nullptr, "and PlayerResurrected once alive again, once");
+
+        // Reputation: list id 3 is faction 72 at base 0, standing 1000, raised to 1250.
+        g_factionId = 72, g_factionBase = 0, g_factionStanding = 1000;
+        Body rep;
+        rep.F32(0.0f).U8(0).U32(2).U32(3).U32(1250).U32(4).U32(0);
+        store = rep.Store();
+        g_received.clear();
+        wxl::seam::Reputation::Packet_SMSG_SET_FACTION_STANDING::Before(nullptr, 0x124, 0, &store);
+        Check(Only(WXL_EV_ReputationChanged) && Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().faction_id == 72 &&
+                  Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().previous == 1000 &&
+                  Only(WXL_EV_ReputationChanged)->As<wxl_reputation_args>().current == 1250,
+              "Reputation.Packet_SMSG_SET_FACTION_STANDING raises ReputationChanged for the faction that moved only");
+
+        Body earned;
+        earned.Packed(rival.guid).U32(6).U32(0x0A3B1C2Du).U32(0);
+        store = earned.Store();
+        g_received.clear();
+        wxl::seam::Achievement::Packet_SMSG_ACHIEVEMENT_EARNED::Before(nullptr, 0x468, 0, &store);
+        Check(Only(WXL_EV_AchievementEarned) && Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().achievement_id == 6 &&
+                  Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().player_guid == rival.guid &&
+                  Only(WXL_EV_AchievementEarned)->As<wxl_achievement_args>().date == 0x0A3B1C2Du,
+              "Achievement.Packet_SMSG_ACHIEVEMENT_EARNED raises AchievementEarned, the guid unpacked");
+
+        g_localPlayer = nullptr;
+        wxl::core::seams::gameplay::Forget();
+        wxl::seam::ObjectMgr::ObjDelete::Before(&me);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&rival);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&priest);
+        g_held.clear();
+    }
+
+#if defined(_M_IX86)
+    // The gameplay rows' detours, called as the client calls the functions: the handler table's
+    // four dwords, the mirror dispatcher's six, a gate that takes the call, a member with
+    // nothing on the stack.
+
+    int32_t g_gameplayOriginal = 0;
+    __declspec(noinline) int32_t __cdecl FakeHandler(void*, uint32_t, uint32_t, void*) { return ++g_gameplayOriginal; }
+    __declspec(noinline) int32_t __cdecl FakeMirrorHandler(uint64_t, uint32_t, uint32_t, const void*, void*)
+    {
+        return ++g_gameplayOriginal;
+    }
+    __declspec(noinline) void __fastcall FakeGhostUpdate(void*, void*) { ++g_gameplayOriginal; }
+
+    /// Calls a handler as NetClient::ProcessMessage does at 0x0063202C: four pushed, 0x10 cleaned.
+    __declspec(noinline) void CallLikeDispatch(void* handler, uint32_t id, void* msg)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            push msg
+            push 0
+            push id
+            push 0
+            mov  ecx, handler
+            call ecx
+            add  esp, 10h
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    /// Calls a member that takes nothing on the stack: `this` in ECX.
+    __declspec(noinline) void CallMember(void* detour, void* self)
+    {
+        __asm {
+            mov  dword ptr [g_espBefore], esp
+            mov  ecx, self
+            call detour
+            mov  dword ptr [g_espAfter], esp
+        }
+    }
+
+    void CheckGameplayDetours()
+    {
+        using wxl::core::seams::DetourOf;
+        using wxl::core::seams::GateOf;
+        namespace P = wxl::seam::Player;
+        using Emote  = DetourOf<P::Packet_SMSG_EMOTE::Convention, P::Packet_SMSG_EMOTE::Signature>::Link<&P::Packet_SMSG_EMOTE::Before, nullptr>;
+        using Invite = GateOf<P::Packet_SMSG_GROUP_INVITE::Convention, P::Packet_SMSG_GROUP_INVITE::Signature>::Link<&P::Packet_SMSG_GROUP_INVITE::Gate>;
+        using Stack  = DetourOf<wxl::seam::Item::OnUpdateStackCount::Convention, wxl::seam::Item::OnUpdateStackCount::Signature>::Link<&wxl::seam::Item::OnUpdateStackCount::Before, nullptr>;
+        using GhostSeam = DetourOf<P::UpdateGhostStatus::Convention, P::UpdateGhostStatus::Signature>;
+        using Ghost  = GhostSeam::Link<nullptr, &P::UpdateGhostStatus::After>;
+
+        FakeObject rival, sword;
+        Build(rival, 0x0000000000000043ull, WXL_OBJECT_PLAYER, 0x500);
+        Build(sword, 0x4000000000000200ull, WXL_OBJECT_ITEM, 0x40);
+        g_held = {&rival, &sword};
+
+        Emote::original = Opaque(&FakeHandler);
+        Body emote;
+        emote.U32(10).U64(rival.guid);
+        FakeStore store = emote.Store();
+        g_gameplayOriginal = 0;
+        g_received.clear();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Emote::Detour)), 0x103, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1 && Only(WXL_EV_Emote),
+              "x86: a handler's detour takes the handler table's four dwords, runs the handler and raises Emote");
+        Emote::original = nullptr;
+
+        const wxl_subscription invite = g_host->Events().Subscribe(WXL_EV_GroupInvite, &OnRequest, reinterpret_cast<void*>(0), 0);
+        Invite::original = Opaque(&FakeHandler);
+        Body body;
+        body.U8(1).Str("Jaina").U32(0).U8(0).U32(0);
+        store = body.Store();
+        g_requestAnswer = RequestAnswer{};
+        g_requestAnswer.decline = true;
+        g_gameplayOriginal = 0;
+        g_answers.clear();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Invite::Detour)), 0x6F, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 0 && g_answers.size() == 1,
+              "x86: the invitation gate takes a declined invitation, the handler not run, the stack as it was");
+        g_requestAnswer = RequestAnswer{};
+        store = body.Store();
+        CallLikeDispatch(Opaque(reinterpret_cast<void*>(&Invite::Detour)), 0x6F, &store);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1, "x86: and hands an unanswered one to the handler");
+        Invite::original = nullptr;
+        g_host->Events().Unsubscribe(invite);
+
+        Stack::original = Opaque(&FakeMirrorHandler);
+        sword.block[0x0E]  = 5;
+        const uint32_t two = 2;
+        g_gameplayOriginal = 0;
+        g_received.clear();
+        CallLikeMirror(Opaque(reinterpret_cast<void*>(&Stack::Detour)), static_cast<uint32_t>(sword.guid),
+                       static_cast<uint32_t>(sword.guid >> 32), (0x0E - 6) * 4, 4, &two, nullptr);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1 && Only(WXL_EV_ItemStackChanged),
+              "x86: a mirror handler's detour takes the six dwords, the guid's two halves in place");
+        Stack::original = nullptr;
+
+        FakeObject ghost;
+        Ghost::original = Opaque(reinterpret_cast<GhostSeam::Fn>(&FakeGhostUpdate));
+        g_gameplayOriginal = 0;
+        CallMember(Opaque(reinterpret_cast<void*>(&Ghost::Detour)), &ghost);
+        Check(g_espBefore == g_espAfter && g_gameplayOriginal == 1,
+              "x86: CGPlayer_C::UpdateGhostStatus's detour takes `this` in ECX and nothing on the stack");
+        Ghost::original = nullptr;
+
+        wxl::seam::ObjectMgr::ObjDelete::Before(&rival);
+        wxl::seam::ObjectMgr::ObjDelete::Before(&sword);
+        g_held.clear();
+    }
+#endif
+}
 
 // --- The profiler, before it starts -----------------------------------------------------------
 // What can be checked without a viewer: locations are kept and shared, nothing opens a zone
@@ -5937,6 +8320,508 @@ void ProfileLive(bool any)
     }
     printf("profile-live: 100 frames sent\n");
     std::this_thread::sleep_for(std::chrono::seconds(2));
+}
+#endif
+
+// --- wxl.point: the table, the dispatch, and on x86 the detours SafetyHook writes -----------------
+
+namespace
+{
+    namespace pts = wxl::core::points;
+
+    const wxl_point_api& PointApi() { return pts::Api(); }
+
+    /// What the handlers saw, in the order they ran.
+    std::string g_pointTrace;
+
+    struct Pair
+    {
+        void* data;
+        void* param;
+    };
+
+    /// A stand-in original of CGCamera::UpdateCallback's generic shape: answers data + param.
+    int g_originalRuns = 0;
+    void WXL_CALL FakeCameraOriginal(void* const* args, void* result)
+    {
+        ++g_originalRuns;
+        const uintptr_t data  = reinterpret_cast<uintptr_t>(*static_cast<void**>(args[0]));
+        const uintptr_t param = reinterpret_cast<uintptr_t>(*static_cast<void**>(args[1]));
+        *static_cast<int32_t*>(result) = static_cast<int32_t>(data + param);
+        g_pointTrace += "O";
+    }
+
+    int32_t EnterCamera(uintptr_t data, uintptr_t param)
+    {
+        void*       a     = reinterpret_cast<void*>(data);
+        void*       b     = reinterpret_cast<void*>(param);
+        void* const args[] = {&a, &b};
+        int32_t     result = -1;
+        pts::Enter(pts::kCGCamera_UpdateCallback, args, &result, &FakeCameraOriginal);
+        return result;
+    }
+
+    void WXL_CALL PointBefore(wxl_point_call* call, void*)
+    {
+        g_pointTrace += "B";
+        *static_cast<void**>(call->args[0]) = reinterpret_cast<void*>(uintptr_t{100}); // data = 100
+    }
+
+    void WXL_CALL PointReplaceCalls(wxl_point_call* call, void* user)
+    {
+        g_pointTrace += static_cast<const char*>(user);
+        PointApi().call_original(call);
+        *static_cast<int32_t*>(call->result) += 1;
+    }
+
+    void WXL_CALL PointReplaceAnswers(wxl_point_call* call, void*)
+    {
+        g_pointTrace += "R";
+        *static_cast<int32_t*>(call->result) = 7;
+    }
+
+    void WXL_CALL PointAfter(wxl_point_call* call, void* user)
+    {
+        g_pointTrace += static_cast<const char*>(user);
+        *static_cast<int32_t*>(call->result) *= 2;
+    }
+
+    void WXL_CALL PointFaultsFirst(wxl_point_call*, void*)
+    {
+        g_pointTrace += "F";
+        *static_cast<volatile int*>(nullptr) = 1;
+    }
+
+    uint32_t g_seenDepth = 0;
+    void WXL_CALL PointDepth(wxl_point_call* call, void*)
+    {
+        if (call->depth > g_seenDepth) g_seenDepth = call->depth;
+        if (call->depth == 1) EnterCamera(1, 2); // a nested call of the same point
+    }
+
+    void WXL_CALL PointCallsOriginalFromBefore(wxl_point_call* call, void*) { PointApi().call_original(call); }
+
+    uint32_t Attach(uint32_t index, uint32_t side, wxl_point_fn fn, void* user, int32_t priority = 0, uint32_t hash = 0)
+    {
+        return PointApi().attach(index + 1, side, fn, user, priority, hash);
+    }
+
+#if !defined(_M_IX86)
+    volatile uint8_t g_fakeArmed[pts::kCount] = {};
+#else
+    /// Puts each x86 point on a stand-in of its shape in this image, and the camera's site on an
+    /// inlined copy of it.
+    void PlaceStandIns();
+#endif
+
+    /// Every point of the table through the dispatch, as its realisation calls it: its arguments
+    /// by address, its answer's slot, Before, Replace and After once each.
+    int g_everyOriginal = 0;
+    void WXL_CALL EveryOriginal(void* const*, void* result)
+    {
+        ++g_everyOriginal;
+        if (result) memset(result, 0, 8);
+    }
+    int g_everySides = 0;
+    void WXL_CALL EveryHandler(wxl_point_call* call, void*)
+    {
+        g_everySides += 1 << (call->side * 4);
+        if (call->side == WXL_POINT_REPLACE) PointApi().call_original(call);
+    }
+
+    void CheckEveryPoint()
+    {
+        const wxl_point_api& api = PointApi();
+        int dispatched = 0, here = 0;
+        for (uint32_t index = 0; index < pts::kCount; ++index)
+        {
+            const char* why = "";
+            if (!pts::Has(index, &why)) continue;
+            ++here;
+            uint32_t ids[3];
+            for (uint32_t side = 0; side < 3; ++side)
+                ids[side] = Attach(index, side, &EveryHandler, nullptr, 0, pts::RowOf(index).layout_hash);
+            uint64_t    values[8] = {};
+            void*       args[8];
+            for (int i = 0; i < 8; ++i) args[i] = &values[i];
+            uint64_t    result = 0;
+            g_everyOriginal = g_everySides = 0;
+            pts::Enter(index, args, pts::RowOf(index).returns ? &result : nullptr, &EveryOriginal);
+            if (ids[0] && ids[1] && ids[2] && g_everyOriginal == 1 && g_everySides == 0x111) ++dispatched;
+            for (uint32_t id : ids) api.detach(id);
+        }
+        Check(here > 0 && dispatched == here, "every point this runtime has runs its Before, Replace (calling "
+                                              "the original once) and After");
+    }
+
+    void CheckPointTable()
+    {
+        const wxl_point_api& api = PointApi();
+        std::vector<wxl_point_info> infos(api.list(nullptr, 0));
+        for (wxl_point_info& info : infos) info.struct_size = sizeof info;
+        api.list(infos.data(), static_cast<uint32_t>(infos.size()));
+        Check(infos.size() == pts::kCount && pts::kCount >= 6, "list names every point of wxl/points.def");
+        const wxl_point_info& camera = infos[pts::kCGCamera_UpdateCallback];
+        Check(std::string_view(camera.name.data, camera.name.size) == "CGCamera::UpdateCallback" &&
+                  std::string_view(camera.signature.data, camera.signature.size) == "i32(ptr,ptr)" &&
+                  camera.arg_count == 2 && (camera.flags & WXL_POINT_STABLE) && (camera.flags & WXL_POINT_REPLACEABLE) &&
+                  (camera.flags & WXL_POINT_ON_X86) && (camera.flags & WXL_POINT_ON_X64),
+              "the camera point: its name, lowered signature, two arguments, stable, replaceable, on both runtimes");
+        const wxl_point_info& finish = infos[pts::kCM2Shared_FinishLoading];
+        Check(!(finish.flags & WXL_POINT_ON_X86) && (finish.flags & WXL_POINT_ON_X64) && !(finish.flags & WXL_POINT_STABLE),
+              "CM2Shared::FinishLoading is provisional and on the recompiled client only");
+
+        uint32_t id = 0;
+        Check(api.find("No::SuchPoint", &id) == WXL_E_NOT_FOUND, "find: a name the table does not hold is not_found");
+#if defined(_M_IX86)
+        Check(api.find("CM2Shared::FinishLoading", &id) == WXL_E_UNSUPPORTED &&
+                  std::string_view(finish.absent.data, finish.absent.size).find("x64 only") == 0,
+              "find: an inlined function is unsupported on x86, and list says `x64 only` and why");
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_E_UNSUPPORTED,
+              "find: outside Wow.exe 12340 no x86 point is there (the harness is not the client)");
+        PlaceStandIns();
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_OK, "find: placed on stand-ins, the x86 points are there");
+#else
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_E_UNSUPPORTED,
+              "find: before the client hands its table, no x64 point is there");
+        std::vector<std::string> rows;
+        std::vector<const char*> pointers;
+        for (uint32_t i = 0; i < pts::kCount; ++i)
+            rows.push_back(std::string(pts::RowOf(i).name) + ": " + pts::RowOf(i).lowered);
+        for (const std::string& row : rows) pointers.push_back(row.c_str());
+        std::vector<const char*> wrong = pointers;
+        wrong[1] = "CM2Cache::CreateShared: ptr(ptr)";
+        wxl_core_points table{sizeof(wxl_core_points), pts::kCount, wrong.data(), g_fakeArmed};
+        Check(WarcraftXLPoints(&table) == WXL_E_INVALID, "a client table of another signature is refused");
+        table.rows = pointers.data();
+        Check(WarcraftXLPoints(&table) == WXL_OK, "the client's own table is taken");
+        Check(api.find("CM2Shared::FinishLoading", &id) == WXL_OK && id == pts::kCM2Shared_FinishLoading + 1,
+              "find: the inlined function is a point of the recompiled client");
+#endif
+        Check(api.find("CGCamera::UpdateCallback", &id) == WXL_OK && id == pts::kCGCamera_UpdateCallback + 1,
+              "find: the camera point's id is its row's position, from 1");
+    }
+
+    void CheckPointDispatch()
+    {
+        const wxl_point_api& api   = PointApi();
+        const uint32_t       index = pts::kCGCamera_UpdateCallback;
+
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        Check(EnterCamera(3, 4) == 7 && g_originalRuns == 1 && g_pointTrace == "O",
+              "with nothing attached a point is its original alone");
+
+        Check(Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("x"), 0,
+                     pts::RowOf(index).layout_hash ^ 1) == WXL_POINT_ATTACHMENT_NONE,
+              "a handler built against another layout of the point is refused");
+        Check(Attach(index, 7, &PointBefore, nullptr) == WXL_POINT_ATTACHMENT_NONE, "an unknown side is refused");
+        Check(api.attach(0, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, 0) == WXL_POINT_ATTACHMENT_NONE &&
+                  api.attach(pts::kCount + 1, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, 0) == WXL_POINT_ATTACHMENT_NONE,
+              "point ids outside the table are refused");
+
+        const uint32_t before = Attach(index, WXL_POINT_BEFORE, &PointBefore, nullptr, 0, pts::RowOf(index).layout_hash);
+#if !defined(_M_IX86)
+        Check(g_fakeArmed[index] == 1, "the first handler sets the point's byte in the client");
+#endif
+        const uint32_t outer = Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("1"), -5);
+        const uint32_t inner = Attach(index, WXL_POINT_REPLACE, &PointReplaceCalls, const_cast<char*>("2"), 5);
+        const uint32_t late  = Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("a"), 5);
+        const uint32_t early = Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("z"), -5);
+        Check(before && outer && inner && late && early, "Before, two Replaces and two Afters attach");
+
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        int32_t result = EnterCamera(3, 4);
+        Check(g_pointTrace == "B12Oaz", "Before, then the Replaces outermost first, the original, then the Afters "
+                                        "with the lower priority last (nearest the caller)");
+        Check(result == ((100 + 4) + 1 + 1) * 4, "Before rewrote an argument, each Replace and each After the answer");
+
+        api.detach(inner);
+        const uint32_t answers = Attach(index, WXL_POINT_REPLACE, &PointReplaceAnswers, nullptr, 10);
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        result = EnterCamera(3, 4);
+        Check(g_pointTrace == "B1Raz" && g_originalRuns == 0 && result == (7 + 1) * 4,
+              "a Replace that answers without calling the original takes the call: the function does not run");
+        api.detach(answers);
+        api.detach(outer);
+        api.detach(late);
+        api.detach(early);
+
+        // A faulting Replace before the original: the call goes on with the original, the handler stops.
+        const uint32_t faulty = Attach(index, WXL_POINT_REPLACE, &PointFaultsFirst, nullptr);
+        g_pointTrace.clear();
+        g_originalRuns = 0;
+        result = EnterCamera(3, 4);
+        Check(g_pointTrace == "BFO" && result == 104, "a Replace that faults before the original: the original runs and answers");
+        g_pointTrace.clear();
+        EnterCamera(3, 4);
+        Check(g_pointTrace == "BO", "and the faulting handler is not called again");
+        api.detach(faulty);
+
+        const uint32_t depth = Attach(index, WXL_POINT_BEFORE, &PointDepth, nullptr);
+        g_seenDepth = 0;
+        EnterCamera(1, 1);
+        Check(g_seenDepth == 2, "a call of the point inside its own handler is depth 2");
+        api.detach(depth);
+
+        const uint32_t misplaced = Attach(index, WXL_POINT_BEFORE, &PointCallsOriginalFromBefore, nullptr);
+        g_originalRuns = 0;
+        EnterCamera(1, 1);
+        Check(g_originalRuns == 1, "call_original outside a Replace does nothing: the original runs once");
+        api.detach(misplaced);
+
+        Check(api.detach(before) == WXL_OK && api.detach(before) == WXL_E_NOT_FOUND, "detach, then a second detach is not_found");
+#if !defined(_M_IX86)
+        Check(g_fakeArmed[index] == 0, "the last handler's detach clears the point's byte");
+#endif
+
+        // A mod's handlers go with it.
+        const uint32_t saved = g_host->SwapCurrentMod(42);
+        Attach(index, WXL_POINT_BEFORE, &PointBefore, nullptr);
+        Attach(index, WXL_POINT_AFTER, &PointAfter, const_cast<char*>("a"));
+        g_host->SwapCurrentMod(saved);
+        pts::ReleaseOf(42);
+        g_pointTrace.clear();
+        EnterCamera(3, 4);
+        Check(g_pointTrace == "O", "ReleaseOf takes a mod's handlers away");
+    }
+}
+
+#if defined(_M_IX86)
+namespace
+{
+    // Stand-ins of the points' shapes in this image, which the checks place the points on.
+    volatile int32_t g_sink = 0;
+
+    __declspec(noinline) int32_t __cdecl StandInCamera(void* data, void* param)
+    {
+        g_sink = g_sink + 1;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(data) + reinterpret_cast<uintptr_t>(param));
+    }
+
+    /// An inlined copy of the camera's function, as the 2008 compiler leaves one in a caller.
+    __declspec(noinline) int32_t __cdecl InlinedCamera(void* data, void* param)
+    {
+        g_sink = g_sink + 2;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(data) * 1000 + reinterpret_cast<uintptr_t>(param));
+    }
+
+    __declspec(noinline) void* __fastcall StandInShared(void* self, void*, void* name, uint32_t flags)
+    {
+        g_sink = g_sink + 3;
+        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(self) + reinterpret_cast<uintptr_t>(name) + flags);
+    }
+
+    std::string g_worldTrace;
+    __declspec(noinline) void __cdecl StandInWorld(void* param)
+    {
+        g_sink = g_sink + 4;
+        g_worldTrace += param ? "W" : "w";
+    }
+
+    __declspec(noinline) void __cdecl StandInSignal(uint32_t index, void* format, void* args)
+    {
+        g_sink = g_sink + static_cast<int32_t>(index) + (format ? 1 : 0) + (args ? 1 : 0);
+    }
+
+    __declspec(noinline) int32_t __fastcall StandInProcess(void* self, void*, uint32_t time, void* msg, int32_t unused)
+    {
+        g_sink = g_sink + 5;
+        return static_cast<int32_t>(reinterpret_cast<uintptr_t>(self) + time * 10 + reinterpret_cast<uintptr_t>(msg) + unused);
+    }
+
+    template <class Fn>
+    uintptr_t Address(Fn fn)
+    {
+        return reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(fn));
+    }
+
+    uint32_t g_espIn = 0, g_espOut = 0;
+    int32_t  g_pointAnswered = 0;
+
+    /// Calls NetClient::ProcessMessage as the client does at 0x006323F7: `this` in ECX, three
+    /// dwords pushed, the callee pops them; ESP recorded on both sides.
+    __declspec(noinline) void CallLikeHandleData(void* fn, void* self, uint32_t time, void* msg, int32_t unused)
+    {
+        __asm {
+            mov  dword ptr [g_espIn], esp
+            push unused
+            push msg
+            push time
+            mov  ecx, self
+            call fn
+            mov  dword ptr [g_pointAnswered], eax
+            mov  dword ptr [g_espOut], esp
+        }
+    }
+
+    std::string g_seamTrace;
+    using WorldFn = void(__cdecl*)(void*);
+    WorldFn g_seamOriginal = nullptr;
+    void __cdecl FakeSeamDetour(void* param)
+    {
+        g_seamTrace += "S";
+        g_seamOriginal(param);
+    }
+
+    uint32_t g_inlinedFlags = 0;
+    void WXL_CALL PointSeesInlined(wxl_point_call* call, void*)
+    {
+        g_inlinedFlags = call->flags;
+        *static_cast<void**>(call->args[0]) = reinterpret_cast<void*>(uintptr_t{9});
+    }
+
+    void WXL_CALL PointWorld(wxl_point_call*, void*) { g_seamTrace += "P"; }
+
+    void WXL_CALL PointProcess(wxl_point_call* call, void*)
+    {
+        *static_cast<uint32_t*>(call->args[1]) = 2; // time = 2
+        PointApi().call_original(call);
+        *static_cast<int32_t*>(call->result) += 1000;
+    }
+
+    int g_sides[3] = {};
+    void WXL_CALL CountSide(wxl_point_call* call, void*) { ++g_sides[call->side]; }
+    void WXL_CALL ReplaceThrough(wxl_point_call* call, void*)
+    {
+        ++g_sides[WXL_POINT_REPLACE];
+        PointApi().call_original(call);
+    }
+
+    /// Before, Replace and After on the two showcase shapes the checks above leave out: a
+    /// thiscall that answers a pointer (CM2Cache::CreateShared) and a cdecl of three that answers
+    /// nothing (vFrameScript_SignalEvent).
+    void CheckPointSides()
+    {
+        const wxl_point_api& api = PointApi();
+        for (uint32_t index : {static_cast<uint32_t>(pts::kCM2Cache_CreateShared), static_cast<uint32_t>(pts::kvFrameScript_SignalEvent)})
+        {
+            const uint32_t a = Attach(index, WXL_POINT_BEFORE, &CountSide, nullptr);
+            const uint32_t b = Attach(index, WXL_POINT_REPLACE, &ReplaceThrough, nullptr);
+            const uint32_t c = Attach(index, WXL_POINT_AFTER, &CountSide, nullptr);
+            g_sides[0] = g_sides[1] = g_sides[2] = 0;
+            const int32_t sinkBefore = g_sink;
+            if (index == pts::kCM2Cache_CreateShared)
+            {
+                using SharedFn = void*(__thiscall*)(void*, void*, uint32_t);
+                const SharedFn shared = Opaque(reinterpret_cast<SharedFn>(&StandInShared));
+                void* const    answer = shared(reinterpret_cast<void*>(uintptr_t{0x100}), reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+                Check(a && b && c && answer == reinterpret_cast<void*>(uintptr_t{0x123}) && g_sink == sinkBefore + 3,
+                      "x86: CM2Cache::CreateShared's thiscall detour answers the original's pointer through the chain");
+            }
+            else
+            {
+                using SignalFn = void(__cdecl*)(uint32_t, void*, void*);
+                Opaque(reinterpret_cast<SignalFn>(&StandInSignal))(4, const_cast<int32_t*>(&g_sink), nullptr);
+                Check(a && b && c && g_sink == sinkBefore + 5, "x86: vFrameScript_SignalEvent's detour runs the original once");
+            }
+            Check(g_sides[0] == 1 && g_sides[1] == 1 && g_sides[2] == 1, "x86: and its Before, Replace and After ran once each");
+            api.detach(a);
+            api.detach(b);
+            api.detach(c);
+        }
+    }
+
+    void CheckPointPrologues()
+    {
+        char why[256];
+        const uint8_t jumped[16] = {0xE9, 0, 0, 0, 0, 0x90, 0x90, 0x90};
+        Check(!wxl::hook::safety::CheckPrologue(jumped, 8, why, sizeof why) && strstr(why, "already a jump"),
+              "a function whose first instruction is a jump is refused: another tool detoured it");
+        printf("     %s\n", why);
+        const uint8_t tiny[16] = {0x33, 0xC0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+        Check(!wxl::hook::safety::CheckPrologue(tiny, 3, why, sizeof why) && strstr(why, "ends after 3"),
+              "a function that returns within five bytes is refused");
+        printf("     %s\n", why);
+        // push ebp; mov ebp, esp; nop; nop; nop; jmp short -7 (lands at +1)
+        const uint8_t looping[16] = {0x55, 0x89, 0xE5, 0x90, 0x90, 0x90, 0xEB, 0xF9, 0xC3};
+        Check(!wxl::hook::safety::CheckPrologue(looping, 9, why, sizeof why) && strstr(why, "lands at +1"),
+              "a function with a branch into its first five bytes is refused");
+        printf("     %s\n", why);
+        Check(wxl::hook::safety::CheckPrologue(reinterpret_cast<const void*>(&StandInCamera), 0, why, sizeof why),
+              "a compiled function's prologue passes");
+    }
+
+    void CheckPointDetours()
+    {
+        const wxl_point_api& api = PointApi();
+        using CameraFn           = int32_t(__cdecl*)(void*, void*);
+        const CameraFn camera    = Opaque(&StandInCamera);
+        const CameraFn inlined   = Opaque(&InlinedCamera);
+        uint8_t        bytes[8];
+        memcpy(bytes, reinterpret_cast<const void*>(&StandInCamera), sizeof bytes);
+
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 7 && !wxl::hook::Armed(reinterpret_cast<void*>(&StandInCamera)),
+              "x86: an unattached point is not detoured: the function runs as it is");
+
+        g_pointTrace.clear();
+        const uint32_t before = Attach(pts::kCGCamera_UpdateCallback, WXL_POINT_BEFORE, &PointBefore, nullptr);
+        const uint32_t seen   = Attach(pts::kCGCamera_UpdateCallback, WXL_POINT_BEFORE, &PointSeesInlined, nullptr, 10);
+        Check(before && seen && reinterpret_cast<const uint8_t*>(&StandInCamera)[0] == 0xE9,
+              "x86: the first handler arms the detour: SafetyHook's jump at the function's head");
+        g_pointTrace.clear();
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 9 + 4 && g_pointTrace == "B",
+              "x86: the detour runs the Before handlers, which rewrite what the function is given");
+        g_inlinedFlags = 0;
+        Check(inlined(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 9 * 1000 + 4 &&
+                  (g_inlinedFlags & WXL_POINT_CALL_INLINED),
+              "x86: a site (an inlined copy) runs the Before handlers, flagged inlined, and their rewrites reach the copy");
+
+        api.detach(before);
+        api.detach(seen);
+        Check(memcmp(bytes, reinterpret_cast<const void*>(&StandInCamera), sizeof bytes) == 0 &&
+                  !wxl::hook::Armed(reinterpret_cast<void*>(&StandInCamera)),
+              "x86: the last detach disarms it: the function's own bytes are back");
+        g_pointTrace.clear();
+        Check(camera(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 7 && g_pointTrace.empty() &&
+                  inlined(reinterpret_cast<void*>(3), reinterpret_cast<void*>(4)) == 3004,
+              "x86: and nothing runs any more, at the function or at its site");
+
+        // thiscall, called as the client calls it.
+        const uint32_t process = Attach(pts::kNetClient_ProcessMessage, WXL_POINT_REPLACE, &PointProcess, nullptr);
+        void* const    self    = reinterpret_cast<void*>(uintptr_t{0x1000});
+        CallLikeHandleData(reinterpret_cast<void*>(&StandInProcess), self, 5, reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+        Check(process && g_pointAnswered == 0x1000 + 2 * 10 + 0x20 + 3 + 1000 && g_espIn == g_espOut,
+              "x86: a thiscall point called as the client calls it: `this` in ECX, the Replace rewrote an argument "
+              "and the answer, and the stack is as the caller left it");
+        api.detach(process);
+        CallLikeHandleData(reinterpret_cast<void*>(&StandInProcess), self, 5, reinterpret_cast<void*>(uintptr_t{0x20}), 3);
+        Check(g_pointAnswered == 0x1000 + 50 + 0x20 + 3 && g_espIn == g_espOut, "x86: and as itself once detached");
+
+        // A point on a function a seam already detours: one chain, the point in front.
+        const wxl::hook::Id seam = wxl::hook::Attach("Harness.World", Address(&StandInWorld), &FakeSeamDetour,
+                                                     &g_seamOriginal);
+        const WorldFn world = Opaque(&StandInWorld);
+        const uint32_t point = Attach(pts::kCGWorldFrame_RenderWorld, WXL_POINT_BEFORE, &PointWorld, nullptr);
+        g_seamTrace.clear();
+        g_worldTrace.clear();
+        world(reinterpret_cast<void*>(1));
+        Check(seam && point && g_seamTrace == "PS" && g_worldTrace == "W",
+              "x86: a point joins a seam's chain on its function, in front of it, and the function still runs once");
+        api.detach(point);
+        g_seamTrace.clear();
+        world(reinterpret_cast<void*>(1));
+        Check(g_seamTrace == "S" && wxl::hook::Armed(reinterpret_cast<void*>(&StandInWorld)),
+              "x86: detaching the point leaves the seam's chain as it was");
+        wxl::hook::Detach(seam);
+    }
+}
+#endif
+
+#if defined(_M_IX86)
+namespace
+{
+    void PlaceStandIns()
+    {
+        pts::x86::Place(pts::kCGCamera_UpdateCallback, Address(&StandInCamera), 0);
+        pts::x86::Place(pts::kCM2Cache_CreateShared, Address(&StandInShared), 0);
+        pts::x86::Place(pts::kCGWorldFrame_RenderWorld, Address(&StandInWorld), 0);
+        pts::x86::Place(pts::kvFrameScript_SignalEvent, Address(&StandInSignal), 0);
+        pts::x86::Place(pts::kNetClient_ProcessMessage, Address(&StandInProcess), 0);
+        pts::x86::AddSite(pts::kCGCamera_UpdateCallback, Address(&InlinedCamera), "[esp+4],[esp+8]");
+    }
 }
 #endif
 
@@ -6042,6 +8927,48 @@ void Bench()
     bus.Subscribe(WXL_EV_Update, &BenchHandler, nullptr, 0);
     time("event bus, two subscribers", 200000, [&] { bus.Emit(WXL_EV_Update, &args); });
 
+    {
+        // The lookups behind every object event (the runtime's handle table: an object to its
+        // handle, a guid to its handle) and behind a mod's per-object data (ObjectMap's table),
+        // with as many objects as a busy city shows.
+        constexpr int        kObjects = 2000;
+        std::vector<uint8_t> objects(kObjects * 16);
+        wxl::runtime::HandleTable handles;
+        std::vector<wxl_handle>   minted;
+        for (int i = 0; i < kObjects; ++i)
+            minted.push_back(handles.Track(&objects[i * 16], 0x0F00000000000000ull + i * 7919u, 1));
+        int at = 0;
+        time("handle table, object to handle", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            volatile wxl_handle h = handles.HandleOf(&objects[at * 16]);
+            (void)h;
+        });
+        time("handle table, guid to handle", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            volatile wxl_handle h = handles.FindByKey(0x0F00000000000000ull + at * 7919u);
+            (void)h;
+        });
+        time("handle table, track and untrack", 200000, [&] {
+            at = (at + 613) % kObjects;
+            handles.Untrack(&objects[at * 16]);
+            handles.Track(&objects[at * 16], 0x0F00000000000000ull + at * 7919u, 1);
+        });
+
+        wxl::ObjectMap<uint32_t>::map_type data;
+        for (wxl_handle h : minted) data[wxl::Object(h)] = 1;
+        time("ObjectMap table, find", 2000000, [&] {
+            at = (at + 613) % kObjects;
+            auto found = data.find(wxl::Object(minted[at]));
+            volatile uint32_t v = found == data.end() ? 0 : found->second;
+            (void)v;
+        });
+        time("ObjectMap table, erase and insert", 200000, [&] {
+            at = (at + 613) % kObjects;
+            data.erase(wxl::Object(minted[at]));
+            data[wxl::Object(minted[at])] = 2;
+        });
+    }
+
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     {
         // The profiler up and no viewer, as in a game nobody profiles: the host's zones behind
@@ -6081,6 +9008,42 @@ void Bench()
         time("present (frame mark, flag, plots), no viewer", 200000, [&] { profile::Present(); });
     }
 #endif
+
+    {
+        // A point: the dispatch with nothing attached (a call that reached it as one was
+        // detached), then with one handler of each side. An unattached point never reaches it:
+        // on x86 it is not detoured, on x64 the client tests its byte.
+        namespace pts = wxl::core::points;
+        void*       a = nullptr;
+        void*       b = nullptr;
+        void* const pargs[] = {&a, &b};
+        int32_t     presult = 0;
+        const auto  original = [](void* const*, void* r) { *static_cast<int32_t*>(r) = 1; };
+        time("point, nothing attached", 2000000, [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const wxl_point_api& api = pts::Api();
+        const auto nothing = [](wxl_point_call*, void*) {};
+        const uint32_t before = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_BEFORE, nothing, nullptr, 0, 0);
+        time("point, one Before", 2000000, [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const uint32_t replace = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_REPLACE,
+                                            [](wxl_point_call* call, void*) { wxl::core::points::Api().call_original(call); },
+                                            nullptr, 0, 0);
+        time("point, one Before and a Replace calling the original", 2000000,
+             [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        const uint32_t after = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_AFTER, nothing, nullptr, 0, 0);
+        time("point, Before, Replace and After", 2000000,
+             [&] { pts::Enter(pts::kCGCamera_UpdateCallback, pargs, &presult, original); });
+        api.detach(before);
+        api.detach(replace);
+        api.detach(after);
+#if defined(_M_IX86)
+        using CameraFn = int32_t(__cdecl*)(void*, void*);
+        const CameraFn camera = Opaque(&StandInCamera);
+        time("x86 point function, unattached (not detoured)", 2000000, [&] { camera(nullptr, nullptr); });
+        const uint32_t armed = api.attach(pts::kCGCamera_UpdateCallback + 1, WXL_POINT_BEFORE, nothing, nullptr, 0, 0);
+        time("x86 point function, detoured, one Before", 2000000, [&] { camera(nullptr, nullptr); });
+        api.detach(armed);
+#endif
+    }
 
     wxl::core::services::data::Clear();
 
@@ -6127,6 +9090,508 @@ void Bench()
     wxl::core::services::footprint::Reset();
 }
 
+namespace
+{
+    // --- M2.DrawBatch: the batch the device drew, as ModelBatchDrawn -------------------------------
+
+    void CheckModelBatch()
+    {
+        int render = 0; // CM2SceneRender's `this`; the fake binding only tests it for null
+        int model  = 0;
+        int root   = 0;
+
+        g_gxDraw                 = wxl_model_batch_args{};
+        g_gxDraw.model           = &model;
+        g_gxDraw.root_model      = &root;
+        g_gxDraw.primitive_type  = 4;
+        g_gxDraw.base_vertex     = 12;
+        g_gxDraw.start_index     = 300;
+        g_gxDraw.primitive_count = 40;
+        g_gxDraw.viewport_max_z  = 1.0f;
+
+        Mute(WXL_EV_ModelBatchDrawn);
+        g_gxDrew = true;
+        g_received.clear();
+        wxl::seam::M2::DrawBatch::After(&render);
+        Check(g_gxDrew && g_received.empty(), "with nobody listening the seam does not even ask the client for the batch");
+        Unmute(WXL_EV_ModelBatchDrawn);
+
+        wxl::seam::M2::DrawBatch::After(&render);
+        const Received* drawn = Only(WXL_EV_ModelBatchDrawn);
+        Check(drawn && drawn->As<wxl_model_batch_args>().model == &model &&
+                  drawn->As<wxl_model_batch_args>().root_model == &root &&
+                  drawn->As<wxl_model_batch_args>().base_vertex == 12 &&
+                  drawn->As<wxl_model_batch_args>().start_index == 300 &&
+                  drawn->As<wxl_model_batch_args>().primitive_count == 40 &&
+                  drawn->As<wxl_model_batch_args>().viewport_max_z == 1.0f,
+              "a drawn batch raises ModelBatchDrawn with the numbers of the device's draw");
+
+        g_received.clear();
+        wxl::seam::M2::DrawBatch::After(&render);
+        Check(g_received.empty(), "a batch the device did not draw raises nothing");
+        wxl::seam::M2::DrawBatch::After(nullptr);
+        Check(g_received.empty(), "nor does one from no renderer");
+
+        const wxl_gx_api& gx = wxl::core::services::GxApi();
+        Check(gx.struct_size == sizeof(wxl_gx_api) && gx.d3d9_device() == nullptr,
+              "wxl.gx answers no device where the client hands none over");
+        gx.invalidate_state(); // nothing to invalidate: it must not fault
+    }
+
+    // --- Component: AppearanceChanged, and models kept on the copies the client strips ------------
+
+    wxl_str M2Str(const char* text) { return wxl_str{text, static_cast<uint32_t>(std::strlen(text))}; }
+
+    void CheckAppearance()
+    {
+        g_component            = FakeComponent{};
+        g_component.model      = &g_charModel;
+        g_component.race       = 1;
+        g_component.sex        = 1;
+        g_component.display[4] = 416036;
+        g_wearerAsked          = 0;
+
+        Mute(WXL_EV_AppearanceChanged);
+        g_received.clear();
+        wxl::seam::Component::AddItem::After(&g_component, 4, nullptr, 0);
+        Check(g_wearerAsked == 0 && g_received.empty(), "with nobody listening the Component seams do not even ask the client");
+        Unmute(WXL_EV_AppearanceChanged);
+
+        wxl::seam::Component::AddItem::After(&g_component, 4, nullptr, 0);
+        const Received* worn = Only(WXL_EV_AppearanceChanged);
+        Check(worn && worn->As<wxl_appearance_args>().change == WXL_APPEARANCE_WORN &&
+                  worn->As<wxl_appearance_args>().wearer == &g_component &&
+                  worn->As<wxl_appearance_args>().model == &g_charModel &&
+                  worn->As<wxl_appearance_args>().item_slot == 4 &&
+                  worn->As<wxl_appearance_args>().display_id == 416036 && worn->As<wxl_appearance_args>().race_id == 1 &&
+                  worn->As<wxl_appearance_args>().sex_id == 1,
+              "an item put on raises AppearanceChanged worn, with its slot, its display and the wearer");
+
+        g_received.clear();
+        wxl::seam::Component::AddItem::After(&g_component, 5, nullptr, 0);
+        wxl::seam::Component::AddItem::After(&g_component, -1, nullptr, 0);
+        Check(g_received.empty(), "an empty slot raises nothing, nor does a slot out of range");
+
+        wxl::seam::Component::RemoveItem::Before(&g_component, 4);
+        const Received* removed = Only(WXL_EV_AppearanceChanged);
+        Check(removed && removed->As<wxl_appearance_args>().change == WXL_APPEARANCE_REMOVED &&
+                  removed->As<wxl_appearance_args>().display_id == 416036,
+              "an item about to come off raises removed, with the display it was");
+
+        g_received.clear();
+        wxl::seam::Component::FreeComponent::Before(&g_component);
+        const Received* freed = Only(WXL_EV_AppearanceChanged);
+        Check(freed && freed->As<wxl_appearance_args>().change == WXL_APPEARANCE_FREED &&
+                  freed->As<wxl_appearance_args>().item_slot == 0 && freed->As<wxl_appearance_args>().display_id == 0,
+              "a wearer about to be freed raises freed, with no slot");
+        g_received.clear();
+        wxl::seam::Component::FreeComponent::Before(nullptr);
+        Check(g_received.empty(), "no component raises nothing");
+    }
+
+    void CheckM2Service()
+    {
+        const wxl_m2_api& m2 = wxl::core::services::M2Api();
+        g_component.model    = &g_charModel;
+
+        wxl_m2_item_display row{};
+        row.struct_size = sizeof row;
+        Check(m2.item_display(416036, &row) == WXL_OK && row.id == 416036 && std::strcmp(row.model[0], "belt.mdx") == 0 &&
+                  std::strcmp(row.icon[1], "53::96") == 0 && row.particle_color_id == 7,
+              "an ItemDisplayInfo row is read through");
+        wxl_m2_item_display shorter{};
+        shorter.struct_size = static_cast<uint32_t>(offsetof(wxl_m2_item_display, model_texture));
+        Check(m2.item_display(416036, &shorter) == WXL_OK && shorter.model[0] && !shorter.model_texture[0] &&
+                  shorter.struct_size == offsetof(wxl_m2_item_display, model_texture),
+              "and written no longer than the caller's struct_size");
+        Check(m2.item_display(1, &row) == WXL_E_NOT_FOUND, "a row the client lacks is not found");
+        wxl_str prefix{};
+        Check(m2.race_prefix(1, &prefix) == WXL_OK && std::string(prefix.data, prefix.size) == "Hu" &&
+                  m2.race_prefix(99, &prefix) == WXL_E_NOT_FOUND,
+              "a race's client prefix is read through, not found for a race the client lacks");
+
+        Check(m2.create_model(nullptr, M2Str("a.mdx")) == nullptr, "a model needs a scene to be made in");
+        void* piece = m2.create_model(&g_charModel, M2Str("Item\\ObjectComponents\\Collections\\a_HuF.mdx"));
+        Check(piece != nullptr, "a model is made in the scene of the one given");
+        FakeM2Model stranger;
+        Check(m2.attach_model(&stranger, &g_charModel, 19, WXL_M2_ATTACH_ROOT) == WXL_E_INVALID,
+              "a model the service did not make is refused");
+        Check(m2.attach_model(piece, &g_charModel, 99, 0) == WXL_E_NOT_FOUND && !wxl::core::services::m2::Following(),
+              "a point the parent lacks is refused without ATTACH_ROOT, and nothing follows");
+
+        Check(m2.attach_model(piece, &g_charModel, 99, WXL_M2_ATTACH_ROOT | WXL_M2_ATTACH_FOLLOW_BONES) == WXL_OK &&
+                  m2.model_parent(piece) == &g_charModel && wxl::core::services::m2::Following(),
+              "with ATTACH_ROOT it hangs on the parent anyway, and ATTACH_FOLLOW_BONES makes it follow");
+
+        // The body's spine and hand posed this frame; the piece's bones take them by key bone and
+        // by name, its root (neither) the body bone nearest its pivot.
+        for (int b = 0; b < 3; ++b)
+            for (int k = 0; k < 16; ++k) g_charModel.matrices[b][k] = static_cast<float>(10 * (b + 1) + k);
+        wxl::seam::M2::AnimateMT::After(piece, nullptr, nullptr, nullptr, 1.0f, 1.0f);
+        const FakeM2Model* posed = AsFake(piece);
+        Check(posed->matrices[1][0] == 20.0f && posed->matrices[2][15] == 45.0f && posed->matrices[0][3] == 13.0f,
+              "a following model's bones take the parent's of the same key bone, name, or nearest pivot");
+
+        FakeM2Model copy;
+        copy.parent = &g_charModel, copy.source = piece;
+        wxl::seam::M2::AnimateMT::After(&copy, nullptr, nullptr, nullptr, 1.0f, 1.0f);
+        Check(copy.matrices[1][0] == 20.0f, "an interface copy of a following model follows too");
+
+        FakeM2Model loadedCopy;
+        loadedCopy.parent = &g_charModel, loadedCopy.file = piece;
+        wxl::seam::M2::AnimateMTSimple::After(&loadedCopy, nullptr, nullptr, nullptr, 1.0f, 1.0f);
+        Check(loadedCopy.matrices[1][0] == 20.0f,
+              "a loaded copy, which no longer names its source, follows by the file it shares");
+
+        FakeM2Model other;
+        other.parent = &g_charModel;
+        wxl::seam::M2::AnimateMT::After(&other, nullptr, nullptr, nullptr, 1.0f, 1.0f);
+        Check(other.matrices[1][0] == 0.0f, "any other model is left as the client posed it");
+
+        m2.set_geosets(piece, 1, 0xFFFF, WXL_FALSE);
+        Check(posed->geoFirst == 1 && posed->geoLast == 0xFFFF && !posed->geoVisible, "geosets are shown and hidden through");
+        Check(m2.replace_texture(piece, 2, M2Str("Item\\ObjectComponents\\Waist\\belt.blp")) == WXL_OK && posed->texType == 2 &&
+                  m2.replace_texture(piece, 2, M2Str("missing.blp")) == WXL_E_NOT_FOUND &&
+                  m2.replace_texture(&stranger, 2, M2Str("a.blp")) == WXL_E_INVALID,
+              "a texture is replaced through; not found with no file; refused on a model the service did not make");
+
+        m2.detach_model(piece);
+        Check(m2.model_parent(piece) == nullptr && !wxl::core::services::m2::Following(),
+              "a detached model hangs on nothing and follows nothing");
+        const int freed = g_fakeModelsFreed;
+        m2.release_model(piece);
+        m2.release_model(piece);
+        Check(g_fakeModelsFreed == freed + 1, "a released model is freed, once");
+
+        // RemoveVisuals strips what hangs on its points: the service's own models are hung back,
+        // and copies of them, which the strip freed, are copied again.
+        void* robe = m2.create_model(&g_charModel, M2Str("robe.mdx"));
+        void* belt = m2.create_model(&g_charModel, M2Str("belt.mdx"));
+        m2.attach_model(robe, &g_charModel, 19, WXL_M2_ATTACH_ROOT | WXL_M2_ATTACH_FOLLOW_BONES);
+        m2.attach_model(belt, &g_charModel, 53, WXL_M2_ATTACH_ROOT);
+        wxl::seam::Component::RemoveVisuals::Before(&g_charModel);
+        FakeDetachModel(robe); // what DetachAllChildrenById(19) does
+        wxl::seam::Component::RemoveVisuals::After(&g_charModel);
+        Check(m2.model_parent(robe) == &g_charModel && AsFake(robe)->attachment == 19 && AsFake(robe)->toRoot,
+              "a stripped model of the service is hung back where it was");
+        Check(m2.model_parent(belt) == &g_charModel && g_fakeCopies == 0, "one on a point not stripped is left alone");
+
+        FakeM2Model  panel;
+        FakeM2Model* shown = new FakeM2Model{};
+        shown->parent = &panel, shown->attachment = 19, shown->toRoot = WXL_TRUE, shown->file = robe;
+        g_fakeLive.push_back(shown);
+        wxl::seam::Component::RemoveVisuals::Before(&panel);
+        std::erase(g_fakeLive, shown); // the strip frees the copy: the panel held its only reference
+        delete shown;
+        wxl::seam::Component::RemoveVisuals::After(&panel);
+        Check(g_fakeCopies == 1 && FakeChildren(&panel, nullptr, 0) == 1,
+              "a stripped interface copy is copied again from the model it was made from");
+        for (FakeM2Model* fake : std::vector<FakeM2Model*>(g_fakeLive))
+            if (fake->parent == &panel)
+            {
+                std::erase(g_fakeLive, fake);
+                delete fake;
+            }
+        m2.release_model(robe);
+        m2.release_model(belt);
+
+        // A point the body lacks, made by hand: posed on one of its key bones, moved by an offset.
+        wxl_vec3 hip{};
+        Check(m2.attachment_point(&g_charModel, 32, &hip) == WXL_OK && hip.z == 1.1f &&
+                  m2.attachment_point(&g_charModel, 53, &hip) == WXL_E_NOT_FOUND,
+              "an attachment point is read through; not found for one the body lacks");
+        void* buckle = m2.create_model(&g_charModel, M2Str("buckle.mdx"));
+        Check(m2.attach_to_bone(buckle, &g_charModel, 53, 7, wxl_vec3{0.0f, 0.0f, 0.0f}) == WXL_E_NOT_FOUND,
+              "a key bone the body lacks is refused");
+        Check(m2.attach_to_bone(buckle, &g_charModel, 53, 5, wxl_vec3{1.0f, 0.0f, 0.0f}) == WXL_OK &&
+                  m2.model_parent(buckle) == &g_charModel && AsFake(buckle)->attachment == 53 && AsFake(buckle)->toRoot,
+              "a model is hung on a key bone, as the point it stands for");
+        wxl::seam::M2::AnimateMT::After(buckle, nullptr, nullptr, nullptr, 1.0f, 1.0f);
+        // The spine's matrix is 20..35: the translation row (32, 33, 34) gains the first row (20, 21, 22).
+        Check(AsFake(buckle)->matrices[0][12] == 52.0f && AsFake(buckle)->matrices[2][14] == 56.0f &&
+                  AsFake(buckle)->matrices[1][0] == 20.0f,
+              "and every bone is posed on that bone, moved by the offset through it");
+        m2.release_model(buckle);
+        Check(!wxl::core::services::m2::Following(), "and nothing is posed once it is released");
+
+        void* kept = m2.create_model(&g_charModel, M2Str("b.mdx"));
+        m2.attach_model(kept, &g_charModel, 53, WXL_M2_ATTACH_ROOT | WXL_M2_ATTACH_FOLLOW_BONES);
+        Check(AsFake(kept)->refs == 2, "an attached model is held by the mod and the parent");
+        const int before = g_fakeModelsFreed;
+        wxl::core::services::m2::ForgetMod(wxl::core::Host() ? wxl::core::Host()->CurrentMod() : 0);
+        Check(g_fakeModelsFreed == before + 1 && !wxl::core::services::m2::Following() &&
+                  !wxl::core::services::m2::HasModels(),
+              "a disabled mod's models are detached and freed");
+
+        int unit = 0;
+        Check(m2.object_model(WXL_HANDLE_NONE) == nullptr, "no object, no model");
+        (void)unit;
+    }
+
+    // --- M2Shared: the loader's stages as events, and wxl.m2file ----------------------------------
+
+    void CheckModelStages()
+    {
+        g_m2File = FakeM2File{};
+
+        Mute(WXL_EV_ModelParsed);
+        g_received.clear();
+        wxl::seam::M2Shared::Initialize::Before(&g_m2File);
+        Check(g_m2File.asked == 0 && g_received.empty(), "with nobody listening the loader seams do not even ask the client");
+        Unmute(WXL_EV_ModelParsed);
+
+        wxl::seam::M2Shared::Initialize::Before(&g_m2File);
+        const Received* parsed = Only(WXL_EV_ModelParsed);
+        Check(parsed && parsed->As<wxl_model_parsed_args>().file == &g_m2File &&
+                  parsed->As<wxl_model_parsed_args>().header == g_m2File.bytes &&
+                  parsed->As<wxl_model_parsed_args>().size == sizeof g_m2File.bytes &&
+                  parsed->As<wxl_model_parsed_args>().path.size == strlen("creature\\fake\\fake.m2"),
+              "M2Shared.Initialize raises ModelParsed with the file, its header, its size and its path");
+
+        g_received.clear();
+        wxl::seam::M2Shared::InitializeSkinProfile::Before(&g_m2File);
+        Check(g_received.empty(), "no skin profile read, no SkinProfileParsed");
+        g_m2File.hasSkin = true;
+        wxl::seam::M2Shared::InitializeSkinProfile::Before(&g_m2File);
+        const Received* skinned = Only(WXL_EV_SkinProfileParsed);
+        Check(skinned && skinned->As<wxl_skin_profile_parsed_args>().skin == g_m2File.skin &&
+                  skinned->As<wxl_skin_profile_parsed_args>().header == g_m2File.bytes,
+              "M2Shared.InitializeSkinProfile raises SkinProfileParsed with the skin profile's header");
+
+        uint8_t anim[32]{};
+        g_received.clear();
+        wxl::seam::M2Shared::FinishLoadingLowPrioritySequence::Before(&g_m2File, 7, anim, sizeof anim);
+        const Received* sequence = Only(WXL_EV_ModelSequenceLoad);
+        Check(sequence && sequence->As<wxl_model_sequence_args>().data == anim &&
+                  sequence->As<wxl_model_sequence_args>().size == sizeof anim &&
+                  sequence->As<wxl_model_sequence_args>().sequence_index == 7,
+              "M2Shared.FinishLoadingLowPrioritySequence raises ModelSequenceLoad with its bytes and index");
+        g_received.clear();
+        wxl::seam::M2Shared::FinishLoadingLowPrioritySequence::Before(&g_m2File, 7, nullptr, 0);
+        wxl::seam::M2Shared::Initialize::Before(nullptr);
+        Check(g_received.empty(), "no buffer, or no file, raises nothing");
+
+        const wxl_m2file_api& api = wxl::core::services::M2FileApi();
+        api.animate_bones(&g_m2File);
+        Check(g_m2File.animated == 1, "animate_bones reaches the client's file");
+
+        uint8_t* first  = static_cast<uint8_t*>(api.alloc_near(&g_m2File, 100));
+        uint8_t* second = static_cast<uint8_t*>(api.alloc_near(&g_m2File, 20));
+        bool     zero   = first != nullptr;
+        for (int i = 0; first && i < 100; ++i) zero = zero && first[i] == 0;
+        const auto reach = [](const void* a, const void* b) {
+            const int64_t d = static_cast<int64_t>(reinterpret_cast<uintptr_t>(a)) - static_cast<int64_t>(reinterpret_cast<uintptr_t>(b));
+            return d > -0x40000000LL && d < 0x40000000LL;
+        };
+        Check(first && second && zero && (reinterpret_cast<uintptr_t>(first) & 15) == 0 &&
+                  (reinterpret_cast<uintptr_t>(second) & 15) == 0 && second >= first + 100 && reach(first, &g_m2File) &&
+                  reach(second, &g_m2File),
+              "alloc_near hands out zeroed, aligned, distinct memory within reach of the anchor");
+        Check(api.alloc_near(nullptr, 8) == nullptr && api.alloc_near(&g_m2File, 0) == nullptr,
+              "alloc_near refuses no anchor and no size");
+
+        // An array of the header, pointed at that memory and read back the way this client keeps it.
+        uint8_t* array = g_m2File.bytes + 8;
+        Check(api.set_array(array, first, 25) == WXL_OK && api.array_data(array) == first &&
+                  *reinterpret_cast<uint32_t*>(array) == 25,
+              "set_array and array_data agree on this client's way of keeping an array");
+        uint32_t word = 0;
+        std::memcpy(&word, array + 4, sizeof word);
+#if defined(_M_X64)
+        Check(static_cast<int32_t>(word) == static_cast<int32_t>(first - array), "on x64 the array keeps an offset from itself");
+        static char far[1];
+        Check(reach(far, array) || api.set_array(array, far, 1) == WXL_E_INVALID,
+              "memory out of a 32-bit offset's reach is refused");
+#else
+        Check(word == static_cast<uint32_t>(reinterpret_cast<uintptr_t>(first)), "on x86 the array keeps the address");
+#endif
+        Check(api.set_array(array, nullptr, 0) == WXL_OK && api.array_data(array) == nullptr &&
+                  api.set_array(array, nullptr, 3) == WXL_E_INVALID,
+              "an empty array has no elements; a count with nothing is refused");
+    }
+
+    // --- The x86 binding's model calls: the shapes they take, against stand-ins -----------------
+
+#if defined(_M_IX86)
+    struct ModelStandIn
+    {
+        int   released = 0;
+        void* parent   = nullptr;
+        int   root     = -1;
+
+        __declspec(noinline) void __thiscall Release() { ++released; }
+        __declspec(noinline) void __thiscall Attach(void* to, uint32_t id, const void* position, int32_t toRoot)
+        {
+            parent = position ? nullptr : to;
+            root   = toRoot + static_cast<int32_t>(id);
+        }
+        __declspec(noinline) void __thiscall Geosets(uint32_t first, uint32_t last, int32_t visible)
+        {
+            root = static_cast<int32_t>(first + last) * (visible ? 1 : -1);
+        }
+        __declspec(noinline) void* __thiscall Create(const char* path, uint32_t flags)
+        {
+            return path && !flags ? this : nullptr;
+        }
+        __declspec(noinline) int32_t __thiscall GetRecord(int32_t id, void* rec)
+        {
+            if (id != 7) return 0;
+            std::memset(rec, 0x5A, 100);
+            return 1;
+        }
+    };
+
+    int g_closed = 0;
+    __declspec(noinline) void* __cdecl CreateTextureStandIn(const char* path, void* status)
+    {
+        return path && status ? reinterpret_cast<void*>(0x1000) : nullptr;
+    }
+    __declspec(noinline) void __cdecl HandleCloseStandIn(void* handle) { g_closed += handle ? 1 : 0; }
+
+    void CheckModelCallsX86()
+    {
+        using wxl::core::binding::x86::CallFree;
+        using wxl::core::binding::x86::CallMember;
+
+        ModelStandIn      model;
+        volatile uint32_t canary = 0xC0FFEE;
+        CallMember<void>(AddressOf(&ModelStandIn::Release), &model);
+        Check(model.released == 1, "a __thiscall member taking nothing (Release, DetachFromParent, IRsForceUpdate)");
+        int parent = 0;
+        CallMember<void>(AddressOf(&ModelStandIn::Attach), &model, static_cast<void*>(&parent), uint32_t(19),
+                         static_cast<const void*>(nullptr), int32_t(1));
+        Check(model.parent == &parent && model.root == 20, "AttachToParent's four, a null position among them");
+        CallMember<void>(AddressOf(&ModelStandIn::Geosets), &model, uint32_t(1), uint32_t(2), int32_t(0));
+        Check(model.root == -3, "SetGeometryVisible's three");
+        Check(CallMember<void*>(AddressOf(&ModelStandIn::Create), &model, "a.m2", uint32_t(0)) == &model,
+              "CreateModel and DuplicateModel's two, a pointer answered in EAX");
+        uint8_t rec[100] = {};
+        Check(CallMember<int32_t>(AddressOf(&ModelStandIn::GetRecord), &model, int32_t(7), static_cast<void*>(rec)) == 1 &&
+                  rec[99] == 0x5A,
+              "a record store's GetRecord(id, row)");
+        uint8_t status[16] = {};
+        void* texture = CallFree<void*>(reinterpret_cast<std::uintptr_t>(Opaque(&CreateTextureStandIn)), "a.blp",
+                                        static_cast<void*>(status));
+        CallFree<void>(reinterpret_cast<std::uintptr_t>(Opaque(&HandleCloseStandIn)), texture);
+        Check(texture && g_closed == 1, "CreateTexture's two and HandleClose's one, cdecl");
+        Check(canary == 0xC0FFEE, "and the stack is the caller's again after each");
+    }
+#endif
+
+    /// The seams the stock client cannot take: not attached there, their events not announced.
+    /// No row needs it today: both clients take every seam and announce every event.
+    void CheckX64Only()
+    {
+        Check(!wxl::core::seams::X64Only("M2.DrawBatch") && !wxl::core::seams::X64Only("M2.AnimateMT") &&
+                  !wxl::core::seams::X64Only("Component.AddItem") && !wxl::core::seams::X64Only(nullptr),
+              "every model seam is on both clients");
+        const std::vector<wxl_event> all   = wxl::core::seams::RaisedEvents(false);
+        const std::vector<wxl_event> stock = wxl::core::seams::RaisedEvents(true);
+        Check(stock == all && std::find(stock.begin(), stock.end(), WXL_EV_ModelBatchDrawn) != stock.end(),
+              "the stock client announces every event, ModelBatchDrawn with them");
+    }
+
+#if defined(_M_IX86)
+    // --- The x86 rebuild of a drawn batch's numbers, over stand-ins laid out as Wow.exe's --------
+
+    /// Zeroed bytes the size of one of the client's structs, written at measured offsets.
+    struct Block
+    {
+        std::vector<uint8_t> bytes;
+        explicit Block(std::size_t size) : bytes(size, 0) {}
+        template <class T>
+        void Put(std::size_t offset, T value) { std::memcpy(bytes.data() + offset, &value, sizeof value); }
+        void* At() { return bytes.data(); }
+    };
+
+    void CheckModelDrawX86()
+    {
+        namespace md = wxl::core::binding::x86::model_draw;
+        Block render(WXL_TYPE_SIZE("CM2SceneRender")), device(WXL_TYPE_SIZE("CGxDeviceD3d9Ex"));
+        Block section(WXL_TYPE_SIZE("M2SkinSection")), material(WXL_TYPE_SIZE("M2Material"));
+        Block vertices(WXL_TYPE_SIZE("CGxBuf")), indices(WXL_TYPE_SIZE("CGxBuf"));
+        Block model(WXL_TYPE_SIZE("CM2Model")), parent(WXL_TYPE_SIZE("CM2Model")), shared(WXL_TYPE_SIZE("CM2Shared"));
+        Block header(WXL_TYPE_SIZE("M2Data")), cache(WXL_TYPE_SIZE("CM2Cache"));
+
+        // A section of 600 indices from 1200 over 150 vertices from 40, alpha-blended.
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_vertexStart"), 40);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_vertexCount"), 150);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_indexStart"), 1200);
+        section.Put<uint16_t>(WXL_FIELD("M2SkinSection", "m_indexCount"), 600);
+        material.Put<uint16_t>(WXL_FIELD("M2Material", "m_blendMode"), 2);
+        model.Put<void*>(WXL_FIELD("CM2Model", "m_attachParent"), parent.At());
+        model.Put<void*>(WXL_FIELD("CM2Model", "m_shared"), shared.At());
+        shared.Put<void*>(WXL_FIELD("CM2Shared", "m_data"), header.At());
+        header.Put<uint32_t>(WXL_FIELD("M2Data", "m_bones.m_count"), 1);
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curModel"), model.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curSkinSection"), section.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curMaterial"), material.At());
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_cache"), cache.At());
+
+        // A D3D9Ex device with a context, its vertex stream 32 bytes a vertex at byte 3200 and
+        // its index buffer at byte 512, a full 1280x720 viewport over depth 0-1.
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), md::kApiD3d9Ex);
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_context"), 1);
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_primVertexFormatBuf"), vertices.At());
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_primIndexBuf"), indices.At());
+        vertices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_itemSize"), 32);
+        vertices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_index"), 3200);
+        indices.Put<uint32_t>(WXL_FIELD("CGxBuf", "m_index"), 512);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_curWindowRect.maxX"), 1280.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_curWindowRect.maxY"), 720.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_x.m_h"), 1.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_y.m_h"), 1.0f);
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_z.m_h"), 1.0f);
+
+        const uint32_t conversion[] = {1, 2, 3, 4, 5, 6, 0}; // as Wow.exe's tables: D3DPT_TRIANGLELIST at 3
+        md::Globals    globals{device.At(), 1, conversion, conversion};
+        wxl_model_batch_args out{};
+        Check(md::Rebuild(render.At(), globals, &out), "a batch drawn on a D3D9 device is rebuilt");
+        Check(out.model == model.At() && out.root_model == parent.At() && out.primitive_type == 4 &&
+                  out.blend_mode == 2,
+              "with its model, the top of what it hangs on, a triangle list and its blend");
+        Check(out.min_index == 40 && out.vertex_count == 150 && out.start_index == 1200 + 256 &&
+                  out.primitive_count == 200 && out.base_vertex == 100,
+              "with shaders, the section's vertices, its indices after the index buffer's own, and "
+              "the vertex stream's offset as the base vertex");
+        Check(out.viewport_x == 0 && out.viewport_y == 0 && out.viewport_width == 1280 && out.viewport_height == 720 &&
+                  out.viewport_min_z == 0.0f && out.viewport_max_z == 1.0f,
+              "and the viewport the device set");
+
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_caps.m_streamOffset"), 1);
+        globals.shaders = 0;
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.base_vertex == 0 && out.min_index == 0 && out.vertex_count == 150,
+              "without shaders, a model skinned on the CPU draws from vertex 0; a device that offsets "
+              "streams has no base vertex");
+        cache.Put<uint32_t>(WXL_FIELD("CM2Cache", "m_flags"), md::kSharedVertices);
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.min_index == 40 && out.vertex_count == 150,
+              "a one-bone model sharing its vertices draws from the section's own");
+
+        device.Put<float>(WXL_FIELD("CGxDevice", "m_viewport.m_y.m_l"), 0.25f);
+        device.Put<void*>(WXL_FIELD("CGxDevice", "m_textureTarget[1].m_apiSpecific"), device.At());
+        out = {};
+        Check(md::Rebuild(render.At(), globals, &out) && out.viewport_y == 180 && out.viewport_height == 540,
+              "drawing into a texture, the viewport's Y counts from the other edge");
+
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_intF5C"), 1);
+        Check(!md::Rebuild(render.At(), globals, &out), "a lost device drew nothing");
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_intF5C"), 0);
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), 0);
+        Check(!md::Rebuild(render.At(), globals, &out), "nor is an OpenGL device's draw rebuilt");
+        device.Put<uint32_t>(WXL_FIELD("CGxDevice", "m_api"), md::kApiD3d9);
+        render.Put<void*>(WXL_FIELD("CM2SceneRender", "m_curSkinSection"), nullptr);
+        Check(!md::Rebuild(render.At(), globals, &out) && !md::Rebuild(nullptr, globals, &out),
+              "nor a renderer with no section, nor none");
+    }
+#endif
+}
+
+// Core.cpp's flag per event, which the harness keeps as the runtime does: a hot seam's body reads
+// it before anything else.
+extern "C" WXL_CORE_API volatile uint8_t wxl_core_listening[WXL_EV_COUNT] = {};
+
 int main(int argc, char** argv)
 {
     // Unbuffered, so the last line printed before a crash is never held back in a buffer.
@@ -6141,6 +9606,11 @@ int main(int argc, char** argv)
     config.services.push_back(wxl::host::PublishedService{
         WXL_SCRIPT_SERVICE, WXL_SCRIPT_SERVICE_VERSION, &wxl::core::services::ScriptApi()});
     g_host              = std::make_unique<wxl::host::ModHost>(std::move(config));
+    g_host->SetListenHandler(
+        [](void*, wxl_event event, bool listening) {
+            if (static_cast<uint32_t>(event) < static_cast<uint32_t>(WXL_EV_COUNT)) wxl_core_listening[event] = listening ? 1 : 0;
+        },
+        nullptr);
 
     printf("seam harness: %zu seam(s), %zu raisable event(s), %zu binding row(s) left unbound by the fake\n",
            wxl::core::seams::Table().size(), wxl::core::seams::RaisedEvents().size(),
@@ -6151,16 +9621,19 @@ int main(int argc, char** argv)
     CheckEveryRaisedEventIsSubscribable();
     CheckEveryRowDeclaresItsAbi();
     CheckEventDispatchUpdate();
-    CheckWorldPreload();
+    CheckWorld();
     CheckObjectMgr();
     CheckRevivedObjects();
     CheckFields();
     CheckUnit();
     CheckPlayer();
     CheckGameUI();
+    CheckTypedReads();
+    CheckActions();
     CheckMapArea();
     CheckListening();
     CheckAssets();
+    CheckAssetEvents();
     CheckDoodads();
     CheckFileOpened();
     CheckObjectUpdate();
@@ -6174,6 +9647,7 @@ int main(int argc, char** argv)
     CheckStorage();
     CheckSound();
     CheckStorageService();
+    CheckAssetPipeline();
     CheckDataService();
     CheckRender();
     CheckSpell();
@@ -6193,11 +9667,25 @@ int main(int argc, char** argv)
     CheckEnergize();
     CheckFootprint();
     CheckArchivesAndDatabases();
+    CheckGameplayAuras();
+    CheckGameplayLoot();
+    CheckGameplayItems();
+    CheckGameplayQuests();
+    CheckGameplayGroup();
+    CheckGameplaySocial();
 #if defined(WXL_CORE_PROFILE) && WXL_CORE_PROFILE
     CheckProfile();
 #endif
+    CheckModelBatch();
+    CheckAppearance();
+    CheckM2Service();
+    CheckModelStages();
+    CheckX64Only();
 #if defined(_M_IX86)
     CheckThiscallShim();
+    CheckCallX86();
+    CheckModelCallsX86();
+    CheckModelDrawX86();
     CheckOneSidedShim();
     CheckThiscallGate();
     CheckGetUpdateObjectDetour();
@@ -6206,7 +9694,17 @@ int main(int argc, char** argv)
     CheckChatDetours();
     CheckStormDetours();
     CheckAssetDetours();
+    CheckFindFileDetour();
     CheckValidatorDetour();
+    CheckGameplayDetours();
+#endif
+    CheckPointTable();
+    CheckPointDispatch();
+    CheckEveryPoint();
+#if defined(_M_IX86)
+    CheckPointPrologues();
+    CheckPointDetours();
+    CheckPointSides();
 #endif
 
     printf("\n%d failure(s)\n", g_failures);

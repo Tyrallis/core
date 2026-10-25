@@ -5,6 +5,8 @@
 
 #include "wxl/seams/seams.h"
 
+#include <cstring>
+
 #include "runtime/Core.hpp"
 
 #include "wxl/events.h"
@@ -47,5 +49,21 @@ namespace wxl::seam::Sound::PlaySoundKit
 
         *result = kNotPlayed;
         return true;
+    }
+}
+
+namespace wxl::seam::Sound::CreateWaveData
+{
+    void WXL_CALL Before(void*, const char* file_name, uint32_t, void*, void*, void*, uint32_t, int32_t priority, int32_t,
+                         uint32_t streaming, uint32_t, int32_t, float, float, float, const void*)
+    {
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!host || !file_name || !*file_name || !host->Listening(WXL_EV_SoundFileLoad)) return;
+
+        wxl_sound_file_args args{};
+        args.path      = wxl_str{file_name, static_cast<uint32_t>(strnlen(file_name, 260))};
+        args.streaming = (streaming & 0xFFu) ? WXL_TRUE : WXL_FALSE; // a bool pushed as a dword
+        args.priority  = priority;
+        host->Raise(WXL_EV_SoundFileLoad, &args);
     }
 }

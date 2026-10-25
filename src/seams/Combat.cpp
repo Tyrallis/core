@@ -6,8 +6,10 @@
 
 #include "wxl/seams/seams.h"
 
+#include "binding/Binding.hpp"
 #include "objects/Objects.hpp"
 #include "runtime/Core.hpp"
+#include "seams/Gameplay.hpp"
 #include "seams/Message.hpp"
 
 #include "wxl/events.h"
@@ -422,5 +424,37 @@ namespace wxl::seam::Combat::HandlePeriodicAuraLog
             break;                   // an aura type the client stops at
         }
         for (uint32_t i = 0; i < whole; ++i) PeriodicEntry(host, in, caster, target, spellId);
+    }
+}
+
+namespace
+{
+    /// UnitAuraRefreshed for the slot `aura` is, which the update left as it is now.
+    void AuraRefreshed(void* unit, const void* aura, int32_t previousStacks)
+    {
+        wxl::host::ModHost* host = wxl::core::seams::gameplay::Listener({ WXL_EV_UnitAuraRefreshed });
+        if (!host || !unit || !aura) return;
+        const int32_t slot = wxl::core::binding::unit_aura_slot(unit, aura);
+        if (slot < 0) return;
+        wxl_aura_args args{};
+        if (!wxl::core::seams::gameplay::Aura(unit, aura, static_cast<uint32_t>(slot), args)) return;
+        if (previousStacks >= 0) args.previous_stacks = static_cast<uint32_t>(previousStacks);
+        host->Raise(WXL_EV_UnitAuraRefreshed, &args);
+    }
+}
+
+namespace wxl::seam::Combat::UnitCombatLogAuraDose
+{
+    void WXL_CALL Before(void* unit, const void* aura, int32_t, int32_t old_stack, int32_t, uint8_t)
+    {
+        AuraRefreshed(unit, aura, old_stack);
+    }
+}
+
+namespace wxl::seam::Combat::UnitCombatLogAuraRefreshed
+{
+    void WXL_CALL Before(void* unit, const void* aura, int32_t, uint8_t)
+    {
+        AuraRefreshed(unit, aura, -1);
     }
 }

@@ -9,13 +9,16 @@
 
 #include "common/Log.hpp"
 #include "objects/Objects.hpp"
+#include "points/Points.hpp"
 #include "profile/Profile.hpp"
 #include "runtime/Attachment.hpp"
 #include "runtime/Code.hpp"
 #include "runtime/Session.hpp"
 #include "services/DataService.hpp"
+#include "services/M2Service.hpp"
 #include "services/FootprintService.hpp"
 #include "services/ScriptService.hpp"
+#include "services/Assets.hpp"
 #include "services/StorageService.hpp"
 
 #include "wxl/core/init.h"
@@ -93,13 +96,19 @@ namespace
     void OnModDisabled(void*, wxl::host::ModHost::ModToken token, const char*)
     {
         wxl::core::services::script::OnModDisabled(token);
+        // Its point handlers: on x86 jumps into its code, on both calls into it.
+        wxl::core::points::ReleaseOf(token);
         // Its code is not trusted to run again, so neither is anything that jumps into it,
         // and nothing it was holding is going to be given back by it.
         wxl::core::attachment::Release(token);
         wxl::core::services::storage::CloseFilesOf(token);
         wxl::core::services::storage::RemoveSearchPathsOf(token);
         wxl::core::services::storage::RemoveRedirectsOf(token);
+        // Its providers, served names and transforms: no call into its code starts again.
+        wxl::core::services::assets::ReleaseOf(token);
         wxl::core::services::data::ForgetMod(token);
+        // The models it made come off what they hang on and are given back.
+        wxl::core::services::m2::ForgetMod(token);
         // What it reported of its memory, and the threshold it watched, go too.
         wxl::core::services::footprint::ForgetMod(token);
         // Its watches go with it: the client stops reporting what no other mod watches.
@@ -179,6 +188,7 @@ namespace wxl::core
             g_host->SetListenHandler(&OnListenChanged, nullptr);
 
             attachment::Install();
+            points::Describe();
 
             g_host->LoadAll();
             stages::Restart();

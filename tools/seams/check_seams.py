@@ -19,6 +19,7 @@ from pathlib import Path
 
 SEAM_ROW = re.compile(r"\bWXL_SEAM(_GATE|_BEFORE|_AFTER)?\s*\(", re.MULTILINE)
 RAISES_ROW = re.compile(r"\bWXL_SEAM_RAISES\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*\)")
+X64_ONLY_ROW = re.compile(r"\bWXL_SEAM_X64_ONLY\s*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\"[^\"]*\")?")
 EVENT_ROW = re.compile(r"\bWXL_EVENT\s*\(\s*\w+\s*,\s*(\w+)\s*,")
 RAISE_CALL = re.compile(r"\bRaise(?:To)?\s*\(\s*WXL_EV_(\w+)")
 INCLUDE_DEF = re.compile(r'^\s*#\s*include\s+"wxl/seams/([A-Za-z0-9_]+\.def)"', re.MULTILINE)
@@ -204,6 +205,15 @@ def read_table(seams_dir, problems):
                                 % (path.name, line, point, match.group(3)))
                 continue
             seam.raises.append(match.group(3))
+        for match in X64_ONLY_ROW.finditer(text):
+            point = "%s.%s" % (match.group(1), match.group(2))
+            line = text.count("\n", 0, match.start()) + 1
+            if point not in by_point:
+                problems.append("%s:%d: WXL_SEAM_X64_ONLY names %s, which no WXL_SEAM row declares"
+                                % (path.name, line, point))
+            elif not match.group(3) or match.group(3) == '""':
+                problems.append("%s:%d: WXL_SEAM_X64_ONLY(%s) says nothing of why the stock client cannot "
+                                "take it" % (path.name, line, point))
     return seams
 
 

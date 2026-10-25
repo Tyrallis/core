@@ -17,7 +17,7 @@ There are two runtimes and one body of logic:
 |---|---|---|
 | loads into | the stock `Wow.exe` 3.3.5a (12340) | the recompiled client |
 | starts at | an entry trampoline the patcher adds | the client calling `WarcraftXLInit` |
-| reaches a client function by | a MinHook detour at an address resolved by name | a call the client's source makes |
+| reaches a client function by | a MinHook detour at an address resolved by name (seams, `wxl.hook`); a SafetyHook detour armed while a point has handlers (`wxl.point`) | a call the client's source makes; a `WXL_POINT_<n>` line testing one byte (`wxl.point`) |
 | reads the client by | memory reads at offsets measured on the fork | accessors the client hands over at init |
 
 Everything above that line is shared: the seam bodies, the services, the mod host.
@@ -37,19 +37,35 @@ client function
   -> Script::On<Event>(...)           the mod's override
 ```
 
+## The path of a point
+
+```
+client function, a row of include/wxl/points/points.txt
+  -> x86: the SafetyHook detour armed at the first handler (src/points/PointsX86.cpp, DetourOf in
+          DetourX86.hpp), one link of the address's chain in src/hook/Engine.cpp, in front of any seam
+     x64: the WXL_POINT_<n>(...) line at the head of the function (client/WarcraftXL/Points.gen.h),
+          which tests wxl::point::g_armed[n] and, set, calls wxl_core_point_enter
+  -> points::Enter                    src/points/Points.cpp: the arguments by address, the answer's slot
+  -> Before handlers, the Replace chain (call_original walks it down to the original), After
+     handlers, each under the crash guard as its mod
+  -> the original                     x86: the chain's next link, then the trampoline;
+                                      x64: the function again, through a qualified call, bypassed once
+```
+
 ## The tables
 
-Most of the code is generated from ten X-macro tables. Each row is one fact; the table is the only
+Most of the code is generated from eleven tables. Each row is one fact; the table is the only
 place it is written.
 
 | Table | One row is | What the row generates |
 |---|---|---|
 | `core/include/wxl/seams/*.def` (`seams.def` includes them) | a client function the runtime hooks | `seams.h`: the declarations of the entry points its shape declares, `Before`, `After` or `Gate` (and, through `client/WarcraftXL/Seams.h`, what the fork calls); `AttachX86.cpp`: the x86 detour and its attach; `Table.cpp`: the seam list; `WXL_SEAM_RAISES` rows: the events the runtime announces as raisable |
 | `core/include/wxl/core/binding/*.def` (`binding.def` includes them) | a fact read out of the client | `Binding.hpp`: `wxl::core::binding::<name>()`; `init.h`: a member of `wxl_core_init` and a line of `wxl_core_init_rows`; `BindingX86.cpp`: the x86 read (field rows); `client/WarcraftXL/Binding.cpp`: the x64 accessor (field rows); `BindingTable.cpp`: the x64 forwarder |
-| `sdk/runtime/include/wxl/runtime/object_reads.def` | a getter of `wxl_object_api` | the `ObjectBinding` virtual, the service's wiring with its kind check, and in core the read itself for a `FIELD` row (`src/objects/Objects.hpp`) |
+| `sdk/runtime/include/wxl/runtime/object_reads.def` | a getter of `wxl_object_api`: its kinds, who answers it (`field`, `client`, `cache`, `shared`), its C++ name and type, its doc, and (`WXL_OBJECT_SINCE`) the version that brought it | the `ObjectBinding` virtual of a `field`, `client` or `cache` row, the shared runtime's read of a `shared` row (`sdk/runtime/src/object_reads.cpp`), the service's wiring with its kind check, in core the read itself for a `field` row (`src/objects/Objects.hpp`); the C++ facades' members (`sdk/include/wxl/objects/generated/*.inc`) and the guides' tables of members, written by `sdk/tools/objects/gen_members.cpp` (`wxl-object-members`, checked by the sdk test `object-members`); the Lua method of the object userdata, refused to a mod whose abi is older; the editor types |
 | `sdk/include/wxl/events.def` | an event of the contract, and (`WXL_EVENTS_SINCE`) the version that brought the events from an id on | the `wxl_event` enum, `EventArgs<>`, the `On<Event>` virtual of its script family, the trait that subscribes only overridden handlers, the event's entry in `wxl/reflect.hpp` with the version that brought it (`reflect::SinceOf`), which wxl.lua and the host refuse a subscription by |
 | `sdk/include/wxl/enums.def` | a value of an enumeration an args member holds | `events.h`: the C enum; `sdk.hpp`: a `WXL_ARGS_ENUM` member's parameter type; `wxl/reflect.hpp`: the value's name, which `sdk/lua/` passes to a Lua handler as a string and its editor types list |
 | `sdk/include/wxl/fields.def` | a member of an event's args struct | `events.h`: the struct itself; `sdk.hpp`: a parameter of the event's `On<Event>` and `wxl::Subscribe` handlers, in row order (a member that only measures another is carried by it); `wxl/reflect.hpp`: each event's members with their offset and kind, which a runtime other than C++ (a script VM) reads events through, `sdk/lua/` among them, which passes the same parameters to a Lua handler; `sdk/tests/reflect.cpp` checks the rows against the structs and the C++ parameters against the rows |
+| `core/include/wxl/points/points.txt` | a point of `wxl.point`: an engine function mods attach to | by `tools/points/generate_points.py`: `sdk/include/wxl/points.def` (the contract: the `wxl::points::<Point>` classes, the service's table), `include/wxl/points/x86.def` (the x86 detours, their sites, why a point has none), `client/WarcraftXL/Points.gen.h` (the x64 macros); by `tools/points/insert_points.py`: the `WXL_POINT_<n>` lines in the fork |
 | `core/include/wxl/offsets/generated/` | an address or a layout of `Wow.exe` | the constexpr lookups behind `WXL_SITE`, `WXL_STATIC` and `WXL_FIELD`. Generated by `tools/offsets/` and `tools/layouts/`; never edited by hand |
 | `sdk/include/wxl/update_fields.def` | a descriptor field of a kind of object: its client name, dword index, size, value, visibility, and whether the client sees it change | `wxl/objects/fields.hpp`: the `wxl::field::<Kind>::<Name>` constants and the table `wxl.object`'s field calls check ranges and watches against, which `sdk/lua/` names fields by (`obj:Field("Health")`, `wxl.field`). Generated by `core/tools/fields/` from the fork; never edited by hand |
 | `core/include/wxl/core/client_dbs.def` | a global store of a client database: its name, record type, kind of store, file and row size | `client_dbs`, the binding row both sides realise from it (x86 by its `statics.def` address, x64 by the global itself), which `wxl.footprint` lists and `ClientDb.Initialize` raises `ClientDbLoaded` from. Generated by `tools/dbs/generate_client_dbs.py` from the fork; never edited by hand |
@@ -64,7 +80,10 @@ of each table lists its shapes and columns.
 
 1. A row in `core/include/wxl/seams/<domain>.def` (a new domain is a new file, included from
    `seams.def`), and a `WXL_SEAM_RAISES` row per event its body raises. The shape is the sides
-   the body needs: `WXL_SEAM_BEFORE`, `WXL_SEAM_AFTER`, both with `WXL_SEAM`, or `WXL_SEAM_GATE`.
+   the body needs: `WXL_SEAM_BEFORE`, `WXL_SEAM_AFTER`, both with `WXL_SEAM`, or `WXL_SEAM_GATE`. A body that
+   needs what only the recompiled client has adds a `WXL_SEAM_X64_ONLY` row saying why: the x86
+   runtime attaches no detour for it and does not announce its events. No row needs one today:
+   rebuild on x86 what the fork records, as `M2.DrawBatch` does, before reaching for it.
 2. Its body in `core/src/seams/<Domain>.cpp`: the entry points the shape declares.
 3. If its `conv` is `regparm`, a thunk in `core/src/seams/RegparmX86.cpp`.
 4. The calls in the fork, for the sides the row declares: `Before` at the top of the function,
@@ -76,6 +95,24 @@ of each table lists its shapes and columns.
    `WXL_SEAM_WITNESS` row when the function's own code does not show what it takes (see
    `core/tools/seams/README.md`).
 7. A line in the seam table of `core/README.md`.
+
+### A new point
+
+1. A line at the end of `core/include/wxl/points/points.txt` (ids are positions): the function's
+   x86 address from its `// OFFSET:` tag, or `-` for one the fork tags `// INLINED`; its qualified
+   name; `replace` or `observe`; `main` or `any`; `provisional`; a note a modder needs.
+2. `python tools/points/generate_points.py --client <fork> --sdk <sdk>` reads the definition from
+   the fork, lowers its signature and writes the three tables. A parameter it cannot lower (a
+   reference, a struct by value, an unknown scalar) is refused by name.
+3. `python tools/points/insert_points.py --client <fork> --write` writes the line at the head of
+   the function and the include of `WarcraftXL/Points.h`. A library of the fork new to the points
+   goes in `WXL_POINT_LIBRARIES` in `client/WarcraftXL/CMakeLists.txt`.
+4. `python tools/points/generate_points.py --client <fork> --coverage --binary Wow.orig.exe`: a
+   point whose callers the 2008 compiler inlined shows fewer calls in the binary than sites in the
+   source; each such copy becomes a `site` line (where it starts, where its arguments are).
+5. `check_conventions.py` checks the x86 row with the seams; add a row of hand-read ground truth
+   to `tools/seams/test_check_conventions.py`.
+6. Raise the ABI feature in `sdk/include/wxl/abi.h`, as for any append.
 
 ### A new fact about the client
 
@@ -107,15 +144,29 @@ them before it is unmapped).
 
 ### A new object getter for mods
 
-1. The fact, as above.
+1. The fact, as above, when the client must answer it (a `field`, `client` or `cache` row); a
+   `shared` row reads what the shared runtime already has (the descriptor block, other reads).
 2. A member at the end of `wxl_object_api` in `sdk/include/wxl/services/object.h`, and
    `WXL_ABI_VERSION_FEATURE` raised in `abi.h`: something was appended.
-3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`. A `FIELD` row whose `member` is the
-   fact's name needs nothing more in core; a `READ` row gets its function in
-   `core/src/objects/Reads.cpp`.
-4. The method in the C++ facade, `sdk/include/wxl/objects/<kind>.hpp`. Its Lua method is named
-   after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
+3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`, under a `WXL_OBJECT_SINCE` row of
+   that version. A `field` row whose `member` is the fact's name needs nothing more in core; a
+   `client` or `cache` row gets its function in `core/src/objects/Reads.cpp`; a `shared` row in
+   `sdk/runtime/src/object_reads.cpp`.
+4. Run `wxl-object-members <sdk>`: it writes the C++ method into the class of the row's kind
+   (`sdk/include/wxl/objects/generated/`) and the line of the guides' tables. Its Lua method is
+   named after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
    would be ambiguous.
+5. The fake service in `sdk/tests/fake_services.hpp` answers every row from 0.1.18 on by itself;
+   `contract.cpp` and `lua_tests.cpp` check each such row through its C++ and Lua method.
+
+### An action of the player (wxl.action)
+
+A row in `sdk/include/wxl/services/action.def` and its member in `action.h`, the client call as a
+binding row in `core/include/wxl/core/binding/action.def` (written in `BindingX86.cpp` with the
+convention Wow.exe gives the function, checked through `src/binding/CallX86.hpp` by the harness,
+and in the fork's `WarcraftXL/Binding.cpp`), and its body in `core/src/services/ActionService.cpp`,
+which refuses a call off the main thread. The objects' own action methods (`Select`, `Interact`,
+`CastAt`, `Use`, `Follow`, `Assist`) are written by hand in the facades and in `sdk/lua/src/Objects.cpp`.
 
 ### A new service member for mods
 
@@ -240,7 +291,9 @@ client; `--bench` measures a zone with no viewer.
 
 The log is one file per launch, `Logs\WarcraftXL.log` next to the executable, written by
 `src/common/Log.cpp` straight to the OS (no user-space buffer; warnings and errors flushed to the
-disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32 and ntdll only):
+disk). It stays UTF-8 text whatever a mod logs: the host's `Logger` (`sdk/host/include/wxl/host/log.hpp`)
+writes every byte of a line that is not part of a UTF-8 sequence, and every control character but
+a tab or a line break, as `\xNN` before the line reaches the sink. `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32 and ntdll only):
 
 - **Settings.** `WarcraftXL.ini` next to the executable (`src/runtime/Settings.cpp`), section
   `[log]`: `level`, `keep` (earlier launches kept, 30 by default) and `level.<tag>` for one tag's
@@ -298,10 +351,13 @@ first lines of the `Errors\` file written during it (the message and the `Curren
   raised on other threads (`FileOpen`, `MessageSent`); the bus takes no lock to dispatch and frees
   nothing a dispatch may still read. A mod that faults off the main thread stops receiving events
   at once and is disabled at the main thread's next raise.
+- **An unattached point costs nothing.** On x86 its function is not detoured at all; on x64 it is
+  one byte tested at the head of the function. Nothing detours the recompiled client.
 - **A faulting mod is disabled, not unloaded.** Its handlers are dropped, its later entry points
   skipped, its binary left mapped. A mod that fails where the guard cannot see -- a C++ exception
   reaching a stage of a `WXL_MOD` mod -- disables itself the same way, through `wxl_host.disable`.
-- **What a mod holds goes with it.** Its open files, its search folders, its field watches, its
+- **What a mod holds goes with it.** Its open files, its search folders, its asset providers, served
+  names and transforms, its field watches, its
   memory reports and pressure threshold, its hooks and its patches are given back when it is disabled or unloaded (`OnModDisabled` in
   `src/runtime/Core.cpp`, the shutdown in `src/seams/Client.cpp`). The host sees every Lua mod as
   `wxl.lua`, so `sdk/lua/` keeps which Lua mod holds what and gives it back when that mod closes,
@@ -319,16 +375,33 @@ first lines of the `Errors\` file written during it (the message and the `Curren
 - **Client and runtime come from one tree.** `WarcraftXLInit` compares the client's binding rows with
   its own and refuses a client built from a different table.
 
+## Files a mod serves
+
+The client opens every file through `SFile::OpenEx`, which resolves the name with
+`System_SFile2::FindFile`, then reads a plain file through `Blizzard::File`, whose every call is a
+verb of the client's file stack (`System_File::Stacked::s_manager`, mirrored in
+`include/wxl/core/filestack.hpp`). The `Storage.FindFile` gate answers a name a mod's source wins
+(a provider, served bytes) with a path of the runtime's own, `|wxl|<id>|<name>`, and the runtime
+writes its verbs into the top node of the stack once (`src/services/Assets.cpp`): its streams are
+answered by the runtime, any other goes on to the verb the node held. A kind of file some mod
+transforms is opened the same way, read whole through the client's own resolution (the thread
+marked so that no gate answers twice) and converted before the client reads it. A folder of the
+search path is still a name rewritten for the client's disk lookup. Nothing is done while no
+folder, source or transform is registered: the gate's test is two loads.
+
 ## Checks
 
 | Command | What it proves |
 |---|---|
-| `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks; the log's files, levels and settings (`wxl-core-log-tests`) |
+| `ctest` in `core/build/win-x64` and `core/build/win-x86` | every seam body against a fake client; on x86, the generated detours and the register thunks; `wxl.point`'s dispatch, and on x86 its detours armed and disarmed on stand-ins; the log's files, levels and settings (`wxl-core-log-tests`) |
 | `ctest` in `sdk/build` | the contract, the field table against the args structs, the mod host, the shared `wxl.object`, `wxl.lua` against the host and its editor definitions against the tables, and that the docs quote the examples as they are |
 | `python core/tools/seams/check_seams.py` | every seam is called from the fork, once, in the right function, with the right arguments. Runs in the fork's build |
-| `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
+| `python core/tools/points/insert_points.py --check` | every x64 point is the first line of its function, once, with the table's arguments; no line of no point. Runs in the fork's build (`wxl-point-check`), with `generate_points.py --check`: the three point tables are what `points.txt` and the fork give |
+| `python core/tools/points/test_points.py` | the two point tools against a small fork made on the spot |
+| `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`, the x86 points' (`include/wxl/points/x86.def`) included. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
 | `python core/tools/fields/generate_update_fields.py --check` | the SDK's update-field table is what the fork gives; with `--binary`, what `Wow.exe`'s own tables hold. Runs in the fork's build |
 | `wxl-core-seam-harness --profile-live`, with Tracy's `tracy-capture -a 127.0.0.1` | the profiler's zones, plots, messages and frames reach a viewer, from a harness under Wine |
+| `sdk/tests/ingame/` in a client (`wxl-ingame` assembles it as a Mods folder) | in the real game, on each runtime: the test mods' functions called from the client's Lua, chat and CVar events, hot reload and handler order, a broken and repaired manifest, casts, a cooldown, an item use, an equipment change, `/reload` and a logout; `wxl.selftest` logs PASS or FAIL per check |
 | `python core/tools/dbs/generate_client_dbs.py --check` | `include/wxl/core/client_dbs.def` lists every client database the fork declares, with its file and row size |
 
 The `ctest` suites are Windows executables; from Linux they build with clang-cl and run under Wine
@@ -339,6 +412,8 @@ The `ctest` suites are Windows executables; from Linux they build with clang-cl 
 | Word | Means |
 |---|---|
 | seam | a client function the runtime hooks, named `<Domain>.<Function>` |
+| point | an engine function mods attach Before, Replace or After handlers to, named as the fork names it (`CGCamera::UpdateCallback`) |
+| site | an inlined copy of a point's function on x86, reached by a mid-function hook: Before handlers only |
 | gate | a seam that can stop the call or rewrite its arguments |
 | binding | the facts the runtime reads out of the client (`wxl::core::binding`) |
 | `ObjectBinding` | the reads `wxl.object` asks a runtime for (`sdk/runtime`) |

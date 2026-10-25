@@ -180,4 +180,182 @@ namespace wxl::core::objects
         out = static_cast<uint8_t>(binding::gameobject_art_kit(object));
         return true;
     }
+
+    // --- 0.1.17: the typed reads -----------------------------------------------------------
+
+    namespace
+    {
+        /// The native unit a handle names, or null for anything else.
+        void* UnitOf(wxl_handle handle)
+        {
+            uint32_t kind   = WXL_OBJECT_UNKNOWN;
+            void*    native = Service().Handles().Resolve(handle, &kind);
+            return native && (kind == WXL_OBJECT_UNIT || kind == WXL_OBJECT_PLAYER) ? native : nullptr;
+        }
+
+        /// Whether a time on the client's clock is still to come.
+        bool Ahead(uint32_t when) { return static_cast<int32_t>(binding::os_time_ms() - when) < 0; }
+    }
+
+    bool ClientObjects::UnitTargetGuid(void* object, wxl_guid& out) const
+    {
+        out = binding::unit_target(object);
+        return true;
+    }
+
+    bool ClientObjects::UnitReaction(void* object, uint32_t& out) const
+    {
+        const void* player = binding::local_player_object();
+        if (!player) return false;
+        const int32_t reaction = binding::unit_reaction(object, player);
+        if (reaction < 0) return false;
+        out = static_cast<uint32_t>(reaction);
+        return true;
+    }
+
+    bool ClientObjects::UnitReactionTo(void* object, wxl_handle other, uint32_t& out) const
+    {
+        const void* unit = UnitOf(other);
+        if (!unit) return false;
+        const int32_t reaction = binding::unit_reaction(object, unit);
+        if (reaction < 0) return false;
+        out = static_cast<uint32_t>(reaction);
+        return true;
+    }
+
+    bool ClientObjects::UnitIsMounted(void* object, wxl_bool& out) const
+    {
+        // CGUnit_C::IsMounted: a mount model, and not the client's dismount-pending flag.
+        out = binding::unit_mount_model(object) > 0 && !(binding::unit_client_flags(object) & 0x10000000u)
+                  ? WXL_TRUE
+                  : WXL_FALSE;
+        return true;
+    }
+
+    bool ClientObjects::UnitIsCasting(void* object, wxl_bool& out) const
+    {
+        // Script_UnitCastingInfo: a cast spell whose end is still to come.
+        out = binding::unit_casting_spell_id(object) && Ahead(binding::unit_cast_end(object)) ? WXL_TRUE : WXL_FALSE;
+        return true;
+    }
+
+    bool ClientObjects::UnitIsChanneling(void* object, wxl_bool& out) const
+    {
+        out = binding::unit_channel_spell_id(object) && Ahead(binding::unit_channel_end(object)) ? WXL_TRUE
+                                                                                                : WXL_FALSE;
+        return true;
+    }
+
+    bool ClientObjects::UnitAuraCount(void* object, uint32_t& out) const
+    {
+        out = binding::unit_aura_count(object);
+        return true;
+    }
+
+    bool ClientObjects::UnitAura(void* object, uint32_t slot, wxl_aura& out) const
+    {
+        const void* aura = binding::unit_aura_at(object, slot);
+        if (!aura) return false;
+        out.spell_id   = static_cast<uint32_t>(binding::aura_spell_id(aura));
+        out.caster     = binding::aura_caster(aura);
+        out.stacks     = binding::aura_stacks(aura);
+        out.level      = binding::aura_level(aura);
+        out.flags      = binding::aura_flags(aura);
+        out.duration   = binding::aura_duration(aura);
+        out.expiration = static_cast<uint32_t>(binding::aura_end_time(aura));
+        return true;
+    }
+
+    bool ClientObjects::UnitCreatureType(void* object, uint32_t& out) const
+    {
+        out = static_cast<uint32_t>(binding::unit_creature_type(object));
+        return true;
+    }
+
+    bool ClientObjects::UnitCreatureFamily(void* object, uint32_t& out) const
+    {
+        out = binding::unit_creature_family(object);
+        return true;
+    }
+
+    bool ClientObjects::UnitClassification(void* object, uint32_t& out) const
+    {
+        out = binding::unit_classification(object);
+        return true;
+    }
+
+    bool ClientObjects::UnitKnowsSpell(void* object, uint32_t spell, wxl_bool& out) const
+    {
+        out = binding::unit_knows_spell(object, spell);
+        return true;
+    }
+
+    bool ClientObjects::UnitSpeed(void* object, uint32_t type, float& out) const
+    {
+        return binding::unit_speed(object, type, &out) == WXL_TRUE;
+    }
+
+    bool ClientObjects::UnitIsSwimming(void* object, wxl_bool& out) const
+    {
+        out = (binding::unit_client_flags(object) & 0x200000u) ? WXL_TRUE : WXL_FALSE; // Script_IsSwimming
+        return true;
+    }
+
+    // --- the active player's group -----------------------------------------------------------
+
+    bool ClientObjects::PlayerPartySize(void*, uint32_t& out) const
+    {
+        out = 0;
+        for (uint32_t slot = 0; slot < 4; ++slot)
+            if (binding::party_member_guid(slot)) ++out;
+        return true;
+    }
+
+    bool ClientObjects::PlayerPartyMemberGuid(void*, uint32_t slot, wxl_guid& out) const
+    {
+        if (slot >= 4) return false;
+        out = binding::party_member_guid(slot);
+        return true;
+    }
+
+    bool ClientObjects::PlayerRaidSize(void*, uint32_t& out) const
+    {
+        out = binding::raid_member_count();
+        return true;
+    }
+
+    bool ClientObjects::PlayerRaidMemberGuid(void*, uint32_t slot, wxl_guid& out) const
+    {
+        if (slot >= 40) return false;
+        out = binding::raid_member_guid(slot);
+        return true;
+    }
+
+    // --- the item cache: false while the client has not received the item's record -----------
+
+#define WXL_CORE_ITEM_STAT(Method, fact)                                     \
+    bool ClientObjects::Method(void* object, uint32_t& out) const            \
+    {                                                                        \
+        const void* stats = binding::item_stats(object);                     \
+        if (!stats) return false;                                            \
+        out = static_cast<uint32_t>(binding::fact(stats));                   \
+        return true;                                                         \
+    }
+    WXL_CORE_ITEM_STAT(ItemQuality, item_stats_quality)
+    WXL_CORE_ITEM_STAT(ItemLevel, item_stats_level)
+    WXL_CORE_ITEM_STAT(ItemRequiredLevel, item_stats_required_level)
+    WXL_CORE_ITEM_STAT(ItemClass, item_stats_class)
+    WXL_CORE_ITEM_STAT(ItemSubclass, item_stats_subclass)
+    WXL_CORE_ITEM_STAT(ItemInventoryType, item_stats_inventory_type)
+    WXL_CORE_ITEM_STAT(ItemSellPrice, item_stats_sell_price)
+#undef WXL_CORE_ITEM_STAT
+
+    bool ClientObjects::ItemMaxStack(void* object, uint32_t& out) const
+    {
+        const void* stats = binding::item_stats(object);
+        if (!stats) return false;
+        const int32_t stack = binding::item_stats_stackable(stats);
+        out                 = stack > 0 ? static_cast<uint32_t>(stack) : 1u;
+        return true;
+    }
 }

@@ -7,6 +7,12 @@
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including player.def"
 #endif
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including player.def"
+#endif
+#ifndef WXL_SEAM_GATE
+#error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including player.def"
+#endif
 #ifndef WXL_SEAM_BEFORE
 #error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including player.def"
 #endif
@@ -36,6 +42,103 @@ WXL_SEAM_WITNESS(Player, OnUpdateMoney, 0x004D5254)
 // five stats), among the other messages of the local player it serves (the bank, the minimap
 // ping, the cinematic trigger, the random roll, ...). Reached only through the handler table,
 // with the four arguments every handler takes on the stack: cdecl. Before reads the message from its cursor and raises PlayerLevelUp for
-// that opcode, and nothing for the others.
+// that opcode, ItemPushed for SMSG_ITEM_PUSH_RESULT, InventoryError for
+// SMSG_INVENTORY_CHANGE_FAILURE, and nothing for the others.
 WXL_SEAM_BEFORE(Player, Packet_Group_9, "Packet_Group_9", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
 WXL_SEAM_RAISES(Player, Packet_Group_9, PlayerLevelUp)
+WXL_SEAM_RAISES(Player, Packet_Group_9, ItemPushed)
+WXL_SEAM_RAISES(Player, Packet_Group_9, InventoryError)
+
+// The handler of the loot messages, which hands each to its own member of the local player or
+// static: the window's contents (SMSG_LOOT_RESPONSE), its release, a slot taken or changed, the
+// money notice and the rolls of a group's loot. Reached only through the handler table, the four
+// arguments on the stack, a bare `ret` at each of its returns: cdecl. Before raises LootMoney for
+// SMSG_LOOT_MONEY_NOTIFY, LootRollStart for SMSG_LOOT_START_ROLL on the map the interface shows,
+// with the id LootRollStart is about to give the roll, LootRoll, LootRollWon and LootAllPassed
+// for the others; the window itself is Loot.SetObject's.
+WXL_SEAM_BEFORE(Player, PH_LOOT_OPCODES, "PH_LOOT_OPCODES", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, PH_LOOT_OPCODES, LootMoney)
+WXL_SEAM_RAISES(Player, PH_LOOT_OPCODES, LootRollStart)
+WXL_SEAM_RAISES(Player, PH_LOOT_OPCODES, LootRoll)
+WXL_SEAM_RAISES(Player, PH_LOOT_OPCODES, LootRollWon)
+WXL_SEAM_RAISES(Player, PH_LOOT_OPCODES, LootAllPassed)
+
+// The mirror handler of one entry of the quest log (PLAYER_QUEST_LOG_n, five dwords: the quest,
+// its state, four objective counts, a timer), registered on the local player: runs after the
+// server wrote the entry, with the entry's offset in the player's block and its previous value by
+// address. Announces a quest newly in the log. Reached only through CallMirrorFunctions (six
+// dwords pushed, 0x18 cleaned at 0x004D5254); reads guid, offset and value and ends in a bare
+// `ret`: cdecl. Before compares the entry with what it was and raises QuestAccepted,
+// QuestRemoved, QuestObjectiveChanged per count that moved, QuestCompleted and QuestFailed as
+// the state's bits 1 and 2 come on.
+WXL_SEAM_BEFORE(Player, OnUpdateQuest, "OnUpdateQuest", int32_t, cdecl, (uint64_t guid, uint32_t offset, uint32_t count, const void* value, void* param))
+WXL_SEAM_RAISES(Player, OnUpdateQuest, QuestAccepted)
+WXL_SEAM_RAISES(Player, OnUpdateQuest, QuestRemoved)
+WXL_SEAM_RAISES(Player, OnUpdateQuest, QuestObjectiveChanged)
+WXL_SEAM_RAISES(Player, OnUpdateQuest, QuestCompleted)
+WXL_SEAM_RAISES(Player, OnUpdateQuest, QuestFailed)
+WXL_SEAM_WITNESS(Player, OnUpdateQuest, 0x004D5254)
+
+// The handler of the quest giver's messages: its status, the list it greets with, a quest's
+// details, what a quest asks for, its reward, a quest completed or failed. Reached only through
+// the handler table, the four arguments on the stack, bare `ret`s: cdecl. Before raises
+// QuestGiverGreeting, QuestGiverDetail, QuestGiverProgress, QuestGiverReward and QuestTurnedIn
+// for their messages, nothing for the others.
+WXL_SEAM_BEFORE(Player, Packet_Group_12, "Packet_Group_12", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_Group_12, QuestTurnedIn)
+WXL_SEAM_RAISES(Player, Packet_Group_12, QuestGiverGreeting)
+WXL_SEAM_RAISES(Player, Packet_Group_12, QuestGiverDetail)
+WXL_SEAM_RAISES(Player, Packet_Group_12, QuestGiverProgress)
+WXL_SEAM_RAISES(Player, Packet_Group_12, QuestGiverReward)
+
+// The handler of SMSG_GROUP_INVITE: shows the invitation dialog (PARTY_INVITE_REQUEST) or says the
+// player is already grouped. Reached only through the handler table, the message read at
+// [ebp+0x14], a bare `ret` (0x006DF2AB): cdecl. Gate raises GroupInvite; when a handler accepted or
+// declined, it answers as the dialog would (binding group_invite_answer) and takes the call, so
+// the dialog never shows. A message it cannot read is left to the client.
+WXL_SEAM_GATE(Player, Packet_SMSG_GROUP_INVITE, "Packet_SMSG_GROUP_INVITE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_INVITE, GroupInvite)
+
+// The handler of SMSG_GROUP_LIST: the group's kind, the player's place in it, every member, the
+// leader and the loot rules. Drops an update older than the one it applied last. Reached only
+// through the handler table, the message read at [ebp+0x14], bare `ret`s: cdecl. Before applies
+// the client's own staleness rule (the same group, a sequence no newer, within a minute), then
+// raises GroupUpdated, a GroupMember per member, and GroupLootMethodChanged when the method, the
+// looter or the threshold differ from the last list's.
+WXL_SEAM_BEFORE(Player, Packet_SMSG_GROUP_LIST, "Packet_SMSG_GROUP_LIST", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_LIST, GroupUpdated)
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_LIST, GroupMember)
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_LIST, GroupLootMethodChanged)
+
+// The handlers of SMSG_GROUP_UNINVITE and SMSG_GROUP_DESTROYED: the party cleared. Neither reads
+// its arguments; the handler table's caller pushes four and cleans 0x10 (0x0063202C) and each
+// ends in a bare `ret`: cdecl. Before raises GroupLeft, removed or disbanded.
+WXL_SEAM_BEFORE(Player, Packet_SMSG_GROUP_UNINVITE, "Packet_SMSG_GROUP_UNINVITE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_UNINVITE, GroupLeft)
+WXL_SEAM_WITNESS(Player, Packet_SMSG_GROUP_UNINVITE, 0x0063202C)
+WXL_SEAM_BEFORE(Player, Packet_SMSG_GROUP_DESTROYED, "Packet_SMSG_GROUP_DESTROYED", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_GROUP_DESTROYED, GroupLeft)
+WXL_SEAM_WITNESS(Player, Packet_SMSG_GROUP_DESTROYED, 0x0063202C)
+
+// The handler of SMSG_RESURRECT_REQUEST: keeps the offer (CGPlayer_C::s_resurrectOfferer and its
+// two flags) and shows the dialog to a dead player. Reached only through the handler table, the
+// message read at [ebp+0x14], bare `ret`s: cdecl. Gate raises ResurrectRequest; when a handler
+// accepted or declined, it keeps the offer as the handler does and answers as the dialog would
+// (binding resurrect_answer), and takes the call.
+WXL_SEAM_GATE(Player, Packet_SMSG_RESURRECT_REQUEST, "Packet_SMSG_RESURRECT_REQUEST", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_RESURRECT_REQUEST, ResurrectRequest)
+
+// The handler of SMSG_EMOTE: a unit in view plays an emote's animation. Reached only through the
+// handler table, the message read at [ebp+0x14], a bare `ret`: cdecl. Before raises Emote.
+WXL_SEAM_BEFORE(Player, Packet_SMSG_EMOTE, "Packet_SMSG_EMOTE", int32_t, cdecl, (void* param, uint32_t msg_id, uint32_t time, void* msg))
+WXL_SEAM_RAISES(Player, Packet_SMSG_EMOTE, Emote)
+
+// Runs when the local player's ghost flag changed: the tutorial for a new ghost, or the spirit
+// healer and the release point cleared and PLAYER_UNGHOST fired; then the corpse marker, the
+// screen effect and the quest givers' status. A member: `mov esi,ecx` (0x006DF717), nothing read
+// on the stack, a bare `ret`: thiscall. After raises PlayerReleased or PlayerResurrected when the
+// player's state moved (GameUI.UpdateActivePlayer).
+WXL_SEAM_AFTER(Player, UpdateGhostStatus, "CGPlayer_C::UpdateGhostStatus", void, thiscall, (void* self))
+WXL_SEAM_RAISES(Player, UpdateGhostStatus, PlayerDied)
+WXL_SEAM_RAISES(Player, UpdateGhostStatus, PlayerReleased)
+WXL_SEAM_RAISES(Player, UpdateGhostStatus, PlayerResurrected)

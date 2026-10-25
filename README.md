@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.15-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.20-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -63,6 +63,7 @@ How the pieces fit, and which files a new seam, fact or event touches:
 - [The mods it ships](#-the-mods-it-ships)
 - [Layout](#-layout)
 - [Troubleshooting](#-troubleshooting)
+- [Contributors](#-contributors)
 - [License](#-license)
 
 ## ⚡ Building
@@ -181,6 +182,7 @@ What a mod can reach **today**, by build:
 
 | | x86 | x64 |
 |---|---|---|
+| `wxl.point` (engine points) | yes: each point of `include/wxl/points/points.txt` with an x86 body, a SafetyHook detour armed at its first handler and removed at its last, its first bytes checked by Zydis; Before, Replace and After | yes: each point, a `WXL_POINT_<n>` line at the head of its function in the fork, one byte tested while unattached; the `// INLINED` ones too |
 | `wxl.hook` (named points) | yes: the seams and the points of `src/hook/Points.def`, detourable | no: a seam is a call the client makes, not a function a detour can replace |
 | `wxl.hook.raw` (raw addresses) | yes | never: no fixed addresses in a program we compile |
 | `wxl.patch` (byte patches) | yes | never: nothing to patch in a program we compile |
@@ -190,6 +192,9 @@ What a mod can reach **today**, by build:
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
 | `wxl.profile` | yes: zones, plots, messages and frame sets on the Tracy profiler's timeline, beside the runtime's own zones for every event and mod handler (`WXL_PROFILE`) | the same, and zones in the client's main loop |
 | `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
+| `wxl.m2file` (parsed model files) | yes: arrays read and pointed as addresses, memory anywhere, the shadow pass's bone animation; the loader's stages as `ModelParsed`, `SkinProfileParsed`, `ModelSequenceLoad` | the same, arrays as offsets from themselves and memory within 1 GB of them |
+| `wxl.m2` (models) | yes: an object's model, `ItemDisplayInfo` rows, race prefixes, models made, hung (to follow the parent's bones or on one key bone too), shown, textured, kept on the interface's copies; `AppearanceChanged` | the same, through the binding |
+| `wxl.gx` (the D3D9 device) | yes: the device and a state invalidation; `ModelBatchDrawn` after every model batch, its numbers rebuilt from the skin section and the device's buffers and viewport | the same, the numbers as the device recorded them |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY`, `STORAGE`, `GRAPHICS`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
@@ -271,7 +276,9 @@ source. Everything else observes.
 
 | Point | Function | Raises |
 |---|---|---|
-| `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)` | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set: the far-sight, cinematic and game-object preloads reach the same function with it clear |
+| `World.EnterWorld` | `CGGameUI::EnterWorld()`, the player in the world (PLAYER_ENTERING_WORLD): after a login and a teleport to another map | `WorldEnter` after, with the map and the player's position, once per entry; not for a `/reload` |
+| `World.LeaveWorld` | `CGGameUI::LeaveWorld()`, the player out of it (PLAYER_LEAVING_WORLD): a logout, a teleport to another map while the old map is loaded | `WorldLeave` before, with the map entered and where the world was loaded around; not for a `/reload` |
+| `World.Preload` | `World::Preload(const wxl_vec3* position, int32_t show_loading)`, the loading screen of a teleport far across the same map | `WorldLeave` before, `WorldEnter` after, only when `show_loading` is set and the player is in the world: the far-sight, cinematic and game-object preloads reach the same function with it clear |
 | `Event.DispatchUpdate` | `IEvtDispatchUpdate(void* context, uint32_t curr_time, float elapsed_sec)` (regparm: EDI) | `Update` before |
 | `ObjectMgr.InitObject` | `InitObject(void* object, const void* create, uint32_t time)` (regparm: ESI, EAX, ECX) | `ObjectCreate` after |
 | `ObjectMgr.GetUpdateObject` | `GetUpdateObject(uint64_t guid, int32_t* reenabled)`, the lookup every update of an object goes through | `ObjectCreate` after, with a new handle, for an object the client brought back from its lazy-cleanup set (it never passes `InitObject` again) |
@@ -294,6 +301,7 @@ source. Everything else observes.
 | `Input.WindowProc` (gated) | `OsWindowProc(void* window, uint32_t message, uintptr_t wparam, intptr_t lparam)` | `Input` at the gate; writing `handled` answers 0 and the client's own procedure never sees the message |
 | `Storage.OpenFile` (gated) | `SFile::OpenEx(SArchive*, const char* name, uint32_t flags, SFileImpl** result)` | `FileOpen` at the gate, `redirect` holding what a mod's `wxl.storage` redirect answers; a path written into `redirect` is what the client opens instead, then a folder of the search path that wins the name |
 | `Storage.OpenEx` | the same `SFile::OpenEx`, observed: on x86 a second link of the same chain, nearer the function than the gate | `FileOpened` after, at every return, with the name opened, whether a file came back and its size; nothing is read while nobody listens |
+| `Storage.FindFile` (gated) | `System_SFile2::FindFile(name, path, size, flags, type, archive)`, where every name the client opens or looks for is resolved | nothing: a folder of the search path, a provider or served bytes that win the name answer it, and a kind some mod transforms is opened through the runtime's file layer |
 | `Sound.PlaySoundKit` (gated) | `SI2::PlaySoundKit(int32_t kit, ...)` | `SoundPlay` at the gate; suppressing it keeps the sound from starting. Both of the client's overloads of this name end here, so a sound named by path arrives with the id its name resolved to |
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
 | `ConsoleDevice.Initialize` | `ConsoleDeviceInitialize(const char* title, bool, bool)` | nothing, but its return is `WXL_STAGE_GRAPHICS`: the device is made after the first database is read and before the script context exists, which is the order the stages promise |
@@ -303,6 +311,15 @@ source. Everything else observes.
 | `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
 | `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
 | `Gx.NotifyOnDeviceRestored` | `CGxDevice::NotifyOnDeviceRestored()` | `SwapchainRestored` before, with the size the device came back at |
+| `M2.DrawBatch` | `CM2SceneRender::DrawBatch()`, one plain batch of a model | `ModelBatchDrawn` after, with the numbers of the device's draw and everything it was drawn with still bound. The stock client keeps no record of its draw: x86 rebuilds the numbers from the skin section the renderer still points at and the device's buffers and viewport. One flag is read while nobody listens |
+| `M2.AnimateMT`, `M2.AnimateMTSimple` | `CM2Model::AnimateMT(...)` and `AnimateMTSimple(...)`, a model's bones posed for the frame, on the animate threads | nothing: after, a model `wxl.m2` hung to follow its parent's bones, or on one key bone, is posed from the parent's skeleton; one load while none is |
+| `M2Shared.Initialize` | `CM2Shared::Initialize()`, a parsed model made ready | `ModelParsed` before, ahead of its skin profile's choice and its textures |
+| `M2Shared.InitializeSkinProfile` | `CM2Shared::InitializeSkinProfile()`, a parsed skin profile sized for drawing | `SkinProfileParsed` before, with the model's header and the skin's |
+| `M2Shared.FinishLoadingLowPrioritySequence` | `CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequence_index, uint8_t* buffer, uint32_t size)`, an external sequence file parsed against its model | `ModelSequenceLoad` before, with the sequence's unparsed bytes |
+| `Component.AddItem` | `CCharacterComponent::AddItem(slot, display, visual)`, an item display put on a character appearance | `AppearanceChanged` (worn) after, once the client's own models for the slot hang on the body |
+| `Component.RemoveItem` | `CCharacterComponent::RemoveItem(slot)` | `AppearanceChanged` (removed) before, while the display is still on the slot |
+| `Component.FreeComponent` | `CCharacterComponent::FreeComponent(component)`, an appearance given back | `AppearanceChanged` (freed) before |
+| `Component.RemoveVisuals` | `CCharacterComponent::RemoveVisuals(model)`, which strips the attachments of the copies the interface draws | nothing: the models `wxl.m2` hung on the stripped points, and copies of them, are hung back after |
 | `Spell.Packet_Group_30` | `Packet_Group_30(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)`, the handler of `SMSG_SPELL_START` and `SMSG_SPELL_GO` | `SpellCastStart` or `SpellCastGo` before, by the opcode, read off the message before the client parses it: the caster, the object target, the cast time or the hit and miss counts |
 | `Spell.Packet_SMSG_SPELL_FAILURE` | `Packet_SMSG_SPELL_FAILURE(void* param, uint32_t msg_id, uint32_t time, CDataStore* msg)` | `SpellCastInterrupted` before, for any caster in view, with the reason the server sent |
 | `Spell.SpellFailed` | `Spell_C_SpellFailed(PendingSpellCast* cast, const SpellRec* spell, int32_t reason, int32_t misc1, int32_t misc2, bool reset_cooldown)` | `SpellCastFailed` before: the local player's cast refused by the server or by the client's own checks |
@@ -348,6 +365,14 @@ source. Everything else observes.
 | `Texture.Create` | `TextureCreate(const char* file_name, CGxTexFlags, CStatus*, uint32_t flags)` (the file-name overload, at 0x004B9760), every texture asked for by name | `TextureLoad` before, cached or not; the x64 client skips the call while nobody listens |
 | `M2Shared.LoadSucceededCallback` | `CM2Shared::LoadSucceededCallback(void* param)`, the end of a model file's read, before `FinishLoading` parses it | `ModelLoad` before, with the path and the bytes; bytes a handler answers are copied into a buffer of the client's allocator and parsed instead |
 | `MapObj.Load` | `CMapObj::Load()`, which walks a map object's root once it is read | `MapObjectLoad` before, with the path and the root's bytes |
+| `MapObj.CreateGroup` | `CMapObjGroup::Create()`, which walks a map object's group once its file is read | `MapObjectGroupLoad` before, with the root's name, the group's number and its bytes |
+| `MapArea.AsyncCallback` | `CMapArea::AsyncCallback(void* param)`, the end of a terrain tile's read, before its chunks are walked | `TerrainTileLoad` before, with the tile's name, its place on the grid and its bytes |
+| `M2Shared.FinishLoadingSkinProfile` | `CM2Shared::FinishLoadingSkinProfile(uint32_t size)`, the end of a skin profile's read, before it is parsed | `SkinProfileLoad` before, with the model's path and the skin's bytes |
+| `Texture.AsyncTextureSuccessCallback` | `AsyncTextureSuccessCallback(CTexture*)`, the end of a texture file's read | nothing itself: notes the texture's name for `BLPFile.Source` |
+| `BLPFile.Open` | `CBLPFile::Open(name, flags)`, a texture file read whole by name | nothing itself: notes the name for `BLPFile.Source` |
+| `BLPFile.Source` | `CBLPFile::Source(const void* data)`, a texture file's bytes taken to decode | `TextureDecode` before, with the name its caller noted and what the BLP2 header says |
+| `Gx.IShaderLoad` | `CGxDevice::IShaderLoad(shaders, target, path, name, permutations)`, a shader program loaded by name | `ShaderLoad` before, with the stage, the folder, the name and the permutations |
+| `Sound.CreateWaveData` | `SE2::CreateWaveData(...)`, the sound data a sound plays from, made from a file | `SoundFileLoad` before, with the file, whether it streams and the channel's priority; never while the game's sound is off (`Sound_EnableAllSound` 0), when the client loads no sound |
 | `Map.AllocDoodadDef` | `CMap::AllocDoodadDef()` | nothing itself: after, notes the def it handed out, which tells a placement from a def found in the map's hash |
 | `Map.CreateDoodadDef`, `Map.CreateDoodadDefAt`, `Map.CreateDoodadDefInMapObj` | the three `CMap::CreateDoodadDef` overloads: a tile's doodad, one the game places at a position, one of a map object's doodad set | `DoodadSpawn` after, for a def the call allocated, with the model's path and the position |
 | `ObjectMgr.FillInPartialObjectData` | `FillInPartialObjectData(CGObject_C*, WOWGUID, CDataStore*, bool, bool)`, where an update block's fields are written | nothing itself: after, notes a tracked object, once per packet |
@@ -357,6 +382,27 @@ source. Everything else observes.
 | `Storm.SMemReAlloc` | `SMemReAlloc(void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts; after, what the call left comes back, under the file that moved it |
 | `Storm.SErrDisplayError` | `SErrDisplayError(uint32_t errorcode, const char* filename, int32_t linenumber, const char* description, int32_t recoverable, uint32_t exitcode, uint32_t unknown)`, Storm's error display: every fatal error, assertion and the exception filter's dialog | nothing: before, the error goes to `WarcraftXL.log`, flushed; a fatal one with its stack, the running mod, the last events and the session's end line |
 | `Os.ValidateFunctionPointer` (gated) | `OsValidateFunctionPointer(const void* ptr)`, the check of every C function the client's Lua calls, Lua hook, console command handler and CVar callback | nothing: the gate takes the call for a pointer in the runtime's image or a binary the mod host loaded; any other goes on to the client's check, fatal outside its `.text` |
+| `Combat.UnitCombatLogAuraDose`, `Combat.UnitCombatLogAuraRefreshed` | `UnitCombatLogAuraDose(...)`, `UnitCombatLogAuraRefreshed(...)`, the combat log of an aura that stays in its slot | `UnitAuraRefreshed`, with the slot and the count before |
+| `Unit.MountDisplayIDUpdateHandler` | the mirror handler of `UNIT_FIELD_MOUNTDISPLAYID` | `UnitMountChanged` |
+| `Loot.SetObject` | `CGLootInfo::SetObject(CGObject_C*, int32_t coins, LOOT_ACQUIRE)`, the loot window put on an object or on nothing | `LootClosed` for the window it closes, `LootOpened` and a `LootSlot` per item for the new one |
+| `Loot.ClearSlot` | `CGLootInfo::ClearSlot(uint8_t slot)` | `LootSlotCleared` |
+| `Player.PH_LOOT_OPCODES` | the handler of the loot messages | `LootMoney`, `LootRollStart`, `LootRoll`, `LootRollWon`, `LootAllPassed` |
+| `Player.Packet_Group_9` | (also) `SMSG_ITEM_PUSH_RESULT`, `SMSG_INVENTORY_CHANGE_FAILURE` | `ItemPushed`, `InventoryError` |
+| `Container.InvUpdateHandler`, `Container.UpdateInvContents`, `Container.UpdateContainerContents` | the mirror handlers of the player's bag slots and of each bag's slots | `InventorySlotChanged` |
+| `Item.OnUpdateDurability`, `Item.OnUpdateStackCount` | the mirror handlers of an item's durability and stack count | `ItemDurabilityChanged`, `ItemStackChanged` |
+| `Player.OnUpdateQuest` | the mirror handler of a quest log entry | `QuestAccepted`, `QuestRemoved`, `QuestObjectiveChanged`, `QuestCompleted`, `QuestFailed` |
+| `Player.Packet_Group_12` | the quest giver's messages | `QuestGiverGreeting`, `QuestGiverDetail`, `QuestGiverProgress`, `QuestGiverReward`, `QuestTurnedIn` |
+| `Player.Packet_SMSG_GROUP_INVITE` (gated) | the invitation's handler | `GroupInvite`; an answered one is accepted or declined as the dialog does, which never shows |
+| `Player.Packet_SMSG_GROUP_LIST`, `_UNINVITE`, `_DESTROYED` | the group list's handlers | `GroupUpdated`, `GroupMember`, `GroupLootMethodChanged`, `GroupLeft` |
+| `Raid.Packet_MSG_RAID_READY_CHECK`, `_CONFIRM`, `_FINISHED` | the ready check's handlers | `ReadyCheck`, `ReadyCheckResponse`, `ReadyCheckFinished` |
+| `Duel.Packet_SMSG_DUEL_REQUESTED` (gated), `_COUNTDOWN`, `_WINNER`, `_COMPLETE` | the duel's handlers | `DuelRequested` (answerable), `DuelCountdown`, `DuelWon`, `DuelFinished` |
+| `Trade.Packet_SMSG_TRADE_STATUS` | the trade status handler | `TradeStatus` |
+| `Player.Packet_SMSG_EMOTE`, `Chat.OnTextEmote` | the emote handlers | `Emote`, `TextEmote` |
+| `Player.Packet_SMSG_RESURRECT_REQUEST` (gated) | the resurrection offer's handler | `ResurrectRequest` (answerable) |
+| `GameUI.UpdateActivePlayer`, `Player.UpdateGhostStatus` | the player's state of life told to the interface, its ghost flag | `PlayerDied`, `PlayerReleased`, `PlayerResurrected` |
+| `Reputation.Packet_SMSG_SET_FACTION_STANDING` | the standings' handler | `ReputationChanged` |
+| `Achievement.Packet_SMSG_ACHIEVEMENT_EARNED` | the achievement's handler | `AchievementEarned` |
+| `FrameScript.vSignalEvent` | (also) the interface events that open and close an NPC's window | `WindowOpened`, `WindowClosed` |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:
@@ -386,18 +432,24 @@ include/wxl/core/init.h          the 64-bit entry point, for the client to inclu
 include/wxl/core/binding/        the client binding: the facts read out of the client, one .def per domain
 include/wxl/seams/               the seam table (one .def per domain) and seams.h, their entry points
 include/wxl/offsets/             site.hpp, layout.hpp and the generated tables
+include/wxl/points/              points.txt, the list of wxl.point, and x86.def generated from it
+include/wxl/core/points.h        how the recompiled client runs a point (x64)
 src/runtime/                     host bring-up, stages, frames, the per-architecture attachment
 src/binding/                     the binding realised: memory reads (x86), the client's accessors (x64)
 src/seams/                       the seam bodies, one file per domain (both); the x86 detours and thunks
 src/objects/                     wxl.object over the binding
 src/services/                    wxl.script, wxl.storage, wxl.data (both); wxl.hook, wxl.hook.raw, wxl.patch (x86)
 src/profile/                     the Tracy profiler and wxl.profile (both)
+src/points/                      wxl.point: handlers and dispatch (both), the detours (x86), the client's bytes (x64)
 src/hook/                        the detour engine and the named points        (x86)
 src/patcher/                     PE import and entry trampoline                (x86)
 src/common/                      the log
 tests/seam_harness.cpp           every seam body against a fake client; --bench times the hot paths
 mods/                            the mods above                                (x86)
 deps/minhook/                    MinHook, BSD-2-Clause, unmodified             (x86)
+deps/safetyhook/                 SafetyHook v0.7.0, BSL-1.0, its sources       (x86)
+deps/zydis/                      Zydis v4.1.0 and Zycore, MIT, the decoder     (x86)
+tools/points/                    generate_points.py, insert_points.py, their self-test
 deps/tracy/                      Tracy's client 0.14.1, BSD-3-Clause, unmodified
 tools/seams/                     check the seam table against the fork and against Wow.exe
 tools/offsets/, tools/layouts/   regenerate the tables from the decompiled client
@@ -416,14 +468,24 @@ tools/fields/                    regenerate the SDK's update-field table from th
 | `not Wow.exe build 12340` | the addresses do not apply to this executable; named points and seams stay off |
 | `attach 'World.Preload': refused` (x64) | a seam cannot be detoured on the recompiled client; subscribe to its events |
 | `the client and this runtime were built from different binding tables` (x64) | the client and `WarcraftXL.dll` come from different trees; the line names the first row of `binding.def` that differs. Rebuild both from one tree |
+| `seam <Domain.Name> not attached: x64 only: ...` (x86) | expected: the seam's body needs what only the recompiled client keeps (a `WXL_SEAM_X64_ONLY` row; none today); its events are not announced there and a subscription to them is refused |
+| `<point>: <side> on <point> refused: ...` (tag `point`) | the line says why: the point is not on this runtime (`x64 only: ...`), it is observe only, the mod was built against another signature of it (rebuild it), or on x86 its first bytes cannot take a detour |
+| `WarcraftXLPoints: ... different point tables` (x64) | the client and `WarcraftXL.dll` come from different point lists; rebuild both from one tree. No point can be attached until then |
 | `the client handed no <row> accessor; what reads it answers absent` (x64) | the client was built against an older `init.h` than this runtime; the row of `binding.def` it names answers its absent value (map `-1`, no position, ...) until the client passes one |
+
+## 🤝 Contributors
+
+Tyrallis brought the model services (`wxl.m2file`, `wxl.m2`, `wxl.gx`) and the character
+appearance and model seams they stand on (pull request #1 of sdk, core and client).
 
 ## 📄 License
 
 MIT. See [LICENSE](LICENSE).
 
 MinHook, under `deps/minhook/`, is BSD-2-Clause and keeps its own license file. Tracy's client,
-under `deps/tracy/`, is BSD-3-Clause and keeps its own license file.
+under `deps/tracy/`, is BSD-3-Clause and keeps its own license file. SafetyHook, under
+`deps/safetyhook/`, is BSL-1.0, and Zydis with Zycore, under `deps/zydis/`, are MIT; each keeps its
+own license file.
 
 <div align="center">
 

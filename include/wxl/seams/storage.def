@@ -22,7 +22,8 @@ WXL_SEAM_RAISES(Storage, OpenFile, FileOpen)
 // The same function, observed: a gate has no After, so the result of an open is a second row
 // on the same address. On x86 both are links of one chain, this one attached after the gate and
 // so nearer the function: it is handed the arguments the gate let through, the name a redirect
-// or a search folder chose included. On x64 the fork calls After at each of the function's
+// chose included (where that name is found -- a folder, a source, an archive -- FindFile says
+// later). On x64 the fork calls After at each of the function's
 // returns, after the gate's test at its head.
 //
 // After raises FileOpened with the name that was opened, whether a file came back, and its size
@@ -31,6 +32,21 @@ WXL_SEAM_RAISES(Storage, OpenFile, FileOpen)
 // listing of wxl.storage's find) raise nothing, as they raise no FileOpen.
 WXL_SEAM_AFTER(Storage, OpenEx, "SFile::OpenEx", int32_t, stdcall, (void* archive, const char* name, uint32_t flags, void** result))
 WXL_SEAM_RAISES(Storage, OpenEx, FileOpened)
+
+// Finds where a name lives: a file of the disk, of the loose-file table or of an archive. Called
+// by SFile::OpenEx for an open from the whole mounted set, by SFile::FileExistsEx and by
+// SFile::FileExists, so it is where every name the client looks for or opens is resolved. A
+// static of System_SFile2: [ebp+8..0x1C] read, a bare `ret`, its three callers `add esp, 0x18`:
+// cdecl. It answers in al; the gate answers the whole of eax.
+//
+// Gated: the runtime's sources answer here, by priority -- a folder of the search path, a mod's
+// provider or the bytes a mod serves --, and a name some mod transforms is opened through the
+// runtime's file layer. A folder's file is answered by rewriting the name to its path behind two
+// backslashes, which the function then finds on the disk; a provider's, a served or a
+// transformed file are answered by taking the call: the path the runtime's file layer opens,
+// type SFILE_PLAIN (0), no archive. Called on every thread that opens files; nothing is done
+// while no source and no transform is registered.
+WXL_SEAM_GATE(Storage, FindFile, "System_SFile2::FindFile", int32_t, cdecl, (const char* name, char* path, uint32_t size, uint32_t flags, uint32_t* type, void** archive))
 
 // Mounts an archive by path: an .MPQ file, or a folder named like one. Nonzero, with an SArchive
 // written through `archive`, when it was opened; its hash and block tables are read by then. A

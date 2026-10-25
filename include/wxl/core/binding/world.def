@@ -10,3 +10,9 @@
 // Numeric id of the loaded map, -1 while none: the client's s_mapId (Map.cpp), which CMap::Load
 // writes. The first member of wxl_core_init, and the one every version of it has carried.
 WXL_BINDING(map_id, int32_t, (void), (), -1)
+
+// The point the world is loaded around: World::s_currentWorldPos, which
+// World::PrepareAreaOfInterest sets at every world update, preload and map load from the camera
+// target, the player. Still the old place at the start of a teleport's preload. False, with
+// nothing written, while no map is loaded.
+WXL_BINDING(world_position, wxl_bool, (wxl_vec3* out), (out), WXL_FALSE)

@@ -139,6 +139,7 @@ type CGxDevice Engine/Source/Gx/CGxDevice/CGxDevice.h CGxDevice
   m_textures.m_terminator.m_next          engine/GxDevice:kTexListHead
   m_textureTarget                         engine/GxDevice:kRenderTargets
   m_textureTarget[0].m_apiSpecific        engine/Gx:kRtOverrideField                   # hand: "RT override active" flag; fork: colour target's API surface
+  m_textureTarget[1].m_apiSpecific        -
   m_scrShotClick                          engine/GxDevice:kScreenshotPending
   m_scrShotWidth                          engine/GxDevice:kScreenshotWidth
   m_scrShotHeight                         engine/GxDevice:kScreenshotHeight
@@ -171,9 +172,20 @@ type CGxDeviceD3d Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h CGxDeviceD3d
   m_eventQuery                            engine/GxDevice:kD3dEventQuery
   m_hwCursorDirty                         engine/GxDevice:kD3dCursorDirty
   m_texture3B58                           engine/GxDevice:kD3dPlaceholderTex
+  m_d3dCurrentVertexDecl                  -                                            # wxl.gx invalidate_state
+  m_d3dVertexStreamBuf                    -
+  sizeof(m_d3dVertexStreamBuf)            -
+  m_deviceStates                          -
+  sizeof(m_deviceStates)                  -
 
 type CGxDeviceD3d9Ex Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h CGxDeviceD3d9Ex
   sizeof                                  engine/GxDevice:kD3d9ExObjectSize            # CGxDevice::NewD3d9Ex allocation
+  m_d3dDevice                             -                                            # wxl.gx: the D3D9Ex device
+  m_d3dCurrentVertexDecl                  -
+  m_d3dVertexStreamBuf                    -
+  sizeof(m_d3dVertexStreamBuf)            -
+  m_deviceStates                          -
+  sizeof(m_deviceStates)                  -
 
 type D3DCAPS9 Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h D3DCAPS9
   VertexShaderVersion                     engine/GxDevice:kCaps9VertexShaderVersion
@@ -334,6 +346,7 @@ type CShaderEffect Engine/Source/ShaderEffect/ShaderEffect.h CShaderEffect
 # The M2 render context: what the hand headers call the "draw context" of a batch draw.
 type CM2SceneRender Engine/Source/Model2/CM2SceneRender.h CM2SceneRender
   sizeof                                  -
+  m_cache                                 -
   m_curElement                            engine/Gx:kDrawBatchCtxElementField,game/M2:kOffRenderCtxElement
   m_curModel                              engine/Gx:kDrawBatchCtxModelField,game/M2:kOffDrawCtxInstance,game/M2:kOffRenderCtxInstance
   m_curSkinSection                        engine/Gx:kDrawBatchCtxSectionField
@@ -360,6 +373,8 @@ type CM2Model Engine/Source/Model2/M2Model.h CM2Model
   m_frameStamp                            game/M2:kOffInstLastAnimFrame
   m_animateNext                           game/M2:kOffInstAnimateNext
   m_attachParent                          game/M2:kOffInstParent,game/Unit:kModelParentField
+  m_model30                               -                                            # the model an interface copy was made from (wxl.m2)
+  m_attachmentId                          -                                            # the attachment point it hangs on (wxl.m2)
   m_attachments                           game/M2:kOffInstAttachEnable
   m_attachmentIndex                       game/M2:kOffInstAttachSlot
   m_attachList                            game/M2:kOffInstAttachedHead
@@ -591,6 +606,10 @@ type M2Material Engine/Source/Model2/M2Data.h M2Material
 
 type M2SkinSection Engine/Source/Model2/M2Data.h M2SkinSection
   sizeof                                  game/M2:kGeoCtxGroupStride
+  m_vertexStart                           -
+  m_vertexCount                           -
+  m_indexStart                            -
+  m_indexCount                            -
 
 type M2Particle Engine/Source/Model2/M2Data.h M2Particle
   sizeof                                  -
@@ -652,6 +671,14 @@ type ItemDisplayInfoRec WoW/Source/DB/Rec/ItemDisplayInfoRec.h ItemDisplayInfoRe
   m_modelTexture[0]                       game/DB2:kOffTex1
   m_modelTexture[1]                       game/DB2:kOffTex2
   m_inventoryIcon[1]                      game/DB2:kOffIcon2
+  m_inventoryIcon[0]                      -                                            # wxl.m2 item_display
+  m_geosetGroup                           -
+  m_flags                                 -
+  m_spellVisualID                         -
+  m_groupSoundIndex                       -
+  m_helmetGeosetVisID                     -
+  m_texture                               -
+  m_itemVisual                            -
   m_particleColorID                       game/DB2:kOffParticleId
 
 type CreatureModelDataRec WoW/Source/DB/Rec/CreatureModelDataRec.h CreatureModelDataRec
@@ -739,6 +766,15 @@ type CGUnit_C WoW/Source/Object/ObjectClient/Unit_C.h CGUnit_C
   m_movementData.m_facing                 -                                            # wxl.object: the raw facing when the unit is read by field
   m_castingSpellId                        -                                            # binding unit_casting_spell_id: the cast in progress
   m_channelSpellId                        -                                            # binding unit_channel_spell_id: the channel in progress
+  m_auras                                 -                                            # binding unit_aura_slot: the aura slots, inline or grown
+  m_auras.m_count                         -                                            # binding unit_aura_slot: 0xFFFFFFFF once the slots grew out of line
+  m_auras.m_dynamic.m_data                -                                            # binding unit_aura_slot: the grown slots
+  m_castStartTime                         -                                            # binding unit_cast_start
+  m_castEndTime                           -                                            # binding unit_cast_end
+  m_channelStartTime                      -                                            # binding unit_channel_start
+  m_channelEndTime                        -                                            # binding unit_channel_end
+  m_mountDisplayId                        -                                            # binding unit_mount_model: what IsMounted reads
+  m_clientFlags                           -                                            # binding unit_client_flags
 
 # The unit descriptor block follows the 0x18-byte object block: hand value = 0x18 + field.
 type CGUnitData WoW/Source/Object/Unit.h CGUnitData
@@ -1267,6 +1303,25 @@ type CSpriteClickEvent WoW/Source/Ui/GameUI.h CSpriteClickEvent
 type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
   sizeof                                  -
   m_flags                                 -                                            # binding unit_movement_flags
+  m_walkSpeed                             -                                            # binding unit_speed: the first of nine floats
+  m_pitchRate                             -                                            # binding unit_speed: the last of them
+
+# An item's record in the item cache, as CGItem_C::GetStats answers it (binding/item.def).
+type ItemStats_C WoW/Source/Object/ItemStats.h ItemStats_C
+  sizeof                                  -
+  m_quality                               -                                            # binding item_stats_quality
+  m_itemLevel                             -                                            # binding item_stats_level
+  m_requiredLevel                         -                                            # binding item_stats_required_level
+  m_class                                 -                                            # binding item_stats_class
+  m_subClass                              -                                            # binding item_stats_subclass
+  m_inventoryType                         -                                            # binding item_stats_inventory_type
+  m_stackable                             -                                            # binding item_stats_stackable
+  m_sellPrice                             -                                            # binding item_stats_sell_price
+
+# A raid member, as CGRaidInfo::m_members points at them (binding/action.def).
+type CGRaidMember WoW/Source/Ui/RaidInfo.h CGRaidMember
+  sizeof                                  -
+  m_guid                                  -                                            # binding raid_member_guid
 
 # =============================================================================================
 # The chat's held lines (binding/chat.def)
@@ -1275,3 +1330,33 @@ type CMovementShared WoW/Source/Object/MovementShared.h CMovementShared
 type PENDINGCHAT WoW/Source/Ui/ChatFrame.h PENDINGCHAT
   sizeof                                  -                                            # QueueChatText allocates 0xD8 (0x00502D0E)
   m_text                                  -                                            # binding pending_chat_text (0x00502DA9 stores the copy)
+
+# =============================================================================================
+# The gameplay events' reads (binding/gameplay.def)
+# =============================================================================================
+
+type AuraData WoW/Source/Object/ObjectClient/AuraData.h AuraData
+  sizeof                                  -                                            # an aura slot: 0x18, the stride OnAuraUpdate walks (0x0072FAC4)
+  m_creator                               -                                            # binding aura_caster
+  m_spellId                               -                                            # binding aura_spell_id
+  m_flags                                 -                                            # binding aura_flags
+  m_level                                 -                                            # binding aura_level
+  m_stackCount                            -                                            # binding aura_stacks
+  m_duration                              -                                            # binding aura_duration
+  m_endTime                               -                                            # binding aura_end_time
+
+type LootSlot WoW/Source/Ui/LootFrame.h LootSlot
+  sizeof                                  -                                            # CGLootInfo::m_slots' stride: 0x20 (ClearSlot, 0x0058993D)
+  m_itemID                                -                                            # binding loot_slot
+  m_displayId                             -                                            # binding loot_slot
+  m_count                                 -                                            # binding loot_slot
+  m_randomSuffix                          -                                            # binding loot_slot
+  m_randomPropertyId                      -                                            # binding loot_slot
+  m_slot                                  -                                            # binding loot_slot
+  m_slotType                              -                                            # binding loot_slot
+
+type FactionStanding WoW/Source/Ui/ReputationInfo.h FactionStanding
+  sizeof                                  -                                            # CGReputationInfo::m_factionStandings' stride
+  m_factionId                             -                                            # binding faction_standing
+  m_base                                  -                                            # binding faction_standing
+  m_standing                              -                                            # binding faction_standing

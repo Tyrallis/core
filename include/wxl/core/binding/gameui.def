@@ -19,6 +19,10 @@ WXL_BINDING(ui_initialized, int32_t, (void), (), 0)
 // login: CGGameUI::m_loggingIn, a byte.
 WXL_BINDING(ui_logging_in, uint8_t, (void), (), 0)
 
+// Nonzero while a /reload rebuilds the game interface: CGGameUI::m_currentlyReloadingUI, a byte
+// CGGameUI::Idle sets before its Shutdown and CGGameUI::Initialize clears after its EnterWorld.
+WXL_BINDING(ui_reloading, uint8_t, (void), (), 0)
+
 // A click on the terrain or a map object, as CGGameUI::HandleTerrainClick is handed one: the
 // guid of the game object hit (0 for bare ground), the point, and the button as the client
 // numbers it (1 left, 2 middle, 4 right).

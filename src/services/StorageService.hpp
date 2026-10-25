@@ -26,16 +26,19 @@ namespace wxl::core::services
         void CloseFilesOf(uint32_t mod);
 
         /**
-         * @brief Where an open of @p name is answered from a folder of the search path.
+         * @brief The folder of the search path that holds @p name and wins it among folders: the
+         *        highest priority one the client can open from.
          *
-         * True when a folder holds the name and wins it: a folder of a priority above 0 over
-         * the client's own data, one of 0 or below only when the client has nothing by that name.
-         * @p out then receives the name the client opens that file by: its path relative to the
-         * client's folder behind two backslashes, which the client reads from the disk at its
-         * base path without looking among its loose files (absolute when it has no base path).
-         * False, nothing written, otherwise.
+         * True with @p out set to the name the client opens that file by -- its path relative
+         * to the client's folder behind two backslashes, which the client reads from the disk at
+         * its base path without looking among its loose files (absolute when it has no base
+         * path) -- and @p priority to the folder's. Whether the folder wins over the client's own
+         * data and the providers is the FindFile gate's to say. False, nothing written, otherwise.
          */
-        bool Resolve(const char* name, char* out, size_t capacity);
+        bool BestFolder(const char* name, char* out, size_t capacity, int32_t* priority);
+
+        /// Whether any folder is in the search path: one load.
+        bool AnyFolder();
 
         /**
          * @brief The name a mod's redirect opens in place of @p name, from any thread.
@@ -48,7 +51,7 @@ namespace wxl::core::services
         /// Takes a mod's redirects back: it is disabled or unloaded.
         void RemoveRedirectsOf(uint32_t mod);
 
-        /// Whether a name resolves, in the client's archives or in a folder of the search path.
+        /// Whether a name resolves, in the client's archives, a folder of the search path or a source.
         bool Exists(const char* name);
 
         /// Whether this thread is listing the archives for find: the opens of their listfiles

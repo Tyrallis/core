@@ -40,3 +40,12 @@ WXL_BINDING(storage_base_path, const char*, (void), (), 0)
 // SFile::List; answers how many archives were listed. An archive without a listfile adds none.
 // Opens each "(listfile)" through the client's open, on the calling thread.
 WXL_BINDING(archive_list, uint32_t, (wxl_core_name_fn fn, void* user), (fn, user), 0)
+
+// The client's file stack, System_File::Stacked::s_manager, by address: the node it points at is
+// the top of the stack every Blizzard::File call dispatches through, and the runtime's file layer
+// writes its verbs into that node (see wxl/core/filestack.hpp).
+WXL_BINDING(filestack_top, void**, (void), (), 0)
+
+// The stack the client starts with, System_File::Stacked::s_initstack: while the top is this one,
+// the client has not built its stack yet and nothing may be written into it.
+WXL_BINDING(filestack_initial, const void*, (void), (), 0)

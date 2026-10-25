@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 WarcraftXL
+//
+// The M2 domain: seams on the model renderer and the model animator.
+
+#ifndef WXL_SEAM_AFTER
+#error "define WXL_SEAM_AFTER(domain, name, symbol, ret, conv, params) before including m2.def"
+#endif
+
+// Draws one batch of a model: sets its material, textures and bones, then issues the device's
+// draw. CM2SceneRender::Draw calls it for every element of type 0, the plain batches every
+// creature, player and doodad model is made of. After is where the batch is drawn and everything
+// it was drawn with is still bound: ModelBatchDrawn, with the numbers of the device's draw. The
+// recompiled client records them as the device draws (Gx.h, g_gxLastIndexedDraw); on the stock
+// client they are rebuilt from the skin section the batch was built from (`this` + 0x90, which
+// outlives the call) and the device's buffers and viewport. thiscall.
+WXL_SEAM_AFTER(M2, DrawBatch, "CM2SceneRender::DrawBatch", void, thiscall, (void* self))
+WXL_SEAM_RAISES(M2, DrawBatch, ModelBatchDrawn)
+
+// Animates one model for the frame: its bones' sequences, then every bone's matrix in view space,
+// then colours, lights, ribbons, particles and its attachments, which it animates in turn. Runs on
+// the scene's animate threads, two at once. After is called once the bones are posed -- before
+// what reads them, the ribbons, particles and attachments -- and at the return taken for a model
+// that has not loaded or was animated this frame already; it raises nothing: it poses the bones of
+// a model wxl.m2 attached to follow its parent's. thiscall.
+WXL_SEAM_AFTER(M2, AnimateMT, "CM2Model::AnimateMT", void, thiscall, (void* self, const void* view, const void* diffuse, const void* emissive, float alpha, float alpha2))
+
+// The same for a model with one bone, one sequence and nothing else to animate, which the client
+// flags at load and animates here instead: its one bone matrix is the model's transform. After is
+// called once that bone is set, and at the early return. thiscall.
+WXL_SEAM_AFTER(M2, AnimateMTSimple, "CM2Model::AnimateMTSimple", void, thiscall, (void* self, const void* view, const void* diffuse, const void* emissive, float alpha, float alpha2))

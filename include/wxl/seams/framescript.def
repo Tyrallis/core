@@ -55,10 +55,14 @@ WXL_SEAM_RAISES(FrameScript, CreateEvents, ScriptVmReady)
 // mod listens; the client's own listeners are not consulted, so an event nothing in the
 // interface registered for is raised all the same. Before also raises ChatAddonMessage when the
 // event is CHAT_MSG_ADDON fired by CGChat::AddChatMessage for an addon message of the server,
-// with the prefix, the text, the channel and the sender's name it carries (Chat.AddChatMessage).
+// with the prefix, the text, the channel and the sender's name it carries (Chat.AddChatMessage),
+// and WindowOpened or WindowClosed for the events that open or close a window on an NPC
+// (GOSSIP_SHOW, MERCHANT_CLOSED, QUEST_DETAIL, ...), with whom the interface's "npc" names.
 WXL_SEAM_BEFORE(FrameScript, vSignalEvent, "vFrameScript_SignalEvent", void, cdecl, (uint32_t index, const char* format, void* args))
 WXL_SEAM_RAISES(FrameScript, vSignalEvent, UiEvent)
 WXL_SEAM_RAISES(FrameScript, vSignalEvent, ChatAddonMessage)
+WXL_SEAM_RAISES(FrameScript, vSignalEvent, WindowOpened)
+WXL_SEAM_RAISES(FrameScript, vSignalEvent, WindowClosed)
 
 // The error handler the client installs on every protected call of interface code: makes the
 // error value a string, names the object that raised it, and hands it to the handler the

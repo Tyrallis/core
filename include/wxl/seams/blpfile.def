@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 WarcraftXL
+//
+// The BLPFile domain: a texture file's header, read as it is decoded.
+
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including blpfile.def"
+#endif
+
+// Opens a texture file by name, reads it whole and hands the bytes to Source. Before notes the
+// name for Source. thiscall `(name, flags)`, `ret 8`.
+WXL_SEAM_BEFORE(BLPFile, Open, "CBLPFile::Open", int32_t, thiscall, (void* self, const char* file_name, int32_t flags))
+
+// Takes a texture file's bytes, its BLP2 header first, as the image to decode. Its two callers
+// are CBLPFile::Open and PumpBlpTextureAsync, whose seams note the file's name first. Before
+// raises TextureDecode with that name and what the header says, only while someone listens.
+// thiscall `(data)`, `ret 4`.
+WXL_SEAM_BEFORE(BLPFile, Source, "CBLPFile::Source", int32_t, thiscall, (void* self, const void* data))
+WXL_SEAM_RAISES(BLPFile, Source, TextureDecode)

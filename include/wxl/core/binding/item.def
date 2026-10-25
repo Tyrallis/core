@@ -17,3 +17,16 @@ WXL_BINDING_FIELD_VIA(item_duration, uint32_t, CGItem_C, m_item, CGItemData, m_i
 WXL_BINDING_FIELD_VIA(item_flags, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldFlags, 0)
 WXL_BINDING_FIELD_VIA(item_durability, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldDurability, 0)
 WXL_BINDING_FIELD_VIA(item_max_durability, uint32_t, CGItem_C, m_item, CGItemData, m_itemFieldMaxdurability, 0)
+
+// The item's record in the client's item cache, or null while the client has not received it:
+// CGItem_C::GetStats, which asks the cache without requesting the record. Main thread only.
+// Its members below take the record.
+WXL_BINDING(item_stats, const void*, (const void* object), (object), 0)
+WXL_BINDING_FIELD(item_stats_quality, uint32_t, ItemStats_C, m_quality, 0)
+WXL_BINDING_FIELD(item_stats_level, uint32_t, ItemStats_C, m_itemLevel, 0)
+WXL_BINDING_FIELD(item_stats_required_level, uint32_t, ItemStats_C, m_requiredLevel, 0)
+WXL_BINDING_FIELD(item_stats_class, uint32_t, ItemStats_C, m_class, 0)
+WXL_BINDING_FIELD(item_stats_subclass, uint32_t, ItemStats_C, m_subClass, 0)
+WXL_BINDING_FIELD(item_stats_inventory_type, uint32_t, ItemStats_C, m_inventoryType, 0)
+WXL_BINDING_FIELD(item_stats_stackable, int32_t, ItemStats_C, m_stackable, 0)
+WXL_BINDING_FIELD(item_stats_sell_price, uint32_t, ItemStats_C, m_sellPrice, 0)

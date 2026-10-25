@@ -21,3 +21,16 @@ WXL_BINDING(gx_window_visible, wxl_bool, (void), (), WXL_FALSE)
 // The size the client renders at, in pixels. False, with nothing written, when there is no device
 // to ask: the client's own query does not check for one, so this does before it calls it.
 WXL_BINDING(gx_window_size, wxl_bool, (uint32_t* width, uint32_t* height), (width, height), WXL_FALSE)
+
+// The device itself, for wxl.gx: the client's IDirect3DDevice9. Null with no device, and on a
+// device of another API.
+WXL_BINDING(gx_d3d9_device, void*, (void), (), 0)
+
+// Makes the client send all of its device state again before its next draw: what a mod calls
+// after it set state on the device behind the client's copy of it. Nothing without a D3D9 device.
+WXL_BINDING(gx_invalidate_state, void, (void), (), (void)0)
+
+// The batch a model renderer (CM2SceneRender*) has just drawn: its model, the top of what that
+// model hangs on, the numbers of the device's draw and its viewport. False when the device drew
+// nothing for it (no context, a lost device).
+WXL_BINDING(gx_model_draw, wxl_bool, (const void* render, wxl_model_batch_args* out), (render, out), WXL_FALSE)

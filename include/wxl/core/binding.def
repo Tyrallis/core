@@ -87,6 +87,10 @@
 #include "wxl/core/binding/chat.def"
 #include "wxl/core/binding/memory.def"
 #include "wxl/core/binding/asset.def"
+#include "wxl/core/binding/gameplay.def"
+#include "wxl/core/binding/action.def"
+
+#include "wxl/core/binding/m2.def"
 
 #ifdef WXL_BINDING_FIELD_DEFAULTED
     #undef WXL_BINDING_FIELD

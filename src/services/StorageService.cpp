@@ -5,6 +5,8 @@
 
 #include "services/StorageService.hpp"
 
+#include "services/Assets.hpp"
+
 #include "binding/Binding.hpp"
 #include "common/Log.hpp"
 #include "runtime/Core.hpp"
@@ -145,6 +147,12 @@ namespace
 
     // --- the table ----------------------------------------------------------------------------
 
+    /// What an open that found nothing answers: not yet, when a provider said so, else not found.
+    wxl_result Missing()
+    {
+        return wxl::core::services::assets::PendingSeen() ? WXL_E_PENDING : WXL_E_NOT_FOUND;
+    }
+
     wxl_bool WXL_CALL Exists(wxl_str path)
     {
         const std::string name = Path(path);
@@ -165,8 +173,9 @@ namespace
         const std::string name = Path(path);
         if (name.empty()) return WXL_E_INVALID;
 
+        wxl::core::services::assets::ClearPending();
         void* file = wxl::core::binding::file_open(name.c_str());
-        if (!file) return WXL_E_NOT_FOUND;
+        if (!file) return Missing();
         *out = wxl::core::binding::file_size(file);
         wxl::core::binding::file_close(file);
         return WXL_OK;
@@ -180,8 +189,9 @@ namespace
         const std::string name = Path(path);
         if (name.empty()) return WXL_E_INVALID;
 
+        wxl::core::services::assets::ClearPending();
         void* file = wxl::core::binding::file_open(name.c_str());
-        if (!file) return WXL_E_NOT_FOUND;
+        if (!file) return Missing();
 
         const uint64_t size = wxl::core::binding::file_size(file);
         if (!buffer || capacity < size)
@@ -448,7 +458,7 @@ namespace
         const std::string wanted     = Backslashed(Path(pattern));
         const uint32_t    generation = g_generation.load(std::memory_order_relaxed);
         if (wanted.empty()) return 0;
-        if (wanted != lastPattern || generation != lastGeneration)
+        if (wanted != lastPattern || generation != lastGeneration || wxl::core::services::assets::Active())
         {
             Found found{wanted.c_str(), {}, {}};
             t_listing = true;
@@ -463,6 +473,9 @@ namespace
                     if (Inside(path.directory, client)) folders.push_back(path.directory);
             }
             for (const std::string& folder : folders) KeepFolder(found, folder, std::string());
+            wxl::core::services::assets::ListMatching(
+                wanted.c_str(), [&](const std::string& name) { Keep(found, name); },
+                [](const char* name, const char* p) { return Matches(name, p); });
 
             // Once each: the first source to name it, sorted by name.
             std::vector<size_t> order(found.names.size());
@@ -561,6 +574,35 @@ namespace
         return WXL_OK;
     }
 
+    // --- providers, transforms and served bytes: the asset pipeline (services/Assets.cpp) -----
+
+    wxl_result WXL_CALL AddProvider(const wxl_asset_provider* provider, int32_t priority, uint64_t* out)
+    {
+        return wxl::core::services::assets::AddProvider(provider, priority, out, Asking());
+    }
+
+    wxl_result WXL_CALL RemoveProvider(uint64_t provider)
+    {
+        return wxl::core::services::assets::RemoveProvider(provider, Asking());
+    }
+
+    wxl_result WXL_CALL AddTransform(const wxl_asset_transform* transform, int32_t priority, uint64_t* out)
+    {
+        return wxl::core::services::assets::AddTransform(transform, priority, out, Asking());
+    }
+
+    wxl_result WXL_CALL RemoveTransform(uint64_t transform)
+    {
+        return wxl::core::services::assets::RemoveTransform(transform, Asking());
+    }
+
+    wxl_result WXL_CALL ServeBytes(wxl_str path, const void* data, uint32_t size, int32_t priority)
+    {
+        return wxl::core::services::assets::Serve(path, data, size, priority, Asking());
+    }
+
+    wxl_result WXL_CALL Unserve(wxl_str path) { return wxl::core::services::assets::Unserve(path, Asking()); }
+
     const wxl_storage_api g_storage = {
         sizeof(wxl_storage_api),
         &Exists,
@@ -575,6 +617,12 @@ namespace
         &RemoveSearchPath,
         &RedirectFile,
         &Unredirect,
+        &AddProvider,
+        &RemoveProvider,
+        &AddTransform,
+        &RemoveTransform,
+        &ServeBytes,
+        &Unserve,
     };
 }
 
@@ -610,18 +658,14 @@ namespace wxl::core::services
 
         bool Exists(const char* name)
         {
-            if (!name || !*name) return false;
-            if (wxl::core::binding::file_exists(name)) return true;
-            if (!IsPlainName(name) || g_pathCount.load(std::memory_order_acquire) == 0) return false;
-            const std::string           relative = Backslashed(name);
-            const std::string           client   = ClientFolder();
-            std::lock_guard<std::mutex> lock(g_pathsLock);
-            for (const SearchFolder& path : g_paths)
-                if (Inside(path.directory, client) && IsFile(path.directory + "\\" + relative)) return true;
-            return false;
+            // The client's own lookup, which the FindFile gate answers for the folders and the
+            // providers as it does for the client.
+            return name && *name && wxl::core::binding::file_exists(name);
         }
 
-        bool Resolve(const char* name, char* out, size_t capacity)
+        bool AnyFolder() { return g_pathCount.load(std::memory_order_acquire) != 0; }
+
+        bool BestFolder(const char* name, char* out, size_t capacity, int32_t* priority)
         {
             if (!out || !capacity) return false;
             if (g_pathCount.load(std::memory_order_acquire) == 0 || !IsPlainName(name)) return false;
@@ -629,14 +673,13 @@ namespace wxl::core::services
             const std::string relative = Backslashed(name);
             const char*       base     = wxl::core::binding::storage_base_path();
             std::string       file;
+            int32_t           won = 0;
             {
                 std::lock_guard<std::mutex> lock(g_pathsLock);
                 for (SearchFolder& path : g_paths)
                 {
                     const std::string candidate = path.directory + "\\" + relative;
                     if (!IsFile(candidate)) continue;
-                    // A folder at 0 or below only fills what the client does not have.
-                    if (path.priority <= 0 && wxl::core::binding::file_exists(name)) return false;
                     const std::string folder = ClientFolder();
                     if (!Inside(path.directory, folder))
                     {
@@ -650,11 +693,13 @@ namespace wxl::core::services
                     // Behind its base path, the client reads "\\<relative>"; with none, the path
                     // itself, which is absolute.
                     file = base && *base ? "\\\\" + candidate.substr(folder.size()) : candidate;
+                    won  = path.priority;
                     break;
                 }
             }
             if (file.empty() || file.size() + 1 > capacity) return false;
             std::memcpy(out, file.c_str(), file.size() + 1);
+            if (priority) *priority = won;
             return true;
         }
 

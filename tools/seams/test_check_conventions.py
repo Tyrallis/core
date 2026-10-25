@@ -628,6 +628,10 @@ def local_cases(temp, report):
 # point: (address, convention, registers, stack dwords)
 GROUND_TRUTH = {
     "World.Preload":                   ("0x00781500", "cdecl", [], 2),
+    # CGGameUI::EnterWorld and LeaveWorld open with `push ebp; mov ebp,esp`, read no argument
+    # and no register before the m_inWorld test (0x00528019, 0x00528C39), and end in bare `ret`s.
+    "World.EnterWorld":                ("0x00528010", "cdecl", [], 0),
+    "World.LeaveWorld":                ("0x00528C30", "cdecl", [], 0),
     "Event.DispatchUpdate":            ("0x0047DB70", "regparm", ["edi"], 2),
     "ObjectMgr.InitObject":            ("0x004D3FF0", "regparm", ["esi", "eax", "ecx"], 0),
     "ObjectMgr.ObjDelete":             ("0x004D6FC0", "regparm", ["eax"], 0),
@@ -782,6 +786,48 @@ GROUND_TRUTH = {
     # The observed half of SFile::OpenEx, the same function as Storage.OpenFile: `ret 0x10` at
     # 0x00424C3C and 0x00424CCB.
     "Storage.OpenEx":                  ("0x00424B50", "stdcall", [], 4),
+    # System_SFile2::FindFile reads [ebp+8] (0x004247C0) up to [ebp+0x1C] (0x004247A9) and ends
+    # in a bare `ret` (0x00424B0A); SFile::FileExistsEx pushes six and `add esp, 0x18` at 0x00424B38.
+    "Storage.FindFile":                ("0x00424780", "cdecl", [], 6),
+    # The asset pipeline's events. CMapArea::AsyncCallback reads [ebp+8] (0x007D7024), a bare
+    # `ret` (0x007D7044); AsyncTextureSuccessCallback the same (0x004B7E84, 0x004B7F0D); both are
+    # called by AsyncFileReadPollHandler through ECX at 0x004B9B9E, `add esp, 4`.
+    "MapArea.AsyncCallback":           ("0x007D7020", "cdecl", [], 1),
+    "Texture.AsyncTextureSuccessCallback": ("0x004B7E80", "cdecl", [], 1),
+    # CMapObjGroup::Create: `mov esi, ecx` (0x007D82E8), bare `ret` (0x007D8560, 0x007D856E).
+    "MapObj.CreateGroup":              ("0x007D82E0", "thiscall", ["ecx"], 0),
+    # CM2Shared::FinishLoadingSkinProfile: `mov edi, ecx` (0x00838494), [ebp+8] read, `ret 4`
+    # (0x008384A3).
+    "M2Shared.FinishLoadingSkinProfile": ("0x00838490", "thiscall", ["ecx"], 1),
+    # The model loader's later stages: CM2Shared::Initialize `mov esi, ecx` (0x0083CC88), plain
+    # `ret` (0x0083CD29); InitializeSkinProfile `mov ebx, ecx` (0x00837A47), `ret` (0x00837AFE);
+    # FinishLoadingLowPrioritySequence reads [ebp+8], [ebp+0xc] and [ebp+0x10], `ret 0xc` (0x0083CA73).
+    "M2Shared.Initialize":             ("0x0083CC80", "thiscall", ["ecx"], 0),
+    "M2Shared.InitializeSkinProfile":  ("0x00837A40", "thiscall", ["ecx"], 0),
+    "M2Shared.FinishLoadingLowPrioritySequence": ("0x0083C6E0", "thiscall", ["ecx"], 3),
+    # The model renderer and animator: DrawBatch `ret` with `this` in ECX; AnimateMT and
+    # AnimateMTSimple `mov esi, ecx` and `ret 0x14` (0x00830968, 0x0082E545): five dwords, the two
+    # floats among them.
+    "M2.DrawBatch":                    ("0x008203B0", "thiscall", ["ecx"], 0),
+    "M2.AnimateMT":                    ("0x0082F0F0", "thiscall", ["ecx"], 5),
+    "M2.AnimateMTSimple":              ("0x0082E140", "thiscall", ["ecx"], 5),
+    # The character appearance: AddItem(slot, rec, visual) `ret 0xc` (0x004F26C2), RemoveItem(slot)
+    # `ret 4` (0x004EE53C); FreeComponent and RemoveVisuals are class statics reading [ebp+8] and
+    # ending in a plain `ret` (0x004F16E7, 0x004EB060).
+    "Component.AddItem":               ("0x004F2640", "thiscall", ["ecx"], 3),
+    "Component.RemoveItem":            ("0x004EE460", "thiscall", ["ecx"], 1),
+    "Component.FreeComponent":         ("0x004F16C0", "cdecl", [], 1),
+    "Component.RemoveVisuals":         ("0x004EAF70", "cdecl", [], 1),
+    # CBLPFile::Open: [ebp+8] (0x006AFF16) and `mov esi, ecx` (0x006AFF1B), `ret 8` (0x006AFF3A).
+    # CBLPFile::Source: `mov ebx, ecx` (0x006AE904), [ebp+8] (0x006AE924), `ret 4` (0x006AE955).
+    "BLPFile.Open":                    ("0x006AFF10", "thiscall", ["ecx"], 2),
+    "BLPFile.Source":                  ("0x006AE900", "thiscall", ["ecx"], 1),
+    # CGxDevice::IShaderLoad reads ECX (0x0068497E) and [ebp+8..0x14], `ret 0x14` (0x00684A9F).
+    "Gx.IShaderLoad":                  ("0x00684970", "thiscall", ["ecx"], 5),
+    # SE2::CreateWaveData reads [ebp+8] (0x0087EE83) to the floats at [ebp+0x38], bare `ret`
+    # (0x0087F195, 0x0087F376); Sound_LoadScriptSoundFile pushes sixteen, `add esp, 0x40` at
+    # 0x0087F808.
+    "Sound.CreateWaveData":            ("0x0087EE60", "cdecl", [], 16),
     # TextureCreate (the file-name overload) reads [ebp+8..0x14] and ends in a bare `ret`
     # (0x004B97A4, 0x004B98EC); 0x0040A075 pushes four and cleans 0x10.
     "Texture.Create":                  ("0x004B9760", "cdecl", [], 4),
@@ -806,6 +852,57 @@ GROUND_TRUTH = {
     # SMSG_COMPRESSED_UPDATE_OBJECT's handler pushes four and cleans 0x10 at 0x004D7597.
     "ObjectMgr.FillInPartialObjectData": ("0x004D53C0", "cdecl", [], 6),
     "ObjectMgr.Packet_SMSG_UPDATE_OBJECT": ("0x004D73A0", "cdecl", [], 4),
+    # The points of wxl.point (include/wxl/points/x86.def), read by hand: UpdateCallback is called
+    # once, at 0x004FA7BC, with two dwords pushed and none cleaned, and ends in a bare `ret`;
+    # CreateShared reads ECX at 0x0081C3A4 and returns `ret 8`; RenderWorld is a render-batch
+    # callback (its address pushed, never called directly) reading one dword, bare `ret`;
+    # vFrameScript_SignalEvent is called at 0x005326E8 with three pushed and twelve cleaned.
+    "Point.CGCamera_UpdateCallback":   ("0x00607B00", "cdecl", [], 2),
+    "Point.CM2Cache_CreateShared":     ("0x0081C390", "thiscall", ["ecx"], 2),
+    "Point.CGWorldFrame_RenderWorld":  ("0x004FAF90", "cdecl", [], 1),
+    "Point.vFrameScript_SignalEvent":  ("0x0081AC90", "cdecl", [], 3),
+    "Point.NetClient_ProcessMessage":  ("0x00631FE0", "thiscall", ["ecx"], 3),
+    # The gameplay rows, read by hand. The packet handlers are reached only through NetClient's
+    # handler table, which pushes four and cleans 0x10 at 0x0063202C; each reads its message at
+    # [ebp+0x14] and ends in bare `ret`s. UNINVITE, DESTROYED and READY_CHECK_FINISHED read
+    # nothing and are witnessed there. The mirror handlers are called by CallMirrorFunctions
+    # (six dwords pushed, 0x18 cleaned at 0x004D5254, their witness) and their own code shows
+    # only what each reads: the guid (two dwords), the offset (three), the value (five). The aura log statics: OnAuraUpdate pushes six (0x0072FAB3, add esp,0x18) and four
+    # (0x0072FB34, add esp,0x10). CGLootInfo::SetObject reads [ebp+8..0x10], ClearSlot a byte
+    # at [ebp+8]; UpdateActivePlayer reads nothing and UpdateGhostStatus starts `mov esi,ecx`
+    # (0x006DF717), both ending in bare `ret`s.
+    "Combat.UnitCombatLogAuraDose":    ("0x00752860", "cdecl", [], 6),
+    "Combat.UnitCombatLogAuraRefreshed": ("0x00752BA0", "cdecl", [], 4),
+    "Unit.MountDisplayIDUpdateHandler": ("0x007419C0", "cdecl", [], 2),
+    "Loot.SetObject":                  ("0x005896B0", "cdecl", [], 3),
+    "Loot.ClearSlot":                  ("0x00589920", "cdecl", [], 1),
+    "Player.PH_LOOT_OPCODES":          ("0x006D84F0", "cdecl", [], 4),
+    "Player.OnUpdateQuest":            ("0x006DF370", "cdecl", [], 5),
+    "Player.Packet_Group_12":          ("0x006D7F10", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_INVITE": ("0x006DF1A0", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_LIST":   ("0x006D8870", "cdecl", [], 4),
+    "Player.Packet_SMSG_GROUP_UNINVITE": ("0x006CBE10", "cdecl", [], 0),
+    "Player.Packet_SMSG_GROUP_DESTROYED": ("0x006CBE40", "cdecl", [], 0),
+    "Player.Packet_SMSG_RESURRECT_REQUEST": ("0x006DBD00", "cdecl", [], 4),
+    "Player.Packet_SMSG_EMOTE":        ("0x006CFE70", "cdecl", [], 4),
+    "Player.UpdateGhostStatus":        ("0x006DF710", "thiscall", ["ecx"], 0),
+    "GameUI.UpdateActivePlayer":       ("0x00520F70", "cdecl", [], 0),
+    "Chat.OnTextEmote":                ("0x00504070", "cdecl", [], 4),
+    "Item.OnUpdateDurability":         ("0x00707AE0", "cdecl", [], 5),
+    "Item.OnUpdateStackCount":         ("0x00707720", "cdecl", [], 2),
+    "Container.InvUpdateHandler":      ("0x005D9B40", "cdecl", [], 3),
+    "Container.UpdateInvContents":     ("0x005D9790", "cdecl", [], 5),
+    "Container.UpdateContainerContents": ("0x005D9600", "cdecl", [], 5),
+    "Raid.Packet_MSG_RAID_READY_CHECK": ("0x00574D50", "cdecl", [], 4),
+    "Raid.Packet_MSG_RAID_READY_CHECK_CONFIRM": ("0x005744F0", "cdecl", [], 4),
+    "Raid.Packet_MSG_RAID_READY_CHECK_FINISHED": ("0x00572560", "cdecl", [], 0),
+    "Duel.Packet_SMSG_DUEL_REQUESTED": ("0x005CFCD0", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_COUNTDOWN": ("0x005CFA50", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_WINNER":    ("0x005CFB20", "cdecl", [], 4),
+    "Duel.Packet_SMSG_DUEL_COMPLETE":  ("0x005CFA90", "cdecl", [], 4),
+    "Trade.Packet_SMSG_TRADE_STATUS":  ("0x007044A0", "cdecl", [], 4),
+    "Reputation.Packet_SMSG_SET_FACTION_STANDING": ("0x005D20A0", "cdecl", [], 4),
+    "Achievement.Packet_SMSG_ACHIEVEMENT_EARNED": ("0x005B3020", "cdecl", [], 4),
 }
 
 

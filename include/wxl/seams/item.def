@@ -3,8 +3,12 @@
 //
 // The Item domain: seams on CGItem_C, the client's items.
 //
-// Every row is a non-static member: thiscall, `self` first.
+// UseItem is a non-static member: thiscall, `self` first. The mirror handlers are file statics
+// whose address the client takes for its handler table: cdecl.
 
+#ifndef WXL_SEAM_BEFORE
+#error "define WXL_SEAM_BEFORE(domain, name, symbol, ret, conv, params) before including item.def"
+#endif
 #ifndef WXL_SEAM_GATE
 #error "define WXL_SEAM_GATE(domain, name, symbol, ret, conv, params) before including item.def"
 #endif
@@ -20,3 +24,16 @@
 // it cannot use; the spell cast the use would make is then never asked for.
 WXL_SEAM_GATE(Item, UseItem, "CGItem_C::UseItem", int32_t, thiscall, (void* self, const uint64_t* target, int32_t confirmed))
 WXL_SEAM_RAISES(Item, UseItem, ItemUseRequest)
+
+// The type mirror handlers of ITEM_FIELD_DURABILITY and ITEM_FIELD_STACK_COUNT: run after the
+// server wrote the field on any item, with the item's guid and the field's previous value by
+// address; the first refreshes the paper doll's alerts and the second the bags and action bars.
+// Reached only through CallMirrorFunctions (six dwords pushed, 0x18 cleaned at 0x004D5254); the
+// durability one reads the guid and the value, the stack one the guid alone, and each ends in a
+// bare `ret`: cdecl. Before raises ItemDurabilityChanged or ItemStackChanged when the value moved.
+WXL_SEAM_BEFORE(Item, OnUpdateDurability, "OnUpdateDurability", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Item, OnUpdateDurability, ItemDurabilityChanged)
+WXL_SEAM_WITNESS(Item, OnUpdateDurability, 0x004D5254)
+WXL_SEAM_BEFORE(Item, OnUpdateStackCount, "OnUpdateStackCount", int32_t, cdecl, (uint64_t guid, uint32_t field_offset, uint32_t field_size, const void* old_value, void* param))
+WXL_SEAM_RAISES(Item, OnUpdateStackCount, ItemStackChanged)
+WXL_SEAM_WITNESS(Item, OnUpdateStackCount, 0x004D5254)
