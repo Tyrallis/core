@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Client](https://img.shields.io/badge/client-3.3.5a%20(12340)-orange.svg)](#-installing)
-[![ABI](https://img.shields.io/badge/ABI-0.1.10-blue.svg)](https://github.com/WarcraftXL/sdk)
+[![ABI](https://img.shields.io/badge/ABI-0.1.11-blue.svg)](https://github.com/WarcraftXL/sdk)
 [![Targets](https://img.shields.io/badge/targets-x86%20%7C%20x64-lightgrey.svg)](#-overview)
 
 </div>
@@ -185,6 +185,7 @@ What a mod can reach **today**, by build:
 | `wxl.script` (the client's Lua) | yes: the client's own `lua_*` and `FrameScript_*` called at resolved addresses | yes: through the script rows of the binding |
 | `wxl.storage` | yes, every member: exists, size, read, open/read_at/close, mount_archive; add_search_path and remove_search_path, whose folders (inside the client's folder) the client opens as its own loose files, each its mod's and taken out when the mod is disabled or unloaded; find, across every mounted archive's listfile and those folders | the same |
 | `wxl.data` | yes: a client database served from a mod's own file | the same |
+| `wxl.footprint` | yes: Storm's allocations by source file while a mod counts them (detours of `SMemAlloc`, `SMemFree`, `SMemReAlloc`), the device's textures and buffers by pool, the sound and script heaps, each archive's tables, each client database, the address space; `MemoryPressure` | the same, from seam calls in the client's allocator |
 | `wxl.net`, `wxl.ui` | not yet; their events are raised, the service tables are not published | the same |
 | events raised | the ones the seam table derives (below) | the same list |
 | lifecycle stages | `EARLY`, `STORAGE`, `GRAPHICS`, `SCRIPT`, `READY`, `SHUTDOWN`, then the unload | the same |
@@ -290,7 +291,7 @@ source. Everything else observes.
 | `Client.Destroy` | `WowClientDestroy()` | nothing, but it is where `WXL_STAGE_SHUTDOWN` and the unload run: the last moment at which a mod can be told anything |
 | `ConsoleDevice.Initialize` | `ConsoleDeviceInitialize(const char* title, bool, bool)` | nothing, but its return is `WXL_STAGE_GRAPHICS`: the device is made after the first database is read and before the script context exists, which is the order the stages promise |
 | `Scrn.OnPaint` | `OnPaint(const void* data, void* param)`, the paint handler | `FrameBegin` before, only when the device has a context and the window can be seen -- the test the paint makes itself |
-| `Gx.ScenePresent` | `GxScenePresent()` | `FrameEnd` before, for the frame `Scrn.OnPaint` opened and only for it: the loading screen presents frames of its own, which raise nothing. The last draw list is flushed after it |
+| `Gx.ScenePresent` | `GxScenePresent()` | `FrameEnd` before, for the frame `Scrn.OnPaint` opened and only for it: the loading screen presents frames of its own, which raise nothing. The last draw list is flushed after it. About once a second while a mod watches the address space, `MemoryPressure` before, when its largest free block just fell under the threshold |
 | `SimpleTop.OnLayerRender` | `CSimpleTop::OnLayerRender()` | `UiRenderEnd` after: every stratum of the interface is drawn, the world inside it |
 | `WorldFrame.RenderWorld` | `CGWorldFrame::RenderWorld(void* world_frame)` | `WorldRenderBegin` before, `WorldRenderEnd` after. Run from inside the interface's batches, before anything of the interface over it; not reached where there is no world |
 | `Gx.ReleaseD3dResources` | `CGxDeviceD3d::IReleaseD3dResources(int32_t)` | `SwapchainLost` before, with the size about to go: at both of the D3D9 device's resets, and when it is destroyed. A client on another device does not reach it |
@@ -334,6 +335,12 @@ source. Everything else observes.
 | `Chat.DestroyPendingChat` | `PENDINGCHAT::~PENDINGCHAT()`, a held line freed, added again or given up on | nothing itself: Before forgets what was kept for it |
 | `Chat.RecordChat` | `CGChat::RecordChat(const char* text, int32_t type, ...)`, the commit of a line past every filter, right before the chat frames get it | `ChatMessage` before, for a line of a received message: its final type, the name it shows, its line id, its text as shown |
 | `Chat.Script_SendChatMessage`, `Chat.Script_SendAddonMessage` (gated) | `Script_SendChatMessage(lua_State*)`, `Script_SendAddonMessage(lua_State*)`, the script functions every message from the interface goes through | `ChatSend` at the gate, with the script's arguments; suppressing it answers no result and nothing is sent |
+| `Storage.OpenArchive` | `SFile::OpenArchive(const char* path, int32_t priority, uint32_t flags, SArchive** archive)`, every archive the client mounts | `ArchiveMounted` after, for an archive it opened, with its priority, its table sizes and what they hold |
+| `Storage.CloseArchive` | `SFile::CloseArchive(SArchive* archive)` | `ArchiveUnmounted` before, while the archive is still whole |
+| `ClientDb.Initialize` | `ClientDBInitialize()`, which loads every client database the client keeps | `ClientDbLoaded` after, once per database it left loaded, in the order the client declares them |
+| `Storm.SMemAlloc` | `SMemAlloc(size_t bytes, const char* filename, int32_t line, uint32_t flags)`, Storm's allocator, `new` included | nothing: after, the block is counted under its file while a mod has started `wxl.footprint`'s accounting |
+| `Storm.SMemFree` | `SMemFree(void* ptr, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts |
+| `Storm.SMemReAlloc` | `SMemReAlloc(void* ptr, size_t bytes, const char* filename, int32_t line, uint32_t flags)` | nothing: before, the block leaves the counts; after, what the call left comes back, under the file that moved it |
 
 The frame's slots -- `WorldRenderBegin`, `WorldRenderEnd`, `UiRenderEnd` -- carry the index of the
 frame they are drawn in, and are not raised outside one. `FrameBegin` and `FrameEnd` come in pairs:
