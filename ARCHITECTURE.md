@@ -240,7 +240,9 @@ client; `--bench` measures a zone with no viewer.
 
 The log is one file per launch, `Logs\WarcraftXL.log` next to the executable, written by
 `src/common/Log.cpp` straight to the OS (no user-space buffer; warnings and errors flushed to the
-disk). `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32 and ntdll only):
+disk). It stays UTF-8 text whatever a mod logs: the host's `Logger` (`sdk/host/include/wxl/host/log.hpp`)
+writes every byte of a line that is not part of a UTF-8 sequence, and every control character but
+a tab or a line break, as `\xNN` before the line reaches the sink. `src/runtime/Session.cpp` owns a launch's story, from `DllMain` (kernel32 and ntdll only):
 
 - **Settings.** `WarcraftXL.ini` next to the executable (`src/runtime/Settings.cpp`), section
   `[log]`: `level`, `keep` (earlier launches kept, 30 by default) and `level.<tag>` for one tag's
@@ -329,6 +331,7 @@ first lines of the `Errors\` file written during it (the message and the `Curren
 | `python core/tools/seams/check_conventions.py` | every `conv` column agrees with `Wow.exe`. Reads a stock `Wow.exe` 12340 (`--binary` or `$WXL_WOW_EXE`) with llvm-objdump |
 | `python core/tools/fields/generate_update_fields.py --check` | the SDK's update-field table is what the fork gives; with `--binary`, what `Wow.exe`'s own tables hold. Runs in the fork's build |
 | `wxl-core-seam-harness --profile-live`, with Tracy's `tracy-capture -a 127.0.0.1` | the profiler's zones, plots, messages and frames reach a viewer, from a harness under Wine |
+| `sdk/tests/ingame/` in a client (`wxl-ingame` assembles it as a Mods folder) | in the real game, on each runtime: the test mods' functions called from the client's Lua, chat and CVar events, hot reload and handler order, a broken and repaired manifest, casts, a cooldown, an item use, an equipment change, `/reload` and a logout; `wxl.selftest` logs PASS or FAIL per check |
 | `python core/tools/dbs/generate_client_dbs.py --check` | `include/wxl/core/client_dbs.def` lists every client database the fork declares, with its file and row size |
 
 The `ctest` suites are Windows executables; from Linux they build with clang-cl and run under Wine
