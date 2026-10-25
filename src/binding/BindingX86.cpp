@@ -646,63 +646,335 @@ namespace wxl::core::binding
         return WXL_TRUE;
     }
 
-    // wxl.gx is served only where the client hands its device and model renderer over (x64).
-    // Here the rows answer absent, and the M2 seam's body finds nothing to report.
-    void* gx_d3d9_device() { return nullptr; }
+    // --- Gx: wxl.gx ---------------------------------------------------------------------------
+    // Both D3D9 devices keep a copy of what they last set (m_deviceStates, the current
+    // declaration and streams); spoiling it makes the next state sync send everything again.
 
-    void gx_invalidate_state() {}
+    void* gx_d3d9_device()
+    {
+        const void* device = IsClient() ? GxDevice() : nullptr;
+        if (!device) return nullptr;
+        switch (Read<uint32_t>(device, WXL_FIELD("CGxDevice", "m_api")))
+        {
+        case 1: return Read<void*>(device, WXL_FIELD("CGxDeviceD3d", "m_d3dDevice"));     // GxApi_D3d9
+        case 2: return Read<void*>(device, WXL_FIELD("CGxDeviceD3d9Ex", "m_d3dDevice"));  // GxApi_D3d9Ex
+        default: return nullptr;
+        }
+    }
 
-    void* gx_object_model(const void*) { return nullptr; }
+    namespace
+    {
+        template <std::size_t Decl, std::size_t Streams, std::size_t StreamsSize, std::size_t States,
+                  std::size_t StatesSize>
+        void SpoilD3d(void* device)
+        {
+            uint8_t* bytes = static_cast<uint8_t*>(device);
+            std::memset(bytes + States, 0xA5, StatesSize);
+            std::memset(bytes + Decl, 0, sizeof(void*));
+            std::memset(bytes + Streams, 0, StreamsSize);
+            const int32_t dirty = 1;
+            std::memcpy(bytes + WXL_FIELD("CGxDevice", "m_viewportDirty"), &dirty, sizeof dirty);
+            std::memcpy(bytes + WXL_FIELD("CGxDevice", "m_scissorRectDirty"), &dirty, sizeof dirty);
+        }
+    }
 
-    wxl_bool gx_model_draw(const void*, wxl_gx_model_draw*) { return WXL_FALSE; }
+    void gx_invalidate_state()
+    {
+        void* device = IsClient() ? const_cast<void*>(GxDevice()) : nullptr;
+        if (!device) return;
+        const uint32_t api = Read<uint32_t>(device, WXL_FIELD("CGxDevice", "m_api"));
+        if (api != 1 && api != 2) return;
+        // CGxDevice::IRsForceUpdate(), the overload taking nothing: __thiscall, `ret` (0x00685B4D).
+        x86::CallMember<void>(WXL_SITE_AT("CGxDevice::IRsForceUpdate", 0x00685A70, 0), device);
+        if (api == 1)
+            SpoilD3d<WXL_FIELD("CGxDeviceD3d", "m_d3dCurrentVertexDecl"), WXL_FIELD("CGxDeviceD3d", "m_d3dVertexStreamBuf"),
+                     WXL_MEMBER_SIZE("CGxDeviceD3d", "m_d3dVertexStreamBuf"), WXL_FIELD("CGxDeviceD3d", "m_deviceStates"),
+                     WXL_MEMBER_SIZE("CGxDeviceD3d", "m_deviceStates")>(device);
+        else
+            SpoilD3d<WXL_FIELD("CGxDeviceD3d9Ex", "m_d3dCurrentVertexDecl"),
+                     WXL_FIELD("CGxDeviceD3d9Ex", "m_d3dVertexStreamBuf"), WXL_MEMBER_SIZE("CGxDeviceD3d9Ex", "m_d3dVertexStreamBuf"),
+                     WXL_FIELD("CGxDeviceD3d9Ex", "m_deviceStates"), WXL_MEMBER_SIZE("CGxDeviceD3d9Ex", "m_deviceStates")>(device);
+    }
 
-    // wxl.m2 is served only where the client hands its appearances and models over (x64). Here
-    // the rows answer absent, and the Component and AnimateMT seams find nothing to hand on.
-    wxl_bool component_wearer(const void*, uint32_t, wxl_m2_equipment*) { return WXL_FALSE; }
+    // The stock client keeps no record of its last draw's numbers: M2.DrawBatch is x64 only, and
+    // nothing calls this here.
+    wxl_bool gx_model_draw(const void*, wxl_model_batch_args*) { return WXL_FALSE; }
 
-    wxl_bool m2_item_display(uint32_t, wxl_m2_item_display*) { return WXL_FALSE; }
+    // --- M2: wxl.m2, AppearanceChanged ----------------------------------------------------------
 
-    const char* m2_race_prefix(uint32_t) { return nullptr; }
+    namespace
+    {
+        constexpr uint32_t kLoaded      = 0x1;     // CM2Model::m_fFlags: the file has loaded
+        constexpr uint32_t kAttachRoot  = 0x40000; // CM2Model::m_fFlags: attached to the root
+        constexpr uint16_t kNoIndex     = 0xFFFF;
+        constexpr uint32_t kItemSlots   = 12;      // NUM_ITEM_SLOTS: CCharacterComponent::m_itemDisplayID
 
-    void* m2_create_model(void*, const char*) { return nullptr; }
+        bool Loaded(const void* model) { return (Read<uint32_t>(model, WXL_FIELD("CM2Model", "m_fFlags")) & kLoaded) != 0; }
 
-    void m2_release_model(void*) {}
+        /// The parsed header (M2Data) of a model's file.
+        const void* Header(const void* model)
+        {
+            const void* shared = Via(model, WXL_FIELD("CM2Model", "m_shared"));
+            return shared ? Via(shared, WXL_FIELD("CM2Shared", "m_data")) : nullptr;
+        }
 
-    wxl_bool m2_attach_model(void*, void*, uint32_t, wxl_bool) { return WXL_FALSE; }
+        /// A parsed array of the stock client: its count, and the address of its elements.
+        template <class T>
+        const T* Array(const void* header, std::size_t at, uint32_t& count)
+        {
+            count = Read<uint32_t>(header, at);
+            return count ? Read<const T*>(header, at + 4) : nullptr;
+        }
 
-    void m2_detach_model(void*) {}
+        /// The point `attachment` of a loaded model's file, as M2Data::m_attachmentIndicesById maps
+        /// it; kNoIndex for none.
+        uint16_t AttachmentIndex(const void* header, uint32_t attachment)
+        {
+            uint32_t        count = 0;
+            const uint16_t* ids   = Array<uint16_t>(header, WXL_FIELD("M2Data", "m_attachmentIndicesById.m_count"), count);
+            return ids && attachment < count ? ids[attachment] : kNoIndex;
+        }
+    }
 
-    void* m2_model_parent(const void*) { return nullptr; }
+    wxl_bool component_wearer(const void* component, uint32_t item_slot, wxl_appearance_args* out)
+    {
+        if (!IsClient() || !component || !out) return WXL_FALSE;
+        out->wearer     = const_cast<void*>(component);
+        out->model      = Read<void*>(component, WXL_FIELD("CCharacterComponent", "m_data.m_model"));
+        out->race_id    = Read<uint32_t>(component, WXL_FIELD("CCharacterComponent", "m_data.m_preferences.m_raceID"));
+        out->sex_id     = Read<uint32_t>(component, WXL_FIELD("CCharacterComponent", "m_data.m_preferences.m_sexID"));
+        out->item_slot  = item_slot;
+        out->display_id = item_slot < kItemSlots
+                              ? Read<uint32_t>(component, WXL_FIELD("CCharacterComponent", "m_itemDisplayID") + item_slot * 4)
+                              : 0u;
+        out->npc        = (Read<uint32_t>(component, WXL_FIELD("CCharacterComponent", "m_flags")) & 0x1) ? WXL_TRUE : WXL_FALSE;
+        return WXL_TRUE;
+    }
 
-    void* m2_model_source(const void*) { return nullptr; }
+    void* m2_object_model(const void* object)
+    {
+        if (!IsClient() || !object) return nullptr;
+        void* model = Read<void*>(object, WXL_FIELD("CGObject_C", "m_worldModel"));
+        // Bounded: an attachment chain is a few links (weapon, rider, mount).
+        for (int i = 0; model && i < 16; ++i)
+        {
+            void* parent = Read<void*>(model, WXL_FIELD("CM2Model", "m_attachParent"));
+            if (!parent) break;
+            model = parent;
+        }
+        return model;
+    }
 
-    void m2_set_geosets(void*, uint32_t, uint32_t, wxl_bool) {}
+    wxl_bool m2_item_display(uint32_t id, wxl_m2_item_display* out)
+    {
+        if (!IsClient() || !out || !id) return WXL_FALSE;
+        // WowClientDB_RLE<ItemDisplayInfoRec>::GetRecord(id, rec): __thiscall, `ret 8`, copies the
+        // 100-byte row, decompressing it when the store is compressed (0x004CFD90).
+        alignas(4) uint8_t rec[WXL_TYPE_SIZE("ItemDisplayInfoRec")];
+        if (!x86::CallMember<int32_t>(WXL_SITE_AT("WowClientDB_RLE<T>::GetRecord", 0x004CFD90, 0),
+                                      reinterpret_cast<const void*>(WXL_STATIC("g_itemDisplayInfoDB")),
+                                      static_cast<int32_t>(id), static_cast<void*>(rec)))
+            return WXL_FALSE;
+        const auto text = [&](std::size_t at) {
+            const char* value = Read<const char*>(rec, at);
+            return value ? value : "";
+        };
+        out->id = Read<uint32_t>(rec, 0);
+        for (int i = 0; i < 2; ++i)
+        {
+            out->model[i]             = text(WXL_FIELD("ItemDisplayInfoRec", "m_modelName[0]") + i * 4);
+            out->model_texture[i]     = text(WXL_FIELD("ItemDisplayInfoRec", "m_modelTexture[0]") + i * 4);
+            out->icon[i]              = text(WXL_FIELD("ItemDisplayInfoRec", "m_inventoryIcon[0]") + i * 4);
+            out->helmet_geoset_vis[i] = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_helmetGeosetVisID") + i * 4);
+        }
+        for (int i = 0; i < 3; ++i)
+            out->geoset_group[i] = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_geosetGroup") + i * 4);
+        for (int i = 0; i < 8; ++i) out->texture[i] = text(WXL_FIELD("ItemDisplayInfoRec", "m_texture") + i * 4);
+        out->flags             = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_flags"));
+        out->spell_visual_id   = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_spellVisualID"));
+        out->group_sound_index = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_groupSoundIndex"));
+        out->item_visual       = Read<int32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_itemVisual"));
+        out->particle_color_id = Read<uint32_t>(rec, WXL_FIELD("ItemDisplayInfoRec", "m_particleColorID"));
+        return WXL_TRUE;
+    }
 
-    wxl_bool m2_replace_texture(void*, uint32_t, const char*) { return WXL_FALSE; }
+    const char* m2_race_prefix(uint32_t race)
+    {
+        if (!IsClient()) return nullptr;
+        // WowClientDB<ChrRacesRec>::GetRecord, read in place: m_recordsById[id - m_minID].
+        const void*   store = reinterpret_cast<const void*>(WXL_STATIC("g_chrRacesDB"));
+        const int32_t minId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_minID"));
+        const int32_t maxId = Read<int32_t>(store, WXL_FIELD("WowClientDB_SpellRec", "m_maxID"));
+        const int32_t id    = static_cast<int32_t>(race);
+        if (id < minId || id > maxId) return nullptr;
+        const void* const* byId = Read<const void* const*>(store, WXL_FIELD("WowClientDB_SpellRec", "m_recordsById"));
+        const void*        rec  = byId ? byId[id - minId] : nullptr;
+        return rec ? Read<const char*>(rec, WXL_FIELD("ChrRacesRec", "m_clientPrefix")) : nullptr;
+    }
 
-    wxl_bool m2_pose_from_parent(void*) { return WXL_FALSE; }
+    void* m2_create_model(void* scene_model, const char* path)
+    {
+        if (!IsClient() || !scene_model || !path || !*path) return nullptr;
+        void* scene = Read<void*>(scene_model, WXL_FIELD("CM2Model", "m_scene"));
+        // CM2Scene::CreateModel(path, flags): __thiscall, `ret 8` (0x0081F8FF).
+        return scene ? x86::CallMember<void*>(WXL_SITE("CM2Scene::CreateModel", 0), scene, path, uint32_t(0)) : nullptr;
+    }
 
-    uint32_t m2_children(const void*, void**, uint32_t) { return 0; }
+    void m2_release_model(void* model)
+    {
+        // CM2Model::Release(): __thiscall, `ret` (0x00824EFC).
+        if (IsClient() && model) x86::CallMember<void>(WXL_SITE("CM2Model::Release", 0), model);
+    }
 
-    wxl_bool m2_attach_info(const void*, uint32_t*, wxl_bool*) { return WXL_FALSE; }
+    wxl_bool m2_attach_model(void* model, void* parent, uint32_t attachment, wxl_bool to_root)
+    {
+        if (!IsClient() || !model || !parent || model == parent) return WXL_FALSE;
+        // AttachToParent drops a request for a point a loaded parent lacks without saying so.
+        if (!to_root && Loaded(parent))
+        {
+            const void* header = Header(parent);
+            if (!header || AttachmentIndex(header, attachment) == kNoIndex) return WXL_FALSE;
+        }
+        // CM2Model::AttachToParent(parent, id, position, toRoot): __thiscall, `ret 0x10` (0x008317D1).
+        x86::CallMember<void>(WXL_SITE("CM2Model::AttachToParent", 0), model, parent, attachment,
+                              static_cast<const void*>(nullptr), static_cast<int32_t>(to_root ? 1 : 0));
+        return Read<void*>(model, WXL_FIELD("CM2Model", "m_attachParent")) == parent ? WXL_TRUE : WXL_FALSE;
+    }
 
-    wxl_bool m2_attach_copy(void*, void*, uint32_t, wxl_bool) { return WXL_FALSE; }
+    void m2_detach_model(void* model)
+    {
+        // CM2Model::DetachFromParent(): __thiscall, `ret` (0x00827552).
+        if (IsClient() && model && Read<void*>(model, WXL_FIELD("CM2Model", "m_attachParent")))
+            x86::CallMember<void>(WXL_SITE("CM2Model::DetachFromParent", 0), model);
+    }
 
-    void* m2_model_file(const void*) { return nullptr; }
+    void* m2_model_parent(const void* model)
+    {
+        return IsClient() && model ? Read<void*>(model, WXL_FIELD("CM2Model", "m_attachParent")) : nullptr;
+    }
 
-    wxl_bool m2_attachment_point(const void*, uint32_t, wxl_vec3*) { return WXL_FALSE; }
+    void* m2_model_source(const void* model)
+    {
+        return IsClient() && model ? Read<void*>(model, WXL_FIELD("CM2Model", "m_model30")) : nullptr;
+    }
 
-    wxl_bool m2_has_key_bone(const void*, uint32_t) { return WXL_FALSE; }
+    void m2_set_geosets(void* model, uint32_t first, uint32_t last, wxl_bool visible)
+    {
+        // CM2Model::SetGeometryVisible(first, last, visible): __thiscall, `ret 0xc` (0x0082C841).
+        if (IsClient() && model)
+            x86::CallMember<void>(WXL_SITE("CM2Model::SetGeometryVisible", 0), model, first, last,
+                                  static_cast<int32_t>(visible ? 1 : 0));
+    }
 
-    wxl_bool m2_pose_on_bone(void*, uint32_t, const wxl_vec3*) { return WXL_FALSE; }
+    wxl_bool m2_replace_texture(void* model, uint32_t type, const char* path)
+    {
+        if (!IsClient() || !model || !path || !*path) return WXL_FALSE;
+        // CreateTexture(fileName, status): cdecl, two dwords (TextureCreate with the component's
+        // flags, 0x004E8D30). The texture loads later and reports into the status then: the
+        // client's own, GetGlobalStatusObj (cdecl, nothing, `mov eax, imm32; ret`, 0x0047C090).
+        void* status  = x86::CallFree<void*>(WXL_SITE("GetGlobalStatusObj", 0));
+        void* texture = x86::CallFree<void*>(WXL_SITE("CreateTexture", 0), path, status);
+        if (!texture) return WXL_FALSE;
+        // CM2Model::ReplaceTexture(type, texture): __thiscall, `ret 8`; the model takes a handle of
+        // its own, as CCharacterComponent::AddLink relies on, so this one goes back: HandleClose,
+        // cdecl, one dword (0x0047BF30).
+        x86::CallMember<void>(WXL_SITE("CM2Model::ReplaceTexture", 0), model, type, texture);
+        x86::CallFree<void>(WXL_SITE("HandleClose", 0), texture);
+        return WXL_TRUE;
+    }
 
-    // wxl.m2file is served only where the client hands its model loader over (x64). Here the rows
-    // answer absent, and the loader seams find no file to hand on.
-    wxl_bool m2_file_info(const void*, wxl_m2file*) { return WXL_FALSE; }
+    uint32_t m2_children(const void* model, void** out, uint32_t capacity)
+    {
+        if (!IsClient() || !model) return 0;
+        uint32_t count = 0;
+        for (void* child = Read<void*>(model, WXL_FIELD("CM2Model", "m_attachList")); child && count < 4096;
+             child       = Read<void*>(child, WXL_FIELD("CM2Model", "m_attachNext")))
+        {
+            if (out && count < capacity) out[count] = child;
+            ++count;
+        }
+        return count;
+    }
 
-    void m2_file_set_size(void*, uint32_t) {}
+    wxl_bool m2_attach_info(const void* model, uint32_t* attachment, wxl_bool* to_root)
+    {
+        if (!IsClient() || !model || !attachment || !to_root || !m2_model_parent(model)) return WXL_FALSE;
+        *attachment = Read<uint32_t>(model, WXL_FIELD("CM2Model", "m_attachmentId"));
+        *to_root    = (Read<uint32_t>(model, WXL_FIELD("CM2Model", "m_fFlags")) & kAttachRoot) ? WXL_TRUE : WXL_FALSE;
+        return WXL_TRUE;
+    }
 
-    void m2_file_animate_bones(void*) {}
+    wxl_bool m2_attach_copy(void* source, void* parent, uint32_t attachment, wxl_bool to_root)
+    {
+        if (!IsClient() || !source || !parent) return WXL_FALSE;
+        void* scene = Read<void*>(parent, WXL_FIELD("CM2Model", "m_scene"));
+        if (!scene) return WXL_FALSE;
+        // CM2Scene::DuplicateModel(model, flags): __thiscall, `ret 8` (0x0081F9D4).
+        void* copy = x86::CallMember<void*>(WXL_SITE("CM2Scene::DuplicateModel", 0), scene, source, uint32_t(0));
+        if (!copy) return WXL_FALSE;
+        x86::CallMember<void>(WXL_SITE("CM2Model::AttachToParent", 0), copy, parent, attachment,
+                              static_cast<const void*>(nullptr), static_cast<int32_t>(to_root ? 1 : 0));
+        const wxl_bool attached = Read<void*>(copy, WXL_FIELD("CM2Model", "m_attachParent")) == parent ? WXL_TRUE : WXL_FALSE;
+        m2_release_model(copy); // the parent holds it now, as CM2Model::Initialize leaves its copies
+        return attached;
+    }
+
+    void* m2_model_file(const void* model)
+    {
+        return IsClient() && model ? Read<void*>(model, WXL_FIELD("CM2Model", "m_shared")) : nullptr;
+    }
+
+    wxl_bool m2_attachment_point(const void* model, uint32_t attachment, wxl_vec3* out)
+    {
+        if (!IsClient() || !model || !out || !Loaded(model)) return WXL_FALSE;
+        const void* header = Header(model);
+        if (!header) return WXL_FALSE;
+        const uint16_t index = AttachmentIndex(header, attachment);
+        uint32_t       count = 0;
+        const uint8_t* points = Array<uint8_t>(header, WXL_FIELD("M2Data", "m_attachments.m_count"), count);
+        if (!points || index >= count) return WXL_FALSE;
+        *out = Read<wxl_vec3>(points + static_cast<std::size_t>(index) * WXL_TYPE_SIZE("M2Attachment"),
+                              WXL_FIELD("M2Attachment", "m_position"));
+        return WXL_TRUE;
+    }
+
+    wxl_bool m2_skeleton(void* model, wxl_core_m2_skeleton* out)
+    {
+        if (!IsClient() || !model || !out || !Loaded(model)) return WXL_FALSE;
+        const void* header = Header(model);
+        float*      matrices = Read<float*>(model, WXL_FIELD("CM2Model", "m_boneMatrices"));
+        if (!header || !matrices) return WXL_FALSE;
+        out->file        = header;
+        out->bones       = Array<uint8_t>(header, WXL_FIELD("M2Data", "m_bones.m_count"), out->bone_count);
+        out->bone_stride = WXL_TYPE_SIZE("M2CompBone");
+        out->key_bones   = Array<uint16_t>(header, WXL_FIELD("M2Data", "m_boneIndicesById.m_count"), out->key_bone_count);
+        out->matrices    = matrices;
+        return out->bones ? WXL_TRUE : WXL_FALSE;
+    }
+
+    // --- M2: the model loader -------------------------------------------------------------------
+
+    wxl_bool m2_file_info(const void* file, wxl_core_m2_file* out)
+    {
+        if (!IsClient() || !file || !out) return WXL_FALSE;
+        void* header = Read<void*>(file, WXL_FIELD("CM2Shared", "m_data"));
+        if (!header) return WXL_FALSE;
+        out->path   = static_cast<const char*>(file) + WXL_FIELD("CM2Shared", "m_fileName");
+        out->header = header;
+        out->size   = Read<uint32_t>(file, WXL_FIELD("CM2Shared", "m_fileSize"));
+        out->skin   = Read<void*>(file, WXL_FIELD("CM2Shared", "m_skinData"));
+        return WXL_TRUE;
+    }
+
+    void m2_file_animate_bones(void* file)
+    {
+        if (!IsClient() || !file) return;
+        uint8_t* count = static_cast<uint8_t*>(file) + WXL_FIELD("CM2Shared", "m_billboardBoneCount");
+        uint32_t value;
+        std::memcpy(&value, count, sizeof value);
+        ++value;
+        std::memcpy(count, &value, sizeof value);
+    }
 
     wxl_bool object_position(const void* object, wxl_vec3* out)
     {

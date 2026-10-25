@@ -171,9 +171,20 @@ type CGxDeviceD3d Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h CGxDeviceD3d
   m_eventQuery                            engine/GxDevice:kD3dEventQuery
   m_hwCursorDirty                         engine/GxDevice:kD3dCursorDirty
   m_texture3B58                           engine/GxDevice:kD3dPlaceholderTex
+  m_d3dCurrentVertexDecl                  -                                            # wxl.gx invalidate_state
+  m_d3dVertexStreamBuf                    -
+  sizeof(m_d3dVertexStreamBuf)            -
+  m_deviceStates                          -
+  sizeof(m_deviceStates)                  -
 
 type CGxDeviceD3d9Ex Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h CGxDeviceD3d9Ex
   sizeof                                  engine/GxDevice:kD3d9ExObjectSize            # CGxDevice::NewD3d9Ex allocation
+  m_d3dDevice                             -                                            # wxl.gx: the D3D9Ex device
+  m_d3dCurrentVertexDecl                  -
+  m_d3dVertexStreamBuf                    -
+  sizeof(m_d3dVertexStreamBuf)            -
+  m_deviceStates                          -
+  sizeof(m_deviceStates)                  -
 
 type D3DCAPS9 Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h D3DCAPS9
   VertexShaderVersion                     engine/GxDevice:kCaps9VertexShaderVersion
@@ -360,6 +371,8 @@ type CM2Model Engine/Source/Model2/M2Model.h CM2Model
   m_frameStamp                            game/M2:kOffInstLastAnimFrame
   m_animateNext                           game/M2:kOffInstAnimateNext
   m_attachParent                          game/M2:kOffInstParent,game/Unit:kModelParentField
+  m_model30                               -                                            # the model an interface copy was made from (wxl.m2)
+  m_attachmentId                          -                                            # the attachment point it hangs on (wxl.m2)
   m_attachments                           game/M2:kOffInstAttachEnable
   m_attachmentIndex                       game/M2:kOffInstAttachSlot
   m_attachList                            game/M2:kOffInstAttachedHead
@@ -652,6 +665,14 @@ type ItemDisplayInfoRec WoW/Source/DB/Rec/ItemDisplayInfoRec.h ItemDisplayInfoRe
   m_modelTexture[0]                       game/DB2:kOffTex1
   m_modelTexture[1]                       game/DB2:kOffTex2
   m_inventoryIcon[1]                      game/DB2:kOffIcon2
+  m_inventoryIcon[0]                      -                                            # wxl.m2 item_display
+  m_geosetGroup                           -
+  m_flags                                 -
+  m_spellVisualID                         -
+  m_groupSoundIndex                       -
+  m_helmetGeosetVisID                     -
+  m_texture                               -
+  m_itemVisual                            -
   m_particleColorID                       game/DB2:kOffParticleId
 
 type CreatureModelDataRec WoW/Source/DB/Rec/CreatureModelDataRec.h CreatureModelDataRec

@@ -32,3 +32,26 @@ WXL_SEAM_RAISES(M2Shared, LoadSucceededCallback, ModelLoad)
 // the stack (`ret 4`).
 WXL_SEAM_BEFORE(M2Shared, FinishLoadingSkinProfile, "CM2Shared::FinishLoadingSkinProfile", int32_t, thiscall, (void* self, uint32_t size))
 WXL_SEAM_RAISES(M2Shared, FinishLoadingSkinProfile, SkinProfileLoad)
+
+// The model loader's stages after the read. CM2Shared::FinishLoading (inlined into
+// LoadSucceededCallback on x86) parses the file in place, then initializes it -- skin profile
+// chosen and requested, textures made -- and the skin profile, read in turn, is parsed and sized
+// for drawing. A mod that teaches the client a model format reshapes the file at these points,
+// with wxl.m2file.
+
+// The model has been parsed -- its arrays resolved -- and nothing has been made from it. Before:
+// ModelParsed, whose handlers may point its arrays at memory of their own (texture names,
+// lookups) ahead of the skin profile's choice and the textures' creation. thiscall.
+WXL_SEAM_BEFORE(M2Shared, Initialize, "CM2Shared::Initialize", int32_t, thiscall, (void* self))
+WXL_SEAM_RAISES(M2Shared, Initialize, ModelParsed)
+
+// The skin profile has been parsed; the client is about to copy its submeshes and size the
+// batches' effects from it. Before: SkinProfileParsed, whose handlers may replace its batches,
+// submeshes and the model's lookups. thiscall.
+WXL_SEAM_BEFORE(M2Shared, InitializeSkinProfile, "CM2Shared::InitializeSkinProfile", int32_t, thiscall, (void* self))
+WXL_SEAM_RAISES(M2Shared, InitializeSkinProfile, SkinProfileParsed)
+
+// An external sequence file has been read and is about to be parsed against the model, once for
+// the sequence and once for each that shares its keys. Before: ModelSequenceLoad. thiscall.
+WXL_SEAM_BEFORE(M2Shared, FinishLoadingLowPrioritySequence, "CM2Shared::FinishLoadingLowPrioritySequence@0x0083C6E0", int32_t, thiscall, (void* self, uint32_t sequence_index, uint8_t* buffer, uint32_t size))
+WXL_SEAM_RAISES(M2Shared, FinishLoadingLowPrioritySequence, ModelSequenceLoad)

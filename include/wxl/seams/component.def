@@ -4,8 +4,8 @@
 // The Component domain: seams on CCharacterComponent, the client's character appearance -- what
 // a player, a dressed NPC or an interface copy of one wears.
 //
-// None raises an event: each hands the change to the watchers of wxl.m2, which only a runtime
-// that can drive the models publishes.
+// AddItem, RemoveItem and FreeComponent raise AppearanceChanged; RemoveVisuals keeps the models
+// wxl.m2 hung on a character on the interface copies the client strips.
 
 #ifndef WXL_SEAM
 #error "define WXL_SEAM(domain, name, symbol, ret, conv, params) before including component.def"
@@ -23,17 +23,20 @@
 // looks the row up first. After is where the client's own models for the slot hang on the
 // character model, and the appearance records the display on the slot. thiscall.
 WXL_SEAM_AFTER(Component, AddItem, "CCharacterComponent::AddItem@0x004F2640", void, thiscall, (void* self, int32_t item_slot, const void* display_rec, int32_t item_visual))
+WXL_SEAM_RAISES(Component, AddItem, AppearanceChanged)
 
 // Takes the item display off one item slot. Before is where the appearance still records the
 // display on the slot and its models still hang on the character model. thiscall.
 WXL_SEAM_BEFORE(Component, RemoveItem, "CCharacterComponent::RemoveItem", void, thiscall, (void* self, int32_t item_slot))
+WXL_SEAM_RAISES(Component, RemoveItem, AppearanceChanged)
 
 // Gives an appearance back to the component heap, with its character model reference. Before is
 // the last moment it is whole. A class static: cdecl.
 WXL_SEAM_BEFORE(Component, FreeComponent, "CCharacterComponent::FreeComponent", void, cdecl, (void* component))
+WXL_SEAM_RAISES(Component, FreeComponent, AppearanceChanged)
 
 // Strips a character model of its spell and effect attachments (points 12, 15-25, 29, 34, 35, 38),
 // on the copies the character panel, portraits and character select draw. Those points are also
-// where wxl.m2 hangs collection pieces (19), chest pieces (34) and cloaks (12): Before records the
+// where a mod hangs collection pieces (19), chest pieces (34) and cloaks (12): Before records the
 // models wxl.m2 made, and copies of them, on `model`; After hangs them back. A class static: cdecl.
 WXL_SEAM(Component, RemoveVisuals, "CCharacterComponent::RemoveVisuals", void, cdecl, (void* model))

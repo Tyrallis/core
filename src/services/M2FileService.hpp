@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// The wxl.m2file service: model files as the client's loader reads them, for the x64 build.
+// The wxl.m2file service: reshaping a model file the client has parsed. The loader's stages
+// reach mods as the events ModelParsed, SkinProfileParsed and ModelSequenceLoad (seams/M2Shared.cpp).
 
 #pragma once
 
@@ -16,22 +17,8 @@ namespace wxl::core::services
 
     namespace m2file
     {
-        /// Whether any mod watches model files: the loader seams' whole cost when none does.
-        bool Watching();
-
-        /// Hands a file at one stage to every watcher, each under the guard. False when one
-        /// refused it or faulted on it.
-        bool Dispatch(wxl_m2file& file);
-
-        /// The read stage, from M2Shared.LoadSucceededCallback once ModelLoad has run: the file
-        /// read whole and not parsed, which the watchers may rewrite, shorten or refuse.
-        void OnRead(void* param);
-
-        /// Drops every watcher a mod registered, when it is disabled.
-        void ForgetMod(uint32_t mod);
-
-        /// Forgets every watcher, on the way out. Memory handed out by alloc_near stays: the
-        /// models pointing into it may outlive the mods.
-        void Clear();
+        /// Whether the client keeps a parsed array's elements as an offset from the array (the
+        /// recompiled client) rather than as their address (the stock client).
+        constexpr bool kSelfRelative = sizeof(void*) == 8;
     }
 }

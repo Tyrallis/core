@@ -1,38 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WarcraftXL
 //
-// The Component seam: what a character appearance puts on and takes off, handed to wxl.m2's
-// watchers.
+// The Component seams: what a character appearance puts on and takes off (AppearanceChanged),
+// and the models wxl.m2 hung on a character kept on the interface copies the client strips.
 
 #include "wxl/seams/seams.h"
 
 #include "binding/Binding.hpp"
+#include "runtime/Core.hpp"
 #include "services/M2Service.hpp"
+
+#include "wxl/events.h"
+#include "wxl/host/mod_host.hpp"
 
 #include <vector>
 
 namespace
 {
-    void Hand(const void* component, int32_t item_slot, uint32_t change)
+    void Raise(const void* component, int32_t item_slot, wxl_appearance_change change)
     {
-        // Nothing at all is asked of the client while no mod watches.
-        if (!component || !wxl::core::services::m2::Watching()) return;
+        // Nothing at all is asked of the client while no mod listens.
+        wxl::host::ModHost* host = wxl::core::Host();
+        if (!component || !host || !host->Listening(WXL_EV_AppearanceChanged)) return;
 
-        wxl_m2_equipment equipment{};
-        const uint32_t   slot = item_slot < 0 ? UINT32_MAX : static_cast<uint32_t>(item_slot);
-        if (!wxl::core::binding::component_wearer(component, slot, &equipment)) return;
-        equipment.struct_size = sizeof equipment;
-        equipment.change      = change;
-        if (change == WXL_M2_FREED)
+        wxl_appearance_args args{};
+        const uint32_t      slot = item_slot < 0 ? UINT32_MAX : static_cast<uint32_t>(item_slot);
+        if (!wxl::core::binding::component_wearer(component, slot, &args)) return;
+        args.change = change;
+        if (change == WXL_APPEARANCE_FREED)
         {
-            equipment.item_slot  = 0;
-            equipment.display_id = 0;
+            args.item_slot  = 0;
+            args.display_id = 0;
         }
-        else if (equipment.display_id == 0)
+        else if (args.display_id == 0)
         {
             return; // an empty slot: nothing was put on, nothing comes off
         }
-        wxl::core::services::m2::DispatchEquipment(equipment);
+        host->Raise(WXL_EV_AppearanceChanged, &args);
     }
 }
 
@@ -40,7 +44,7 @@ namespace wxl::seam::Component::AddItem
 {
     void WXL_CALL After(void* self, int32_t item_slot, const void*, int32_t)
     {
-        Hand(self, item_slot, WXL_M2_EQUIPPED);
+        Raise(self, item_slot, WXL_APPEARANCE_WORN);
     }
 }
 
@@ -48,7 +52,7 @@ namespace wxl::seam::Component::RemoveItem
 {
     void WXL_CALL Before(void* self, int32_t item_slot)
     {
-        Hand(self, item_slot, WXL_M2_UNEQUIPPED);
+        Raise(self, item_slot, WXL_APPEARANCE_REMOVED);
     }
 }
 
@@ -56,7 +60,7 @@ namespace wxl::seam::Component::FreeComponent
 {
     void WXL_CALL Before(void* component)
     {
-        Hand(component, 0, WXL_M2_FREED);
+        Raise(component, 0, WXL_APPEARANCE_FREED);
     }
 }
 
@@ -74,6 +78,7 @@ namespace
     };
 
     std::vector<Kept> g_kept;
+    void*             g_keptFrom = nullptr;
 
     /// The points CCharacterComponent::RemoveVisuals detaches: only what hangs there is stripped.
     bool Stripped(uint32_t attachment)
@@ -87,7 +92,6 @@ namespace
                 return false;
         }
     }
-    void*             g_keptFrom = nullptr;
 }
 
 namespace wxl::seam::Component::RemoveVisuals

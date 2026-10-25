@@ -38,11 +38,15 @@ namespace wxl::core::seams
     /// The seam carrying a point name, or null.
     const Seam* Find(const char* name);
 
+    /// Why the stock client cannot take a seam (its WXL_SEAM_X64_ONLY row), or null.
+    const char* X64Only(const char* name);
+
     /**
      * @brief Every event some seam's body raises, each once, in table order.
      *
-     * Derived from the WXL_SEAM_RAISES rows, so both attachments answer Events() with the same
-     * list and a seam cannot be live on one architecture and silent on the other.
+     * Derived from the WXL_SEAM_RAISES rows, so both attachments answer Events() from the same
+     * table. For the stock client (`stock`), an event only WXL_SEAM_X64_ONLY seams raise is left
+     * out: that runtime attaches no detour for them.
      */
-    std::vector<wxl_event> RaisedEvents();
+    std::vector<wxl_event> RaisedEvents(bool stock = false);
 }

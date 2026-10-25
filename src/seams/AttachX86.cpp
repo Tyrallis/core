@@ -10,6 +10,7 @@
 #include "runtime/Core.hpp"
 #include "seams/Detour.hpp"
 #include "seams/RegparmX86.hpp"
+#include "seams/Table.hpp"
 
 #include "wxl/offsets/site.hpp"
 #include "wxl/seams/seams.h"
@@ -79,6 +80,13 @@ namespace wxl::core::seams
         bool all = true;
         for (const Row& row : kRows)
         {
+            // A seam whose body needs what only the recompiled client has is not attached here.
+            if (const char* why = seams::X64Only(row.name))
+            {
+                WLOG_INFO(kTag, "seam %s not attached: x64 only: %s", row.name, why);
+                continue;
+            }
+
             // A regparm row is served by the thunk written for its registers.
             const seams::regparm::Row* thunk =
                 row.attachable ? nullptr : seams::regparm::Find(row.name);
