@@ -89,3 +89,10 @@ WXL_BINDING(unit_knows_spell, wxl_bool, (const void* object, uint32_t spell), (o
 // CGUnit_C::GetAura (null past the count): an AuraData, whose members gameplay.def reads.
 WXL_BINDING(unit_aura_count, uint32_t, (const void* object), (object), 0)
 WXL_BINDING(unit_aura_at, const void*, (const void* object, uint32_t index), (object, index), 0)
+
+// MSVC takes a file that expands to nothing outside its opening #ifndef X ... #endif for one
+// guarded by X, and skips it when it is included again with X defined: this table is read
+// several times in one translation unit, under shapes that may leave it empty. A directive
+// after the rows keeps it from looking guarded.
+#ifdef WXL_TABLE_END
+#endif

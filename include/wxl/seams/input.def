@@ -20,3 +20,10 @@
 // carries no runtime: the stock 32-bit client reaches this function by detour.
 WXL_SEAM_GATE(Input, WindowProc, "OsWindowProc", intptr_t, cdecl, (void* window, uint32_t message, uintptr_t wparam, intptr_t lparam))
 WXL_SEAM_RAISES(Input, WindowProc, Input)
+
+// MSVC takes a file that expands to nothing outside its opening #ifndef X ... #endif for one
+// guarded by X, and skips it when it is included again with X defined: this table is read
+// several times in one translation unit, under shapes that may leave it empty. A directive
+// after the rows keeps it from looking guarded.
+#ifdef WXL_TABLE_END
+#endif
