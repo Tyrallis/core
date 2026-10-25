@@ -61,7 +61,7 @@ place it is written.
 |---|---|---|
 | `core/include/wxl/seams/*.def` (`seams.def` includes them) | a client function the runtime hooks | `seams.h`: the declarations of the entry points its shape declares, `Before`, `After` or `Gate` (and, through `client/WarcraftXL/Seams.h`, what the fork calls); `AttachX86.cpp`: the x86 detour and its attach; `Table.cpp`: the seam list; `WXL_SEAM_RAISES` rows: the events the runtime announces as raisable |
 | `core/include/wxl/core/binding/*.def` (`binding.def` includes them) | a fact read out of the client | `Binding.hpp`: `wxl::core::binding::<name>()`; `init.h`: a member of `wxl_core_init` and a line of `wxl_core_init_rows`; `BindingX86.cpp`: the x86 read (field rows); `client/WarcraftXL/Binding.cpp`: the x64 accessor (field rows); `BindingTable.cpp`: the x64 forwarder |
-| `sdk/runtime/include/wxl/runtime/object_reads.def` | a getter of `wxl_object_api` | the `ObjectBinding` virtual, the service's wiring with its kind check, and in core the read itself for a `FIELD` row (`src/objects/Objects.hpp`) |
+| `sdk/runtime/include/wxl/runtime/object_reads.def` | a getter of `wxl_object_api`: its kinds, who answers it (`field`, `client`, `cache`, `shared`), its C++ name and type, its doc, and (`WXL_OBJECT_SINCE`) the version that brought it | the `ObjectBinding` virtual of a `field`, `client` or `cache` row, the shared runtime's read of a `shared` row (`sdk/runtime/src/object_reads.cpp`), the service's wiring with its kind check, in core the read itself for a `field` row (`src/objects/Objects.hpp`); the C++ facades' members (`sdk/include/wxl/objects/generated/*.inc`) and the guides' tables of members, written by `sdk/tools/objects/gen_members.cpp` (`wxl-object-members`, checked by the sdk test `object-members`); the Lua method of the object userdata, refused to a mod whose abi is older; the editor types |
 | `sdk/include/wxl/events.def` | an event of the contract, and (`WXL_EVENTS_SINCE`) the version that brought the events from an id on | the `wxl_event` enum, `EventArgs<>`, the `On<Event>` virtual of its script family, the trait that subscribes only overridden handlers, the event's entry in `wxl/reflect.hpp` with the version that brought it (`reflect::SinceOf`), which wxl.lua and the host refuse a subscription by |
 | `sdk/include/wxl/enums.def` | a value of an enumeration an args member holds | `events.h`: the C enum; `sdk.hpp`: a `WXL_ARGS_ENUM` member's parameter type; `wxl/reflect.hpp`: the value's name, which `sdk/lua/` passes to a Lua handler as a string and its editor types list |
 | `sdk/include/wxl/fields.def` | a member of an event's args struct | `events.h`: the struct itself; `sdk.hpp`: a parameter of the event's `On<Event>` and `wxl::Subscribe` handlers, in row order (a member that only measures another is carried by it); `wxl/reflect.hpp`: each event's members with their offset and kind, which a runtime other than C++ (a script VM) reads events through, `sdk/lua/` among them, which passes the same parameters to a Lua handler; `sdk/tests/reflect.cpp` checks the rows against the structs and the C++ parameters against the rows |
@@ -141,15 +141,29 @@ them before it is unmapped).
 
 ### A new object getter for mods
 
-1. The fact, as above.
+1. The fact, as above, when the client must answer it (a `field`, `client` or `cache` row); a
+   `shared` row reads what the shared runtime already has (the descriptor block, other reads).
 2. A member at the end of `wxl_object_api` in `sdk/include/wxl/services/object.h`, and
    `WXL_ABI_VERSION_FEATURE` raised in `abi.h`: something was appended.
-3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`. A `FIELD` row whose `member` is the
-   fact's name needs nothing more in core; a `READ` row gets its function in
-   `core/src/objects/Reads.cpp`.
-4. The method in the C++ facade, `sdk/include/wxl/objects/<kind>.hpp`. Its Lua method is named
-   after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
+3. A row in `sdk/runtime/include/wxl/runtime/object_reads.def`, under a `WXL_OBJECT_SINCE` row of
+   that version. A `field` row whose `member` is the fact's name needs nothing more in core; a
+   `client` or `cache` row gets its function in `core/src/objects/Reads.cpp`; a `shared` row in
+   `sdk/runtime/src/object_reads.cpp`.
+4. Run `wxl-object-members <sdk>`: it writes the C++ method into the class of the row's kind
+   (`sdk/include/wxl/objects/generated/`) and the line of the guides' tables. Its Lua method is
+   named after the member (`sdk/lua/src/ObjectNames.hpp`); the `lua-types` test fails a name that
    would be ambiguous.
+5. The fake service in `sdk/tests/fake_services.hpp` answers every row from 0.1.18 on by itself;
+   `contract.cpp` and `lua_tests.cpp` check each such row through its C++ and Lua method.
+
+### An action of the player (wxl.action)
+
+A row in `sdk/include/wxl/services/action.def` and its member in `action.h`, the client call as a
+binding row in `core/include/wxl/core/binding/action.def` (written in `BindingX86.cpp` with the
+convention Wow.exe gives the function, checked through `src/binding/CallX86.hpp` by the harness,
+and in the fork's `WarcraftXL/Binding.cpp`), and its body in `core/src/services/ActionService.cpp`,
+which refuses a call off the main thread. The objects' own action methods (`Select`, `Interact`,
+`CastAt`, `Use`, `Follow`, `Assist`) are written by hand in the facades and in `sdk/lua/src/Objects.cpp`.
 
 ### A new service member for mods
 
